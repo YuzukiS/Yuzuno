@@ -27,6 +27,9 @@ mod update_rules;
 // A minimized window's page is hidden, as WebView2 asks of its host (YN-199).
 #[cfg(windows)]
 mod webview_visibility;
+// The window's state since the app opened, for Copy diagnostics (YN-221 S8).
+mod window_state;
+mod window_state_rules;
 
 use connection::{
     desktop_url, hand_outside, is_connection_page, is_loopback, launch_url, open_failure_notice,
@@ -822,6 +825,20 @@ async fn open_core(
                 .permission("allow-desktop-badge"),
             )
             .map_err(|e| format!("Could not enable the taskbar badge: {e}"))?;
+        // The window's state for Copy diagnostics (YN-221 S8), likewise from
+        // the selected workspace only (the command checks the origin again).
+        window
+            .add_capability(
+                CapabilityBuilder::new(format!(
+                    "desktop-window-state-{}",
+                    core.origin().ascii_serialization()
+                ))
+                .local(false)
+                .webview("main")
+                .remote(format!("{}/*", core.origin().ascii_serialization()))
+                .permission("allow-desktop-window-state"),
+            )
+            .map_err(|e| format!("Could not enable the window's state: {e}"))?;
         // A kept file dragged out as a real file (YN-170), likewise from the
         // selected workspace only (the command checks the origin again).
         window
@@ -1158,6 +1175,7 @@ fn main() {
             notify::desktop_notify,
             notify::desktop_notifications_request,
             badge::desktop_badge,
+            window_state::desktop_window_state,
             title_bar::desktop_title_bar,
             file_drag::desktop_file_drag
         ])
@@ -1330,6 +1348,7 @@ fn main() {
                 webview_visibility::follow(&window);
             }
             window.show()?;
+            window_state::watch(&window);
             Ok(())
         })
         .on_menu_event(|app, event| match event.id().as_ref() {

@@ -13,6 +13,8 @@
  * error.
  */
 import { API_BASE, isTauri } from "./api";
+import { refreshStats } from "./refresh-trigger";
+import { visibilityLog } from "./visibility-log";
 
 const STORE = "yuzuno.diagnostics.v1";
 const MAX_ENTRIES = 12;
@@ -398,8 +400,42 @@ export type Facts = {
   at: string;
   core: { now: CoreRead | null; failed: string | null; last: CoreRead | null };
   memory?: { now: MemoryRead | null; failed: string | null };
+  /** Core's runtime counts (YN-221 S7), read only for this text. */
+  runtime?: { now: RuntimeRead | null; failed: string | null };
   desktop: { now: DesktopRead | null; failed: string | null; last: DesktopRead | null } | null;
+  /** The desktop window's state (YN-221 S8), from a desktop that reports it. */
+  window?: { now: WindowRead | null; failed: string | null } | null;
 };
+
+/** One route's requests since Core started, by the visibility the page said (X-Yuzuno-Visibility). */
+export type RouteCount = { method: string; route: string; count: number; visible: number; hidden: number; unsaid: number; bytesSent: number };
+export type RuntimeRead = {
+  at: string;
+  startedAt: string | null;
+  requests: number;
+  routes: number;
+  /** The routes with the most requests, at most RUNTIME_ROUTES. */
+  top: RouteCount[];
+  processCpuNs: number | null;
+  /** CPU by thread role (YN-221 S7b): Core's own, the rest together. */
+  threads: { name: string; count: number; cpuNs: number }[] | null;
+  cpuLabels: boolean | null;
+  labelledNs: number | null;
+  unattributedNs: number | null;
+};
+/** "unknown": the desktop could not read its window then (desktop/src/window_state_rules.rs), never a guess. */
+export type WindowState = "visible" | "minimized" | "hidden" | "unknown";
+export type WindowRead = {
+  at: string;
+  state: WindowState;
+  focused: boolean | null;
+  visibleMs: number | null;
+  minimizedMs: number | null;
+  hiddenMs: number | null;
+  changes: { sinceStartMs: number; state: WindowState }[];
+};
+export const RUNTIME_ROUTES = 8;
+const SHOWN_CHANGES = 8;
 
 const WAITING = ["heldRecords", "heldGrace", "heldInterval", "requestsInFlight", "updateOperation", "sealed", "idleGrace", "interval",
   "freeBelowThreshold", "freeNotDominant", "rssGrowthBelowThreshold"];
@@ -445,6 +481,97 @@ async function readMemory(at: string): Promise<NonNullable<Facts["memory"]>> {
   }
 }
 
+// A route template as Core's router names it, or Core's own labels; never anything that looks like an ID.
+const ROUTE = /^\/[A-Za-z0-9_\-./{}*]*$/;
+const routeName = (value: unknown) =>
+  typeof value === "string" && value.length <= 120 && (value === "(fallback)" || value === "(other)" ||
+    (ROUTE.test(value) && !value.split("/").some((segment) => /^\d+$|[0-9a-f]{8,}/i.test(segment))))
+    ? value : null;
+const METHOD = /^[A-Z]{3,7}$/;
+/** The thread roles Core names (runtime_diag.rs name_threads); any other thread counts as other. */
+const ROLES = new Set(["yz-async", "yz-blocking"]);
+
+/** Core's runtime report, reduced to counts by route template and CPU by thread role. */
+export function runtimeRead(report: unknown, at: string): RuntimeRead | null {
+  const r = part(report);
+  if (r.format !== 1 || !Array.isArray(r.http)) return null;
+  const routes = new Map<string, RouteCount>();
+  let requests = 0;
+  for (const raw of r.http) {
+    const row = part(raw), visibility = part(row.visibility);
+    const method = typeof row.method === "string" && METHOD.test(row.method) ? row.method : null;
+    const route = routeName(row.route);
+    const n = count(row.count);
+    if (n === null) continue;
+    requests += n;
+    // Another label is counted, never named.
+    const named = method && route;
+    const key = named ? `${method} ${route}` : "(unnamed)";
+    const kept = routes.get(key) ?? { method: named ? method : "", route: named ? route : "(unnamed)", count: 0, visible: 0, hidden: 0, unsaid: 0, bytesSent: 0 };
+    kept.count += n;
+    kept.visible += count(visibility.visible) ?? 0;
+    kept.hidden += count(visibility.hidden) ?? 0;
+    kept.unsaid += count(visibility.unknown) ?? 0;
+    kept.bytesSent += count(row.bytesSent) ?? 0;
+    routes.set(key, kept);
+  }
+  const groups = part(r.threads).available === true && Array.isArray(part(r.threads).groups) ? (part(r.threads).groups as unknown[]) : null;
+  let threads: RuntimeRead["threads"] = null;
+  if (groups) {
+    const byRole = new Map<string, { name: string; count: number; cpuNs: number }>();
+    for (const raw of groups) {
+      const g = part(raw);
+      const name = typeof g.name === "string" && ROLES.has(g.name) ? g.name : "other";
+      const role = byRole.get(name) ?? { name, count: 0, cpuNs: 0 };
+      role.count += count(g.count) ?? 0;
+      role.cpuNs += count(g.cpuNs) ?? 0;
+      byRole.set(name, role);
+    }
+    threads = [...byRole.values()].sort((a, b) => (a.name === "other" ? 1 : b.name === "other" ? -1 : a.name.localeCompare(b.name)));
+  }
+  const cpu = part(r.cpu);
+  return {
+    at,
+    startedAt: time(r.startedAt),
+    requests,
+    routes: routes.size,
+    top: [...routes.values()].sort((a, b) => b.count - a.count || `${a.method} ${a.route}`.localeCompare(`${b.method} ${b.route}`)).slice(0, RUNTIME_ROUTES),
+    processCpuNs: part(r.process).available === true ? count(part(r.process).cpuNs) : null,
+    threads,
+    cpuLabels: flag(cpu.enabled),
+    labelledNs: count(cpu.labelledNs),
+    unattributedNs: count(cpu.unattributedNs),
+  };
+}
+
+/** Read within 2 s; a Core from before it says so (404). */
+async function readRuntime(at: string): Promise<NonNullable<Facts["runtime"]>> {
+  try {
+    const response = await within(fetch(`${API_BASE}/api/diagnostics/runtime`, { headers: { "X-Yuzuno-Client": "desktop" }, cache: "no-store" }));
+    if (response.status === 404) return { now: null, failed: "this Core does not report it" };
+    if (!response.ok) throw new Error(`http ${response.status}`);
+    const now = runtimeRead(await within(response.json()), at);
+    return now ? { now, failed: null } : { now: null, failed: "not a runtime report" };
+  } catch (error) {
+    return { now: null, failed: why(error) };
+  }
+}
+
+const WINDOW_STATES = new Set<WindowState>(["visible", "minimized", "hidden", "unknown"]);
+const windowState = (value: unknown): WindowState | null => (typeof value === "string" && WINDOW_STATES.has(value as WindowState) ? (value as WindowState) : null);
+/** The desktop's window state (desktop/src/window_state.rs), reduced to its states and times. */
+export function windowRead(report: unknown, at: string): WindowRead | null {
+  const r = part(report);
+  const state = windowState(r.state);
+  if (!state) return null;
+  const totals = part(r.totals);
+  const changes = (Array.isArray(r.changes) ? r.changes : []).flatMap((raw) => {
+    const c = part(raw), since = count(c.sinceStartMs), changed = windowState(c.state);
+    return since !== null && changed ? [{ sinceStartMs: since, state: changed }] : [];
+  });
+  return { at, state, focused: flag(r.focused), visibleMs: count(totals.visibleMs), minimizedMs: count(totals.minimizedMs), hiddenMs: count(totals.hiddenMs), changes };
+}
+
 /** Core's health and the desktop app's version, read now, each within 2 s;
  * what was read last stays as evidence when a read fails. Core's memory is
  * read at the same time, and only for this text. */
@@ -453,6 +580,7 @@ export async function gatherFacts(): Promise<Facts> {
   const at = new Date().toISOString();
   const facts: Facts = { at, core: { now: null, failed: null, last: record.core ?? null }, desktop: null };
   const memory = readMemory(at);
+  const runtime = readRuntime(at);
   try {
     const response = await within(fetch(`${API_BASE}/api/health`, { headers: { "X-Yuzuno-Client": "desktop" }, cache: "no-store" }));
     if (!response.ok) throw new Error(`http ${response.status}`);
@@ -486,8 +614,24 @@ export async function gatherFacts(): Promise<Facts> {
     } catch (error) {
       facts.desktop.failed = error instanceof Error && error.message === "timeout" ? "no answer within 2 s" : "it did not say";
     }
+    // Its window's state (YN-221 S8). Only a command the app does not have (Tauri: "… Command not found", a desktop
+    // from before it) is said to be one it does not report; any other refusal or answer that is not a state says
+    // nothing of why, and none of the bridge's own words are kept.
+    facts.window = { now: null, failed: null };
+    try {
+      if (!invoke) throw new Error("no command bridge");
+      const now = windowRead(await within(invoke("desktop_window_state")), at);
+      if (!now) throw new Error("no state");
+      facts.window.now = now;
+    } catch (error) {
+      const said = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+      facts.window.failed = said === "timeout" ? "no answer within 2 s"
+        : /\bcommand not found\b/i.test(said) ? "this desktop app does not report it"
+          : "it did not say";
+    }
   }
   facts.memory = await memory;
+  facts.runtime = await runtime;
   save();
   return facts;
 }
@@ -543,6 +687,62 @@ function memoryLines(memory: MemoryRead) {
   }
   return lines;
 }
+/** A length of time, as a person reads it: 3 s, 4 min 05 s, 2 h 07 min. */
+export function span(ms: number) {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds} s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ${String(seconds % 60).padStart(2, "0")} s`;
+  return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, "0")} min`;
+}
+const seconds = (ns: number) => `${(ns / 1e9).toFixed(2)} s`;
+const share = (part: number, whole: number) => `${Math.round((part / whole) * 100)}%`;
+
+function runtimeLines(runtime: RuntimeRead) {
+  const lines = [`Core activity: since ${runtime.startedAt ?? "unknown"}, read ${runtime.at}; ${runtime.requests} requests on ${runtime.routes} routes, by what each page said of itself (visible, hidden, not said)`];
+  runtime.top.forEach((route, index) => {
+    const name = route.method ? `${route.method} ${route.route}` : route.route;
+    lines.push(`  ${index + 1}. ${name}: ${route.count} (visible ${route.visible}, hidden ${route.hidden}, not said ${route.unsaid}), ${mib(route.bytesSent)} sent`);
+  });
+  const cpu = runtime.processCpuNs;
+  const threads = runtime.threads?.map((t) => `${t.name} ${seconds(t.cpuNs)} (${t.count} threads)`).join(", ");
+  const labelled = runtime.cpuLabels === false ? "work labels off"
+    : cpu && runtime.labelledNs !== null && runtime.unattributedNs !== null ? `labelled ${share(runtime.labelledNs, cpu)}, not attributed ${share(runtime.unattributedNs, cpu)}`
+      : "work labels unknown";
+  lines.push(`  CPU: ${cpu === null ? "not available on this Core" : `process ${seconds(cpu)}`}${threads ? `; ${threads}` : ""}; ${labelled}`);
+  return lines;
+}
+
+function windowLine(window: WindowRead) {
+  const totals = [["visible", window.visibleMs], ["minimized", window.minimizedMs], ["hidden", window.hiddenMs]]
+    .filter((entry): entry is [string, number] => entry[1] !== null).map(([name, ms]) => `${name} ${span(ms)}`).join(", ");
+  const recent = window.changes.slice(-SHOWN_CHANGES).map((c) => `+${span(c.sinceStartMs)} ${c.state}`).join(", ");
+  const now = window.state === "unknown" ? "unknown now (the desktop could not read its window)" : window.state;
+  return `Desktop window: ${now}${window.focused === null ? "" : window.focused ? ", focused" : ", not focused"}; read ${window.at}` +
+    (totals ? `; ${totals} since it opened` : "") + (recent ? `; last changes ${recent}` : "");
+}
+
+function pageVisibilityLine() {
+  const log = visibilityLog();
+  const recent = log.changes.slice(-SHOWN_CHANGES).map((c) => `+${span(c.sinceLoadMs)} ${c.event} ${c.state}`).join(", ");
+  const total = log.changes.length + log.dropped;
+  return `Page visibility: ${log.now} now; visible ${span(log.visibleMs)}, hidden ${span(log.hiddenMs)} since load; ` +
+    `${total} ${total === 1 ? "change" : "changes"} recorded, last ${Math.min(SHOWN_CHANGES, log.changes.length)}: ${recent}`;
+}
+
+function refreshLine() {
+  const parts = Object.entries(refreshStats)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, stats]) => {
+      const kept = [`${stats.fired} made`];
+      if (stats.owedHidden) kept.push(`${stats.owedHidden} owed while hidden`);
+      if (stats.caughtUp) kept.push(`${stats.caughtUp} caught up`);
+      if (stats.throttledHidden) kept.push(`${stats.throttledHidden} held while hidden`);
+      return `${name} ${kept.join(", ")}`;
+    });
+  return `Refresh reads since load: ${parts.length ? parts.join("; ") : "none"}`;
+}
+
 const coreLine = (read: CoreRead) =>
   `${read.version}${read.releaseId ? ` (release ${read.releaseId})` : ""}, API ready ${yes(read.apiReady)}, storage ready ${yes(read.storageReady)}`;
 
@@ -559,7 +759,10 @@ export function diagnosticsText(facts: Facts | null) {
     );
   if (facts?.memory?.now) lines.push(...memoryLines(facts.memory.now));
   else lines.push(facts?.memory ? `Core memory: unknown (${facts.memory.failed}, ${facts.at})` : "Core memory: not read");
-  if (!isTauri) lines.push("Desktop app: not a desktop window", "WebView: not a desktop window");
+  if (facts?.runtime?.now) lines.push(...runtimeLines(facts.runtime.now));
+  else lines.push(facts?.runtime ? `Core activity: unknown (${facts.runtime.failed}, ${facts.at})` : "Core activity: not read");
+  lines.push(pageVisibilityLine(), refreshLine());
+  if (!isTauri) lines.push("Desktop app: not a desktop window", "Desktop window: not a desktop window", "WebView: not a desktop window");
   else {
     const desktop = facts?.desktop;
     if (desktop?.now) lines.push(`Desktop app: ${desktop.now.version}; read ${desktop.now.at}`);
@@ -568,6 +771,8 @@ export function diagnosticsText(facts: Facts | null) {
         `Desktop app: unknown${desktop?.failed ? ` (${desktop.failed}, ${facts!.at})` : ""}` +
           (desktop?.last ? `; last read ${desktop.last.at}: ${desktop.last.version}` : ""),
       );
+    if (facts?.window?.now) lines.push(windowLine(facts.window.now));
+    else lines.push(facts?.window ? `Desktop window: unknown (${facts.window.failed}, ${facts.at})` : "Desktop window: not read");
     lines.push("WebView: unknown (the desktop app does not report it)");
   }
   lines.push(`Page environment (as the page reads it, not a report from the desktop app): ${pageEnvironment()}`);

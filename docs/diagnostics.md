@@ -41,9 +41,42 @@ recorded in the diagnostics too.
   The parts are read one after another, not as one snapshot. A count Core
   can't read on its platform is written `not available`, never 0. If Core
   doesn't answer, or predates this, the line says `unknown` with the reason.
+- **Core activity:** Core's runtime counts, read from
+  `/api/diagnostics/runtime` at the same time, within 2 s, only for this
+  text and never stored:
+  - how many requests Core served since it started, and on how many routes;
+  - the 8 routes with the most requests, each by its route template (such as
+    `GET /api/agents/{id}`), with how many came from a page that said it was
+    visible, hidden or said neither, and the bytes their bodies sent;
+  - Core's CPU since it started: the process's, its own thread roles'
+    (`yz-async`, `yz-blocking`, the rest as `other`), and the share its work
+    labels account for and the share they don't.
+
+  A Core from before this report says `unknown` with the reason.
+- **Page visibility:** whether the page is visible or hidden now, how long
+  it was each since it loaded, and its last 8 changes (of the last 32 it
+  keeps), each with its time since the page loaded and the event the browser
+  sent. Every request the page makes to Core says whether the page was
+  hidden (`X-Yuzuno-Visibility`); Core counts requests by it, as above.
+- **Refresh reads:** for each of the page's reads that follow Core's
+  changes, how many it made since the page loaded, how many it owed while
+  the page was hidden and made once it was shown, and how many it held to
+  the hidden pace.
 - **Desktop app:** its version, from the update status the desktop app
   already reports; no new desktop command is needed. If it doesn't answer,
   the text says `unknown`.
+- **Desktop window:** whether the window is visible, minimized or hidden and
+  whether it has focus, how long it was each since it opened, and its last 8
+  changes. A window another window covers counts as visible: the system
+  does not tell the app. When the desktop could not read its window, the
+  state is `unknown`, never a guess: what it saw before is kept, and the
+  time until a read works again counts toward no state. Focus is left out
+  until the system has said it.
+  - A desktop app from before this says `unknown (this desktop app does not
+    report it)`.
+  - One that does not answer within 2 s says `unknown (no answer within 2 s)`.
+  - One that refuses or answers something else says `unknown (it did not
+    say)`, without the desktop's own words.
 - **WebView:** always `unknown`, because the desktop app does not report it.
 - **Page environment:** the page's browser engine (major version) and
   operating system, as the page reads them. This is never the full user-agent
@@ -74,6 +107,8 @@ the same rules; nothing else in the window's storage is touched.
 
 Conversations, drafts, requests and their responses, model output,
 credentials, file paths and the workspace ID are never part of the text.
+Core's activity is given by route templates only: no ID, path or query of a
+request, and a label that looks like one is counted without its name.
 
 No text an error carries is kept: not its message, a rejection's reason, a
 name or code outside the lists above, or a key a schema names other than

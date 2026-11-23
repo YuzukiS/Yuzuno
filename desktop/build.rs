@@ -23,6 +23,7 @@ fn main() {
             "desktop_notify",
             "desktop_notifications_request",
             "desktop_badge",
+            "desktop_window_state",
             "desktop_title_bar",
             "desktop_file_drag",
         ]),

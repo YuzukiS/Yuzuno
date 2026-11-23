@@ -57,12 +57,36 @@ const historyReport = {
   sql: "SELECT SqlSentinel",
 };
 
+// A synthetic GET /api/diagnostics/runtime report (YN-221 S7): routes Core
+// counted, one entry's label that is a raw path (never named in the text), a
+// thread that is not one of Core's roles, and a field the page does not know.
+const route = (method, path, n, visible, hidden, bytesSent, entry = "local") => ({ entry, method, route: path, count: n,
+  status: { "1xx": 0, "2xx": n, "3xx": 0, "4xx": 0, "5xx": 0 }, visibility: { visible, hidden, unknown: n - visible - hidden },
+  wallMs: { le10: n, le50: 0, le200: 0, le1000: 0, gt1000: 0 }, wallNsTotal: 1, bytesDeclared: bytesSent, declaredUnknown: 0, bytesSent, bodiesCompleted: n, bodiesDropped: 0 });
+const runtimeReport = {
+  format: 1, readAt: "2026-11-23T08:00:00Z", startedAt: "2026-11-23T07:00:00Z",
+  process: { available: true, cpuNs: 20e9 },
+  threads: { available: true, groups: [{ name: "yz-async", count: 32, cpuNs: 9e9 }, { name: "yz-blocking", count: 9, cpuNs: 6e9 }, { name: "ThreadSentinel", count: 2, cpuNs: 1e9 }] },
+  http: [
+    route("GET", "/api/workspace", 300, 240, 60, 3 * MiB), route("GET", "/api/workspace", 20, 20, 0, MiB, "phone"),
+    route("GET", "/api/home", 200, 150, 50, 50 * MiB), route("GET", "/api/home/needs", 90, 0, 90, MiB / 2),
+    route("GET", "/api/agents/{id}", 80, 80, 0, 8 * MiB), route("POST", "/api/agents/{id}/messages", 10, 10, 0, 4096),
+    route("GET", "/api/agents/8f1d2c3b-aaaa-bbbb-cccc-1234567890ab", 7, 7, 0, 1024), route("GET", "/api/jobs", 60, 30, 30, MiB),
+    route("GET", "/api/catchup", 5, 5, 0, 2048), route("GET", "(fallback)", 12, 0, 0, 4 * MiB), route("GET", "/api/health", 4, 0, 0, 512),
+  ],
+  events: { published: [], bytes: [] },
+  cpu: { enabled: true, labels: [{ label: "http GET /api/home", asyncNs: 1, polls: 1, storeNs: 1, storeJobs: 1 }], labelledNs: 12e9, unattributedNs: 8e9, threadRoles: "named" },
+  note: "RuntimeNoteSentinel",
+};
+const windowStateReport = { state: "minimized", focused: false, totals: { visibleMs: 125_000, minimizedMs: 62_000, hiddenMs: 0 },
+  changes: [{ sinceStartMs: 0, state: "visible" }, { sinceStartMs: 125_000, state: "minimized" }], path: "C:\\Users\\PathSentinel" };
+
 /**
  * The built app, with the page's script tag as Core serves it. `named: false`
  * serves an Agent without a name, which the rail can't draw: a real render
  * error that no part of the app handles.
  */
-async function mount({ named = true, storage = {}, clipboard = "ok", desktop = null, memory = memoryReport, history = historyReport } = {}) {
+async function mount({ named = true, storage = {}, clipboard = "ok", desktop = null, memory = memoryReport, history = historyReport, runtime = runtimeReport, hidden = false } = {}) {
   const calls = [];
   const copied = [];
   const dom = new JSDOM(`<!doctype html><html><body><div id="root"></div><script type="module" src="/${entry}"></script></body></html>`, {
@@ -73,6 +97,8 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
   });
   const w = dom.window;
   for (const [key, value] of Object.entries(storage)) w.localStorage.setItem(key, value);
+  // A page that starts hidden (YN-221 S8): what its requests say of it.
+  if (hidden) Object.defineProperty(w.document, "visibilityState", { configurable: true, get: () => "hidden" });
   w.matchMedia = (media) => ({ media, matches: false, addEventListener() {}, removeEventListener() {} });
   w.EventSource = class { addEventListener() {} close() {} };
   w.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
@@ -98,6 +124,14 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
           calls.push({ url: `invoke:${command}` });
           if (command === "desktop_update_status" && desktop.version)
             return { version: desktop.version, channel: "installer", unavailable: null, phase: "idle", error: null, receivedBytes: 0, totalBytes: null, available: null };
+          // The window's state (YN-221 S8): a desktop from before it lacks the command, and Tauri refuses it as one it
+          // does not have; a current one may refuse it itself, not answer, or answer what is not a state.
+          if (command === "desktop_window_state") {
+            if (desktop.window === "refuse") throw "The window's state is only available in the selected workspace.";
+            if (desktop.window === "hang") return new Promise(() => {});
+            if (desktop.window) return desktop.window;
+            throw "desktop_window_state not allowed. Command not found";
+          }
           throw new Error(`command ${command} not allowed`);
         },
       },
@@ -109,7 +143,11 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
     return { ok: status === 200, status, json: async () => JSON.parse(text), text: async () => text };
   };
   w.fetch = async (url, init = {}) => {
-    calls.push({ url, method: init.method || "GET" });
+    calls.push({ url, method: init.method || "GET", visibility: init.headers?.["X-Yuzuno-Visibility"] ?? null });
+    if (url.endsWith("/api/diagnostics/runtime")) {
+      if (runtime === "older core") return respond("<!doctype html>", 404);
+      return respond(runtime);
+    }
     if (url.endsWith("/api/health")) {
       if (!state.health) throw new TypeError("Failed to fetch");
       return respond(health);
@@ -361,6 +399,110 @@ test("in the desktop app its version comes from the update status it already ans
   } finally {
     q.close();
   }
+});
+
+test("Copy diagnostics adds Core's activity by route template and the page's visibility, CPU by thread role, and the page's refresh reads; no ID, path or name it does not know (YN-221 S8)", async () => {
+  const p = await mount();
+  try {
+    await waitFor(() => railShows(p, "Mori"), "the app is drawn");
+    assert.equal(p.calls.filter((c) => c.url.endsWith("/api/diagnostics/runtime")).length, 0, "nothing reads it until the text is made");
+    await openDiagnostics(p);
+    await previewAndCopy(p);
+    await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
+    const text = p.copied[0];
+    assert.match(text, /^Core activity: since 2026-11-23T07:00:00Z, read \S+; 788 requests on 10 routes, by what each page said of itself \(visible, hidden, not said\)$/m);
+    // The two entries' /api/workspace together; the 8 with the most requests, most first.
+    assert.match(text, /^ {2}1\. GET \/api\/workspace: 320 \(visible 260, hidden 60, not said 0\), 4\.0 MiB sent$/m);
+    assert.match(text, /^ {2}2\. GET \/api\/home: 200 \(visible 150, hidden 50, not said 0\), 50\.0 MiB sent$/m);
+    assert.match(text, /^ {2}3\. GET \/api\/home\/needs: 90 \(visible 0, hidden 90, not said 0\), 0\.5 MiB sent$/m);
+    assert.match(text, /^ {2}4\. GET \/api\/agents\/\{id\}: 80 /m);
+    assert.match(text, /^ {2}8\. \(unnamed\): 7 \(visible 7, hidden 0, not said 0\), 0\.0 MiB sent$/m, "a label that looks like an ID is counted, not named");
+    assert.doesNotMatch(text, /^ {2}9\./m, "at most 8 routes");
+    assert.match(text, /^ {2}CPU: process 20\.00 s; yz-async 9\.00 s \(32 threads\), yz-blocking 6\.00 s \(9 threads\), other 1\.00 s \(2 threads\); labelled 60%, not attributed 40%$/m);
+    assert.match(text, /^Page visibility: visible now; visible \d+ s, hidden 0 s since load; \d+ changes? recorded, last \d+: \+0 s load visible/m);
+    assert.match(text, /^Refresh reads since load: .*workspace \d+ made/m);
+    for (const word of ["8f1d2c3b", "RuntimeNoteSentinel", "ThreadSentinel", "http GET /api/home", "ws-private-id"]) assert.ok(!text.includes(word), `${word} is not copied`);
+    assert.equal(p.calls.filter((c) => c.url.endsWith("/api/diagnostics/runtime")).length, 1, "read once, for this text");
+    assert.ok(!(p.w.localStorage.getItem("yuzuno.diagnostics.v1") || "").includes("yz-async"), "the runtime read is not stored");
+    assert.equal(sent(p).length, 0, "copying sends nothing");
+  } finally {
+    p.close();
+  }
+  const q = await mount({ runtime: "older core" });
+  try {
+    await waitFor(() => railShows(q, "Mori"), "the app is drawn");
+    await openDiagnostics(q);
+    await previewAndCopy(q);
+    await waitFor(() => q.copied.length === 1, "the diagnostics are copied");
+    assert.match(q.copied[0], /^Core activity: unknown \(this Core does not report it, \S+\)$/m);
+    assert.match(q.copied[0], /^Core: 2026\.10\.18-core\.11 /m, "the rest is still there");
+  } finally {
+    q.close();
+  }
+});
+
+test("each request says whether the page was hidden when it asked (YN-221 S8)", async () => {
+  const p = await mount();
+  try {
+    await waitFor(() => railShows(p, "Mori"), "the app is drawn");
+    const reads = p.calls.filter((c) => c.url.endsWith("/api/workspace"));
+    assert.ok(reads.length >= 1 && reads.every((c) => c.visibility === "visible"), JSON.stringify(reads));
+  } finally {
+    p.close();
+  }
+  const q = await mount({ hidden: true });
+  try {
+    await waitFor(() => q.calls.some((c) => c.url.endsWith("/api/workspace")), "the workspace is read");
+    const reads = q.calls.filter((c) => c.url.endsWith("/api/workspace"));
+    assert.ok(reads.every((c) => c.visibility === "hidden"), JSON.stringify(reads));
+  } finally {
+    q.close();
+  }
+});
+
+test("in the desktop app its window's state is given from the desktop's own report; one from before it says unknown (YN-221 S8)", async () => {
+  const p = await mount({ named: false, desktop: { version: "0.3.0", window: windowStateReport } });
+  try {
+    await waitFor(() => recovery(p), "the recovery page shows");
+    p.button("Copy diagnostics", recovery(p)).click();
+    await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
+    assert.match(p.copied[0], /^Desktop window: minimized, not focused; read \S+; visible 2 min 05 s, minimized 1 min 02 s, hidden 0 s since it opened; last changes \+0 s visible, \+2 min 05 s minimized$/m);
+    assert.ok(!p.copied[0].includes("PathSentinel"));
+  } finally {
+    p.close();
+  }
+  const q = await mount({ named: false, desktop: { version: "0.2.0" } });
+  try {
+    await waitFor(() => recovery(q), "the recovery page shows");
+    q.button("Copy diagnostics", recovery(q)).click();
+    await waitFor(() => q.copied.length === 1, "the diagnostics are copied");
+    assert.match(q.copied[0], /^Desktop window: unknown \(this desktop app does not report it, \S+\)$/m);
+  } finally {
+    q.close();
+  }
+});
+
+test("a current desktop that refuses, never answers or answers no state says nothing of why; one whose window could not be read says unknown, never a guess (YN-221 S8)", async () => {
+  const copy = async (window) => {
+    const p = await mount({ named: false, desktop: { version: "0.3.0", window } });
+    try {
+      await waitFor(() => recovery(p), "the recovery page shows");
+      p.button("Copy diagnostics", recovery(p)).click();
+      await waitFor(() => p.copied.length === 1, "the diagnostics are copied", 8);
+      return p.copied[0];
+    } finally {
+      p.close();
+    }
+  };
+  const refused = await copy("refuse");
+  assert.match(refused, /^Desktop window: unknown \(it did not say, \S+\)$/m);
+  assert.ok(!refused.includes("selected workspace"), "none of the desktop's own words");
+  assert.match(await copy({ state: "sideways", totals: {} }), /^Desktop window: unknown \(it did not say, \S+\)$/m);
+  assert.match(await copy("hang"), /^Desktop window: unknown \(no answer within 2 s, \S+\)$/m);
+  // Seen visible, then a read failed: unknown now, the time seen kept, the gap counted toward nothing.
+  const unknown = await copy({ state: "unknown", focused: null, totals: { visibleMs: 65_000, minimizedMs: 0, hiddenMs: 0 },
+    changes: [{ sinceStartMs: 0, state: "visible" }, { sinceStartMs: 65_000, state: "unknown" }] });
+  assert.match(unknown, /^Desktop window: unknown now \(the desktop could not read its window\); read \S+; visible 1 min 05 s, minimized 0 s, hidden 0 s since it opened; last changes \+0 s visible, \+1 min 05 s unknown$/m);
 });
 
 test("a record kept by an earlier version is shown by the same rules and stored again without its text; nothing else stored is touched", async () => {
