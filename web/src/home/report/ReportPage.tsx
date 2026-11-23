@@ -15,6 +15,8 @@ import { absolute, duration, relative } from "../format";
 import { readRefreshIssue, type SeenMark } from "../home-api";
 import { homeText } from "../home-text";
 import { SectionBody } from "../SectionBody";
+import { HistoryBodyState } from "../HistoryBodyState";
+import { useHistoryBody, wholeSection } from "../history-bodies";
 import type { BodyDrawn } from "../brief/BriefSectionBody";
 import { BriefStateScope } from "../brief/brief-state";
 import { SectionTime } from "../SectionCard";
@@ -112,7 +114,9 @@ export function ReportPage({
     return () => controller.abort();
   }, [revisionId, link.projectId, link.version]);
   const revision = revised && revisionId !== null && revised.id === revisionId && revised.version === link.version ? revised : null;
-  const shown = place?.kind === "found" ? place.section : revision ?? kept;
+  // A version kept in Home's history index is read whole here (YN-221 S2), also one Home no longer lists.
+  useHistoryBody(link.projectId, place?.kind === "found" ? place.section : revision ?? kept);
+  const shown = wholeSection(link.projectId, place?.kind === "found" ? place.section : revision ?? kept);
   const live = place?.kind === "found" && !place.section.history;
   // A refreshing report (YN-113 R3): its live issue's schedule, and past issues Core keeps out of Home's history.
   // A past issue is read whole from Core and shown read only, above the page's own words (design §3.4).
@@ -137,7 +141,7 @@ export function ReportPage({
   const newer =
     place?.kind === "found" ? place.newer
       : shown && liveNow && liveNow.id === shown.id && liveNow.version > shown.version ? liveNow : null;
-  const parts = useMemo(() => (page ? partsOf(page) : null), [page]);
+  const parts = useMemo(() => (page && !page.bodyOmitted ? partsOf(page) : null), [page]);
   const outline = useMemo(() => (page && parts ? outlineOf(page, parts.flow) : []), [page, parts]);
   const figures = useMemo(() => {
     if (!page || !parts) return [];
@@ -292,7 +296,7 @@ export function ReportPage({
         </p>
         <span className="report-actions" role="group" aria-label={t.actions}>
           {href && <CopyButton text={href} label={t.copyLink} />}
-          {page?.kind === "report" && <CopyButton text={() => reportMarkdown(page, link.projectId, language, time)} label={home.copyReport} />}
+          {page?.kind === "report" && !page.bodyOmitted && <CopyButton text={() => reportMarkdown(page, link.projectId, language, time)} label={home.copyReport} />}
           {live && !oldIssue && shown && changedSinceSeen(shown) && !readOnly && (
             <button type="button" className="quiet-button home-seen" disabled={seeing} onClick={() => void seen()} aria-label={home.seenLabel(shown.title)}>
               {seeing ? <LoaderCircle size={13} className="spin" /> : <Eye size={13} />}
@@ -349,6 +353,7 @@ export function ReportPage({
           </div>
         )}
         {!oldIssue && notice}
+        {page?.bodyOmitted && <HistoryBodyState projectId={link.projectId} section={page} title />}
         {replyable && shown && replying && (
           <CardReply
             section={shown}

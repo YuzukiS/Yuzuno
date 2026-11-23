@@ -1960,6 +1960,25 @@ fieldset.home-ask-options {
 .home-history small {
   color: var(--home-ink-2);
 }
+/* A history entry until it is read whole (YN-221 S2). */
+.history-body-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 6px 0;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.history-body-state > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.history-body-state > strong {
+  color: var(--ink);
+  font-weight: 600;
+}
 
 /* Focus and the needs-you jump */
 .home-view :is(button, a, summary, select, textarea):focus-visible,

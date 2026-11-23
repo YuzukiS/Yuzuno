@@ -1,6 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { readHomeSnapshot } from "./home-api";
+import { HttpError } from "../api";
+import { readHomeSnapshot, readNeedsSnapshot } from "./home-api";
 import type { NeedsYouItem } from "./types";
+
+/** Needs you alone where Core has it (YN-221 S1). A Core without it answers 404 (its page, not JSON), or anything
+ * but Needs you, and Home is read for it instead, for that Workspace from then on. */
+async function readNeeds(signal: AbortSignal, older: { workspaceId: string; home: boolean }, workspaceId: string) {
+  if (older.workspaceId !== workspaceId) Object.assign(older, { workspaceId, home: false });
+  if (!older.home) {
+    try {
+      const needs = await readNeedsSnapshot(signal);
+      if (Array.isArray(needs?.needsYou)) return needs.needsYou;
+    } catch (error) {
+      const unknown = (error instanceof HttpError && error.status === 404) || error instanceof SyntaxError;
+      if (!unknown || signal.aborted) throw error;
+    }
+    older.home = true;
+  }
+  return (await readHomeSnapshot(signal)).needsYou;
+}
 
 /** Home's own reads cover a deferred Ask coming back; away from Home this does. */
 const AWAY_SAFETY_NET_MS = 60_000;
@@ -10,8 +28,8 @@ const AWAY_SAFETY_NET_MS = 60_000;
  * for the Home tab's count, so that it counts what Needs you lists (YN-3).
  * Approvals and questions are counted from the Agent list, which is live;
  * the rest are read from Home's data: Home
- * reports each of its reads, and while Home is closed this reads it again
- * when a Brief changes (revision) and once a minute. The items read are
+ * reports each of its reads, and while Home is closed this reads Needs you
+ * alone (YN-221 S1) when a Brief changes (revision) and once a minute. The items read are
  * returned too, for system notifications (T-188).
  */
 export function useOpenAsks(workspaceId: string, away: boolean, revision: number) {
@@ -26,6 +44,7 @@ export function useOpenAsks(workspaceId: string, away: boolean, revision: number
   // asks for one more after it; only coming back to Home, or another
   // Workspace, drops it, and one never answered ends at the snapshot deadline.
   const reading = useRef<{ controller: AbortController | null; again: boolean }>({ controller: null, again: false });
+  const older = useRef({ workspaceId: "", home: false });
   useEffect(() => {
     if (!away || !workspaceId) return;
     const state = reading.current;
@@ -37,9 +56,9 @@ export function useOpenAsks(workspaceId: string, away: boolean, revision: number
       const controller = new AbortController();
       state.controller = controller;
       state.again = false;
-      readHomeSnapshot(controller.signal)
-        .then((value) => {
-          if (!controller.signal.aborted && Array.isArray(value?.needsYou)) report(value.needsYou);
+      readNeeds(controller.signal, older.current, workspaceId)
+        .then((needsYou) => {
+          if (!controller.signal.aborted && Array.isArray(needsYou)) report(needsYou);
         })
         // The last count stays; Home itself says when it cannot be read.
         .catch(() => {})

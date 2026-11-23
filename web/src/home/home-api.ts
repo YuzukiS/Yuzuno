@@ -5,7 +5,8 @@
 import { api, errorText, HttpError, post, remove } from "../api";
 import { readSnapshot } from "../snapshot-request";
 import type { MessageReceipt } from "../types";
-import type { HomeData, MachineLive, MachineLoad, RefreshCadence, Section, SectionRefresh } from "./types";
+import type { HomeData, MachineLive, MachineLoad, NeedsYouItem, RefreshCadence, Section, SectionRefresh } from "./types";
+import { HISTORY_INDEX, indexRows } from "./history-bodies";
 import type { HomeFile } from "./home-files";
 import { randomId } from "../random-id";
 
@@ -65,13 +66,19 @@ export type LinkedRepositories = {
   links: import("../GitHubLinks").GitHubLink[];
 };
 
+/** Home, its history as an index where Core has one (YN-221 S2): an entry is
+ * read whole where it is shown (history-bodies.ts). */
 export const readHome = (signal?: AbortSignal) =>
-  api<HomeData>("/home", { signal });
+  api<HomeData>("/home", { signal, headers: HISTORY_INDEX }).then(indexRows);
 
 /** Home read under the snapshot deadline (SNAPSHOT_TIMEOUT_MS, YN-221): a
  * read Home and the open Asks make one at a time, so that one Core never
  * answers cannot hold every later read. */
-export const readHomeSnapshot = (signal: AbortSignal) => readSnapshot<HomeData>("/home", signal);
+export const readHomeSnapshot = (signal: AbortSignal) => readSnapshot<HomeData>("/home", signal, HISTORY_INDEX).then(indexRows);
+
+/** Needs you alone (YN-221 S1), for the open Asks' count away from Home. */
+export const readNeedsSnapshot = (signal: AbortSignal) =>
+  readSnapshot<{ generatedAt: string; needsYou: NeedsYouItem[] }>("/home/needs", signal);
 
 /**
  * The section under `key` as Core has it now (YN-38): the live one, else the

@@ -9,6 +9,7 @@ import { arrivalOf, sameSectionLive } from "../home-reply/home-reply-model";
 import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { keepUnchanged, projectDomId, sectionDomId, widgetsDomId } from "./brief-layout";
+import { useHistoryBodies, withBodies } from "./history-bodies";
 import { markOpened, markSeen, readHomeSnapshot, saveHomeOrder, type SeenMark } from "./home-api";
 import { usePhone } from "../phone-layout";
 import { useDelayedPresence, useSurfaceIn } from "../surface";
@@ -145,7 +146,11 @@ export function Home({
   const [reading, setReading] = useState<{ workspaceId: string; value: HomeData } | null>(null);
   // Under Home's scroller, where a Project's page keeps its composer on screen (YN-212 §4.1).
   const [dock, setDock] = useState<HTMLDivElement | null>(null);
-  const data = readOnly ? previewHome : reading?.workspaceId === workspaceId ? reading.value : null;
+  const read = readOnly ? previewHome : reading?.workspaceId === workspaceId ? reading.value : null;
+  // Each history entry read whole where it is shown, in place of its index row (YN-221 S2): every part of Home has
+  // the same section for it.
+  const bodies = useHistoryBodies();
+  const data = useMemo(() => withBodies(read, bodies), [read, bodies]);
   // An Ask "next needs you" chose: shown as its own row's click shows it.
   const jumpToItem = useRef<(item: NeedsYouItem) => void>(() => {});
   const jumped = useRef(0);
@@ -784,11 +789,13 @@ export function Home({
       // else its Agent's, held for the visit (T-18, Lead 2457, 2473; Dev 7's v19). Nothing is written to the card.
       // Its summary gone in a later version, it says so on the same card (Lead 2604), never the old body.
       let path = pinPaths.current.paths.get(id);
-      if (source.state === "shown" && !path) {
+      // A report kept in the history index is drawn once it is read whole: how it shows is fixed by its body.
+      const whole = source.state !== "shown" || !source.section.bodyOmitted;
+      if (source.state === "shown" && whole && !path) {
         path = p.size || cardContent(source.section).kind === "named" ? "card" : "full";
         pinPaths.current.paths.set(id, path);
       }
-      if (source.state === "shown" && (path === "card" || p.size)) {
+      if (source.state === "shown" && whole && (path === "card" || p.size)) {
         const section = source.section;
         const { size, own } = shownSize(section, cardContent(section), p.size ?? null,
           sizable(section) ? (computed) => deckSizes.held(p.projectId, section.id!, computed) : undefined);
