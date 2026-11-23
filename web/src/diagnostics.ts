@@ -423,7 +423,8 @@ export type RuntimeRead = {
   labelledNs: number | null;
   unattributedNs: number | null;
 };
-export type WindowState = "visible" | "minimized" | "hidden";
+/** "unknown": the desktop could not read its window then (desktop/src/window_state_rules.rs), never a guess. */
+export type WindowState = "visible" | "minimized" | "hidden" | "unknown";
 export type WindowRead = {
   at: string;
   state: WindowState;
@@ -556,7 +557,7 @@ async function readRuntime(at: string): Promise<NonNullable<Facts["runtime"]>> {
   }
 }
 
-const WINDOW_STATES = new Set<WindowState>(["visible", "minimized", "hidden"]);
+const WINDOW_STATES = new Set<WindowState>(["visible", "minimized", "hidden", "unknown"]);
 const windowState = (value: unknown): WindowState | null => (typeof value === "string" && WINDOW_STATES.has(value as WindowState) ? (value as WindowState) : null);
 /** The desktop's window state (desktop/src/window_state.rs), reduced to its states and times. */
 export function windowRead(report: unknown, at: string): WindowRead | null {
@@ -613,7 +614,9 @@ export async function gatherFacts(): Promise<Facts> {
     } catch (error) {
       facts.desktop.failed = error instanceof Error && error.message === "timeout" ? "no answer within 2 s" : "it did not say";
     }
-    // Its window's state (YN-221 S8); a desktop from before it does not have the command.
+    // Its window's state (YN-221 S8). Only a command the app does not have (Tauri: "… Command not found", a desktop
+    // from before it) is said to be one it does not report; any other refusal or answer that is not a state says
+    // nothing of why, and none of the bridge's own words are kept.
     facts.window = { now: null, failed: null };
     try {
       if (!invoke) throw new Error("no command bridge");
@@ -621,7 +624,10 @@ export async function gatherFacts(): Promise<Facts> {
       if (!now) throw new Error("no state");
       facts.window.now = now;
     } catch (error) {
-      facts.window.failed = error instanceof Error && error.message === "timeout" ? "no answer within 2 s" : "this desktop app does not report it";
+      const said = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+      facts.window.failed = said === "timeout" ? "no answer within 2 s"
+        : /\bcommand not found\b/i.test(said) ? "this desktop app does not report it"
+          : "it did not say";
     }
   }
   facts.memory = await memory;
@@ -711,7 +717,8 @@ function windowLine(window: WindowRead) {
   const totals = [["visible", window.visibleMs], ["minimized", window.minimizedMs], ["hidden", window.hiddenMs]]
     .filter((entry): entry is [string, number] => entry[1] !== null).map(([name, ms]) => `${name} ${span(ms)}`).join(", ");
   const recent = window.changes.slice(-SHOWN_CHANGES).map((c) => `+${span(c.sinceStartMs)} ${c.state}`).join(", ");
-  return `Desktop window: ${window.state}${window.focused === null ? "" : window.focused ? ", focused" : ", not focused"}; read ${window.at}` +
+  const now = window.state === "unknown" ? "unknown now (the desktop could not read its window)" : window.state;
+  return `Desktop window: ${now}${window.focused === null ? "" : window.focused ? ", focused" : ", not focused"}; read ${window.at}` +
     (totals ? `; ${totals} since it opened` : "") + (recent ? `; last changes ${recent}` : "");
 }
 

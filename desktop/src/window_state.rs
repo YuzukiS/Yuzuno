@@ -7,7 +7,10 @@
 //! The system reports focus, and minimizing and restoring as a resize; it
 //! does not report being covered by another window, nor every show and hide,
 //! so the state is also read again from the window each time an event comes
-//! and each time the page asks. A window another covers counts as visible.
+//! and each time the page asks. A window another covers counts as visible. A
+//! read that fails makes the state unknown, never a guess: what was seen
+//! before stays in the log, and the time until a read works again counts
+//! toward no state.
 
 use crate::{connection, window_state_rules as rules, ConnectionState};
 use serde_json::{json, Value};
@@ -24,13 +27,12 @@ fn now_ms() -> u64 {
 
 /// The state the window is in now, as the system says; None when it can't say.
 fn read(window: &WebviewWindow) -> Option<rules::State> {
-    let shown = window.is_visible().ok()?;
-    let minimized = window.is_minimized().ok()?;
-    Some(rules::State::of(shown, minimized))
+    rules::observed(window.is_visible().ok(), window.is_minimized().ok())
 }
 
+/// Reads the window again; a read that fails is noted as unknown.
 fn refresh(window: &WebviewWindow) {
-    let Some(state) = read(window) else { return };
+    let state = read(window);
     if let Ok(mut log) = LOG.lock() {
         if let Some(log) = log.as_mut() {
             log.note(now_ms(), state);
@@ -41,8 +43,8 @@ fn refresh(window: &WebviewWindow) {
 /// Starts the log for the main window and follows its events.
 pub fn watch(window: &WebviewWindow) {
     let at = now_ms();
-    let state = read(window).unwrap_or(rules::State::Visible);
-    let focused = window.is_focused().unwrap_or(false);
+    let state = read(window);
+    let focused = window.is_focused().ok();
     if let Ok(mut log) = LOG.lock() {
         *log = Some(rules::Log::new(at, state, focused));
     }
@@ -51,7 +53,7 @@ pub fn watch(window: &WebviewWindow) {
         WindowEvent::Focused(focused) => {
             if let Ok(mut log) = LOG.lock() {
                 if let Some(log) = log.as_mut() {
-                    log.focus(*focused);
+                    log.focus(Some(*focused));
                 }
             }
             refresh(&handle);
@@ -82,11 +84,12 @@ pub fn desktop_window_state(
         return Err("The window's state is not recorded.".into());
     };
     let report = log.report(now_ms());
+    // "unknown" where the system could not say; focus null until it said.
     Ok(json!({
-        "state": report.state.name(),
+        "state": rules::name_of(report.state),
         "focused": report.focused,
         "totals": {"visibleMs": report.visible_ms, "minimizedMs": report.minimized_ms, "hiddenMs": report.hidden_ms},
-        "changes": report.changes.iter().map(|c| json!({"sinceStartMs": c.since_start_ms, "state": c.state.name()})).collect::<Vec<_>>(),
+        "changes": report.changes.iter().map(|c| json!({"sinceStartMs": c.since_start_ms, "state": rules::name_of(c.state)})).collect::<Vec<_>>(),
         "dropped": report.dropped,
     }))
 }

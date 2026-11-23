@@ -124,7 +124,14 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
           calls.push({ url: `invoke:${command}` });
           if (command === "desktop_update_status" && desktop.version)
             return { version: desktop.version, channel: "installer", unavailable: null, phase: "idle", error: null, receivedBytes: 0, totalBytes: null, available: null };
-          if (command === "desktop_window_state" && desktop.window) return desktop.window;
+          // The window's state (YN-221 S8): a desktop from before it lacks the command, and Tauri refuses it as one it
+          // does not have; a current one may refuse it itself, not answer, or answer what is not a state.
+          if (command === "desktop_window_state") {
+            if (desktop.window === "refuse") throw "The window's state is only available in the selected workspace.";
+            if (desktop.window === "hang") return new Promise(() => {});
+            if (desktop.window) return desktop.window;
+            throw "desktop_window_state not allowed. Command not found";
+          }
           throw new Error(`command ${command} not allowed`);
         },
       },
@@ -473,6 +480,29 @@ test("in the desktop app its window's state is given from the desktop's own repo
   } finally {
     q.close();
   }
+});
+
+test("a current desktop that refuses, never answers or answers no state says nothing of why; one whose window could not be read says unknown, never a guess (YN-221 S8)", async () => {
+  const copy = async (window) => {
+    const p = await mount({ named: false, desktop: { version: "0.3.0", window } });
+    try {
+      await waitFor(() => recovery(p), "the recovery page shows");
+      p.button("Copy diagnostics", recovery(p)).click();
+      await waitFor(() => p.copied.length === 1, "the diagnostics are copied", 8);
+      return p.copied[0];
+    } finally {
+      p.close();
+    }
+  };
+  const refused = await copy("refuse");
+  assert.match(refused, /^Desktop window: unknown \(it did not say, \S+\)$/m);
+  assert.ok(!refused.includes("selected workspace"), "none of the desktop's own words");
+  assert.match(await copy({ state: "sideways", totals: {} }), /^Desktop window: unknown \(it did not say, \S+\)$/m);
+  assert.match(await copy("hang"), /^Desktop window: unknown \(no answer within 2 s, \S+\)$/m);
+  // Seen visible, then a read failed: unknown now, the time seen kept, the gap counted toward nothing.
+  const unknown = await copy({ state: "unknown", focused: null, totals: { visibleMs: 65_000, minimizedMs: 0, hiddenMs: 0 },
+    changes: [{ sinceStartMs: 0, state: "visible" }, { sinceStartMs: 65_000, state: "unknown" }] });
+  assert.match(unknown, /^Desktop window: unknown now \(the desktop could not read its window\); read \S+; visible 1 min 05 s, minimized 0 s, hidden 0 s since it opened; last changes \+0 s visible, \+1 min 05 s unknown$/m);
 });
 
 test("a record kept by an earlier version is shown by the same rules and stored again without its text; nothing else stored is touched", async () => {

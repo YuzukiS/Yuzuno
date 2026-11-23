@@ -68,7 +68,15 @@ recorded in the diagnostics too.
 - **Desktop window:** whether the window is visible, minimized or hidden and
   whether it has focus, how long it was each since it opened, and its last 8
   changes. A window another window covers counts as visible: the system
-  does not tell the app. A desktop app from before this says `unknown`.
+  does not tell the app. When the desktop could not read its window, the
+  state is `unknown`, never a guess: what it saw before is kept, and the
+  time until a read works again counts toward no state. Focus is left out
+  until the system has said it.
+  - A desktop app from before this says `unknown (this desktop app does not
+    report it)`.
+  - One that does not answer within 2 s says `unknown (no answer within 2 s)`.
+  - One that refuses or answers something else says `unknown (it did not
+    say)`, without the desktop's own words.
 - **WebView:** always `unknown`, because the desktop app does not report it.
 - **Page environment:** the page's browser engine (major version) and
   operating system, as the page reads them. This is never the full user-agent
