@@ -386,7 +386,7 @@ impl Workspace {
     /// oldest first (YN-192).
     pub fn start_review_queue(self: &Arc<Self>) {
         let ws = self.clone();
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc review-queue", async move {
             match ws.stored(|s| s.queued_pr_reviews()).await {
                 Ok(ids) => ids.into_iter().for_each(|id| wait_for_slot(ws.clone(), id)),
                 Err(error) => eprintln!("Queued reviews were not resumed: {error:#}"),

@@ -465,7 +465,7 @@ impl Workspace {
             return;
         }
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc routing-quotas", async move {
             loop {
                 let Some(ws) = weak.upgrade() else { break };
                 let needs = ws.stored(|store| store.routing_policy()).await.map(|p| needs(&p.policy)).unwrap_or_default();

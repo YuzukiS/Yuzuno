@@ -1606,7 +1606,8 @@ async fn events(
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
     let last = headers.get("last-event-id").and_then(|v| v.to_str().ok()).map(str::to_owned)
         .or(query.last_event_id);
-    Sse::new(ws.changes.stream(last.as_deref()))
+    // Its polls, which hyper makes outside any handler, under `sse` (YN-221 S7b).
+    Sse::new(crate::runtime_diag::measured_stream("sse", ws.changes.stream(last.as_deref())))
 }
 async fn catchup(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
     stored_json(&ws, |store| store.catchup()).await

@@ -102,7 +102,8 @@ fn main() -> anyhow::Result<()> {
     } else {
         (None, None)
     };
-    tokio::runtime::Builder::new_multi_thread()
+    // Threads named by role (YN-221 S7b): yz-async workers, yz-blocking pool.
+    yuzuno_workspace::runtime_diag::name_threads(&mut tokio::runtime::Builder::new_multi_thread())
         .enable_all()
         .max_blocking_threads(MAX_BLOCKING_THREADS)
         .build()?

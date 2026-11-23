@@ -828,7 +828,7 @@ impl Workspace {
             return;
         }
         let (weak, wakeup) = (Arc::downgrade(self), self.executor_slots.wakeup.clone());
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc executor-slots", async move {
             loop {
                 // Waits holding only the Weak: a dropped Workspace ends the loop.
                 tokio::select! {

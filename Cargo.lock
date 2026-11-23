@@ -2348,6 +2348,7 @@ dependencies = [
  "libc",
  "minisign-verify",
  "parking_lot",
+ "pin-project-lite",
  "qrcodegen",
  "reqwest",
  "ring",

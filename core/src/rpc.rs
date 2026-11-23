@@ -195,7 +195,7 @@ impl Rpc {
             stopped,
             pid: child.id(),
         });
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("agent codex-rpc", async move {
             let write = async {
                 while let Some(msg) = rx.recv().await {
                     let mut bytes = serde_json::to_vec(&msg)?;
@@ -247,7 +247,7 @@ impl Rpc {
             stopped,
             pid: None,
         });
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("agent codex-rpc", async move {
             let connection = async {
                 let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
                 let mut last_received = Instant::now();
