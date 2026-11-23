@@ -240,7 +240,8 @@ mod tests {
     async fn the_page_its_fallback_and_a_missing_asset_are_never_kept_and_an_unhashed_asset_is_asked_again() {
         let root = tempfile::tempdir().unwrap();
         built(root.path());
-        for (path, status) in [("/", StatusCode::OK), ("/index.html", StatusCode::OK), ("/projects/p1", StatusCode::OK),
+        // The page for any other path keeps the not-found status (see above).
+        for (path, status) in [("/", StatusCode::OK), ("/index.html", StatusCode::OK), ("/projects/p1", StatusCode::NOT_FOUND),
             ("/assets/missing-AbCdEfGh.js", StatusCode::NOT_FOUND), ("/assets/../index.html", StatusCode::NOT_FOUND)] {
             let response = ask(root.path(), None, "GET", path, Some("br")).await;
             assert_eq!((response.status(), kept(&response)), (status, None), "{path}");

@@ -44,7 +44,8 @@ async fn holds(app: &Router, entry: &[(&str, &str)]) {
     let (status, headers, body) = get(app, CHUNK, &with(&[("accept-encoding", "br;q=0")])).await;
     assert_eq!((status, headers["cache-control"].to_str().unwrap(), body.as_slice()), (StatusCode::OK, KEPT, &b"console.log('plain');"[..]));
     assert!(headers.get("content-encoding").is_none());
-    for (path, status) in [("/", StatusCode::OK), ("/some/page", StatusCode::OK), ("/assets/missing-AbCdEfGh.js", StatusCode::NOT_FOUND),
+    // The page for another path is index.html with 404 (updates/assets.rs).
+    for (path, status) in [("/", StatusCode::OK), ("/some/page", StatusCode::NOT_FOUND), ("/assets/missing-AbCdEfGh.js", StatusCode::NOT_FOUND),
         ("/api/health", StatusCode::OK)] {
         let (got, headers, _) = get(app, path, &with(&[("accept-encoding", "br"), ("x-yuzuno-client", "desktop")])).await;
         assert_eq!((got, headers["cache-control"].to_str().unwrap()), (status, "no-store"), "{path}");
