@@ -114,6 +114,8 @@ pub struct Workspace {
     pub store: Arc<Store>,
     /// Live changes for clients (`/api/events`); see `events`.
     pub changes: Arc<crate::events::Events>,
+    /// What both entries served since this process started (YN-221 S7a).
+    pub http_counts: Arc<crate::runtime_diag::Http>,
     pub default_cwd: String,
     pub data_dir: PathBuf,
     pub runtime: Mutex<Value>,
@@ -219,6 +221,7 @@ impl Workspace {
             update_notice_layout: OnceLock::new(),
             store,
             changes: Arc::new(crate::events::Events::new()),
+            http_counts: Arc::default(),
             default_cwd: cwd,
             backups: Arc::new(crate::workspace_backup::online::Backups::open(&data_dir)),
             backup_schedule: Arc::new(crate::workspace_backup::schedule::Planner::open(&data_dir)),
