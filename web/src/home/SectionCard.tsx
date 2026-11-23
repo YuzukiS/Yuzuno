@@ -473,7 +473,10 @@ export const SectionCard = memo(function SectionCard({
           <FoldButton collapsed={folded} onToggle={fold} label={section.title} controls={answerId} />
           {topic !== undefined && <span className="home-sub-of">{t.inTopic(topic)}</span>}
           <span className="home-answer-source">
-            <span id={`${domId}-title`} className="home-answer-name" title={section.title}>{section.title}</span>
+            {/* Its title gives way on one line: whole in its tip, when cut. */}
+            <Tip content={<TipText body={section.title} />} cut describe={false}>
+              <span id={`${domId}-title`} className="home-answer-name">{section.title}</span>
+            </Tip>
             <span aria-hidden="true">·</span>
             <span className="home-answer-then">{shownAnswer.questionKept ? t.askedThen : t.askedNow}</span>
             {badges}
