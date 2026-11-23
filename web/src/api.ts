@@ -1,4 +1,3 @@
-import { pageVisibility } from "./visibility-log";
 export const isTauri = "__TAURI_INTERNALS__" in window;
 export const isNative =
   isTauri ||
@@ -22,6 +21,10 @@ export const API_BASE =
 export const shortcutModifier = /Mac|iPhone|iPad/.test(navigator.platform)
   ? "⌘"
   : "Ctrl";
+
+/** Whether the page is hidden as it asks Core (YN-221 S8, `X-Yuzuno-Visibility`): visibility-log.ts's rule, here
+ * with no import, as tools/update-send.test.mjs loads this module on its own. */
+const pageVisibility = () => (typeof document !== "undefined" && document.visibilityState === "hidden" ? "hidden" : "visible");
 
 export class HttpError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) {
