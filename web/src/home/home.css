@@ -1810,6 +1810,8 @@ fieldset.home-ask-options {
 .home-section.is-answer {
   display: flex;
   flex-direction: column;
+  /* As wide as its place, never its one-line byline's width (a grid's auto column, as a request's Asks are). */
+  min-width: 0;
   padding: 14px 18px 8px;
   border-radius: 12px;
 }
