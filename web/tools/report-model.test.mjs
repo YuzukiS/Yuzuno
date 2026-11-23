@@ -32,7 +32,7 @@ const all = ["answer", "holds", "loss", "method", "evidence", "plain", "refs", "
 test("the page leads with the summary its author named, each block once, then the rest in order with sources and files beside it", () => {
   const report = section("eval", 7, 3, all, { summary: { lead: "answer", visual: "loss", conditions: "holds", size: "wide" }, details: ["method"] });
   const parts = partsOf(report);
-  assert.deepEqual(parts.summary, { lead: "answer", visual: "loss", conditions: "holds", size: "wide" });
+  assert.deepEqual(parts.summary, { lead: "answer", visual: "loss", conditions: "holds", forYou: null, size: "wide" });
   assert.deepEqual(parts.flow, ["method", "evidence", "plain"]);
   assert.deepEqual(parts.sources, ["refs"]);
   assert.deepEqual(parts.attachments, ["shot"]);
@@ -63,8 +63,8 @@ test("a summary or details that do not hold are taken as none, never half-applie
   const withFile = (kind) => partsOf(section("d", 4, 1, all, { summary: { lead: "answer", visual: "shot" } },
     { attachments: [{ name: "a.png", kind, mime: "", size: 1, snapshot: true, mayChange: false, takenAt: "" }] }));
   // A summary kept from before sizes were named has none.
-  assert.deepEqual(withFile("image").summary, { lead: "answer", visual: "shot", conditions: null, size: null });
-  assert.deepEqual(withFile("text").summary, { lead: "answer", visual: null, conditions: null, size: null });
+  assert.deepEqual(withFile("image").summary, { lead: "answer", visual: "shot", conditions: null, forYou: null, size: null });
+  assert.deepEqual(withFile("text").summary, { lead: "answer", visual: null, conditions: null, forYou: null, size: null });
   assert.deepEqual(withFile("text").attachments, ["shot"]);
   // details: only titled Groups directly under the root, never a summary block.
   assert.deepEqual([...named({ details: ["plain", "note", "answer", "method", "missing"] }).details], ["method"]);
@@ -118,7 +118,7 @@ test("YN-16 a summary's visual may be a Group of inputs, the card's live figure"
       note: { type: "Markdown", props: { text: "Oil." } },
     } },
   });
-  assert.deepEqual(summaryOf(report({ type: "Group", props: {}, children: ["vegan", "note"] })), { lead: "lead", visual: "box", conditions: null, size: "wide" });
+  assert.deepEqual(summaryOf(report({ type: "Group", props: {}, children: ["vegan", "note"] })), { lead: "lead", visual: "box", conditions: null, forYou: null, size: "wide" });
   assert.equal(summaryOf(report({ type: "Group", props: {}, children: ["note"] })), null, "a Group of no input is no figure");
 });
 

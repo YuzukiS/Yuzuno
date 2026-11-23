@@ -63,7 +63,7 @@ const body = (text) => ({ root: "body", elements: {
   body: { type: "BriefBody", props: {}, children: ["text"] },
   text: { type: "Markdown", props: { text } },
 } });
-const ids = { spec: 11, question: 12, plain: 13, late: 14, design: 15, old: 16, loose: 17 };
+const ids = { spec: 11, question: 12, plain: 13, late: 14, design: 15, old: 16, loose: 17, steady: 18 };
 const section = (key, kind, title, version, by, extra = {}) => ({ id: ids[key], key, kind, title, version, owner: by,
   updatedAt: ago(20), updatedTurnId: null, body: body(`${title}: what it says.`), attachments: [], refs: {}, seen: null,
   history: false, ...extra });
@@ -109,6 +109,8 @@ function homeData(answered = false, loose = false) {
             card: { task: buildTask, responsible: builder } }),
           // No task: as before.
           section("plain", "report", "Plain notes", 1, mori, read(1)),
+          // R-27: a lead's status of no task, read: the card the page leads with (its banner); "plain" is a Project card.
+          section("steady", "status", "Standing note", 1, mori, { ...read(1), status: { asOf: ago(20), validFor: 31_536_000, stale: false } }),
           // `loose`: an Ask of no task, the Project's own; answered with the rest.
           ...(loose ? [section("loose", "ask", "Which colour?", 1, mori, { ask: { question: "Blue or green?", reply: { freeText: true },
             ...(answered ? { state: "replied", repliedAt: ago(1), replyText: "Blue" } : { state: "open" }) } })] : []),
@@ -255,7 +257,7 @@ test("Reply on a bound card and an Ask on it go to whoever answers for the card 
   assert.deepEqual(p.errors, []);
 });
 
-// YN-212: a card is in its request's block, the block in its group; a card of no request is the Project's own block's.
+// YN-212: a card is in its request's block, the block in its group; a card of no request is in the Project's cards (R-27).
 test("a card whose task is done is in its request's block in Done: a report not read yet with its tag, an archived card with who did it and their session, nothing to reassign (YN-86 §3.4)", async (t) => {
   const p = await openPage();
   t.after(p.close);
@@ -264,7 +266,8 @@ test("a card whose task is done is in its request's block in Done: a report not 
   assert.equal(block(1).closest(".request-group").dataset.group, "needs", "its Ask waits for the user");
   const done = p.document.querySelector(".request-done");
   for (const key of ["late", "design"]) assert.ok(block(2).contains(p.card(key)) && done.contains(p.card(key)), `${key} is in Done, under R-2`);
-  assert.ok(p.card("plain").closest("[data-project-block]"), "a card of no request: the Project's own block");
+  assert.ok(p.card("plain").closest("[data-project-block]"), "a card of no request: the Project's cards");
+  assert.equal(p.card("plain").closest(".request-group").dataset.group, "project", "a group of their own, no request's");
   // The 30-day list keeps what no block shows: not the archived card again.
   done.open = true;
   await tick();
@@ -313,18 +316,27 @@ test("a block whose Ask the user just answered stays in Needs you for the visit,
   assert.deepEqual(p.errors, []);
 });
 
-// PR 1093 R1 (P3): the Project's own block keeps its group for the visit as request blocks do: its last open Ask
-// answered, it stays in Needs you until the next visit.
-test("the Project's own block, its Ask answered, stays in Needs you for the visit", async (t) => {
+// PR 1093 R1 (P3), R-27 §3.5: the Project's own open Ask stands in Needs you on its own, its cards in their group;
+// answered, the Ask stays where it was until the next visit, as a request's block keeps its group.
+test("the Project's own Ask stands in Needs you on its own and, answered, stays there for the visit", async (t) => {
   const p = await openPage({ loose: true });
   t.after(p.close);
-  const group = () => p.document.querySelector(".project-home [data-project-block]")?.closest(".request-group")?.dataset.group;
-  assert.equal(group(), "needs", "its Ask open");
+  const needs = () => p.document.querySelector('.project-home .request-group[data-group="needs"]');
+  const shown = () => needs()?.querySelector('.project-ask [data-section-key="loose"]');
+  const chip = () => p.document.querySelector(".project-home-head .home-chip.is-attention");
+  assert.ok(shown(), "its Ask open, in Needs you");
+  assert.equal(needs().querySelector(".project-ask .home-from").textContent, "Project · From Mori");
+  assert.equal(needs().querySelector(".request-group-title span").textContent, "2", "R-1's block and the Project's Ask");
+  assert.equal(chip().textContent, "2 need you");
+  assert.equal(needs().querySelector("[data-project-block]"), null, "its cards are not in Needs you");
+  assert.equal(p.document.querySelector('.project-view-tabs [data-tab="requests"]').textContent, "Requests 1", "requests only");
   p.state.answered = true;
   p.document.querySelector('.project-home [aria-label="Refresh Home"]').click();
-  await until(() => !p.document.querySelector(".project-home-head .home-chip.is-attention"), "Core's next read: nothing needs the user");
+  await until(() => !chip(), "Core's next read: nothing needs the user");
   await tick(40);
-  assert.equal(group(), "needs", "held where it was");
+  assert.ok(shown(), "held where it was");
+  assert.equal(needs().querySelector(".request-group-title span").textContent, "2", "counted where it is shown");
+  assert.equal(p.document.querySelectorAll('.project-home [data-section-key="loose"]').length, 1, "once on the page");
   assert.deepEqual(p.errors, []);
 });
 

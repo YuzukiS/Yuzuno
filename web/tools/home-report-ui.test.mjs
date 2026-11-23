@@ -97,11 +97,17 @@ const section = (key, id, version, extra = {}) => ({ id, key, kind: "report", ti
   updatedAt: "2026-11-02T10:05:00Z", updatedTurnId: null, body: reportBody(), attachments: [], refs: {}, seen: null, history: false, ...extra });
 const ask = section("paging", 10, 2, { kind: "ask", title: "Rows per page?", body: { root: "b", elements: { b: { type: "BriefBody", props: {}, children: [] } } },
   ask: { question: "How many rows per page?", reply: { options: [{ id: "fifty", label: "50" }], freeText: true }, state: "open" } });
+// R-27: a lead's standing status, read and older than any report here, is the card the project's page leads with (its
+// banner), so each test's own card is one of the Project cards, drawn as a card.
+const steady = { id: 90, key: "steady", kind: "status", title: "Standing note", version: 1, owner, updatedAt: "2026-11-01T09:00:00Z",
+  updatedTurnId: null, body: { root: "s", elements: { s: { type: "BriefBody", props: {}, children: ["t"] }, t: { type: "Markdown", props: { text: "All steady." } } } },
+  attachments: [], refs: {}, seen: { version: 1, at: "2026-11-01T10:00:00Z" }, history: false,
+  status: { asOf: "2026-11-01T09:00:00Z", validFor: 31_536_000, stale: false } };
 const homeData = (sections, history = []) => ({
   generatedAt: "2026-11-02T10:30:00Z", order: ["p1"], needsYou: [],
   projects: [{ project: { id: "p1", name: "atlas-notes" }, agents: { working: 0, idle: 0, waiting: 0, error: 0, offline: 0, total: 0 },
     // Something unseen, so the panel is open (a quiet one starts folded).
-    errors: [], pending: [], jobs: [], unseen: 1, missing: [], brief: { version: 3, sections, history } }],
+    errors: [], pending: [], jobs: [], unseen: 1, missing: [], brief: { version: 3, sections: [...sections, steady], history } }],
 });
 const machine = { at: "2026-11-02T10:30:00Z", cpu: { cores: 4, totalPct: 0, jobsPct: 0, agentsPct: 0, otherPct: 0 },
   memory: { totalMiB: 4096, usedMiB: 0, availableMiB: 4096, jobsMiB: 0, agentsMiB: 0 }, gpus: null, jobs: [] };
@@ -156,8 +162,9 @@ async function openHome(read, incoming = null, answer, project = "p1") {
   page.window.renderHome(incoming);
   await until(() => page.document.querySelector(".project-home, .home-layout"), "Home read");
   // A Project's page draws its cards once its requests are read (YN-212): wait a moment for them, as a reader would.
-  // An open Ask is drawn up front from the first render (W5), so it does not say the requests were read.
-  const drawn = () => [...page.document.querySelectorAll(".project-home [data-section-key]")].some((el) => !el.closest(".request-block-asks"));
+  // An open Ask is drawn up front from the first render (W5; the Project's own in Needs you, R-27), so it does not say
+  // the requests were read.
+  const drawn = () => [...page.document.querySelectorAll(".project-home [data-section-key]")].some((el) => !el.closest(".request-block-asks, .project-ask"));
   for (let i = 0; i < 50 && page.document.querySelector(".project-home") && !drawn(); i++)
     await tick(20);
   await tick(40);
@@ -758,6 +765,32 @@ test("Home reads one at a time: changes while a read is on its way ask for one m
     assert.equal(reads()[2].signal.aborted, true, "the first Workspace's read is dropped");
     held.splice(0).forEach((resolve) => resolve(homeData([])));
     await tick(50);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a Home read Core never answers ends at the snapshot deadline, and the read asked for meanwhile goes next (YN-221)", async () => {
+  let first = true;
+  const page = mount(() => {
+    if (first) {
+      first = false;
+      return new Promise(() => {});
+    }
+    return homeData([section("eval", 7, 3)]);
+  });
+  const reads = () => page.requests.filter((r) => r.url === "/api/home");
+  try {
+    page.window.startProject = "p1";
+    page.window.renderHome(null, 1);
+    await until(() => reads().length === 1, "the first read");
+    page.window.renderHome(null, 2);
+    await tick(200);
+    assert.equal(reads().length, 1, "one read at a time");
+    // SNAPSHOT_TIMEOUT_MS (snapshot-request.ts): 10 s.
+    await until(() => reads().length === 2, "the next read after the deadline", 12_000);
+    await until(() => page.document.querySelector(".project-home, .home-layout"), "Home drawn from it");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();

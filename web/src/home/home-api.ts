@@ -3,6 +3,7 @@
  * client only sends what the user explicitly did, with the versions it showed.
  */
 import { api, errorText, HttpError, post, remove } from "../api";
+import { readSnapshot } from "../snapshot-request";
 import type { MessageReceipt } from "../types";
 import type { HomeData, MachineLive, MachineLoad, RefreshCadence, Section, SectionRefresh } from "./types";
 import type { HomeFile } from "./home-files";
@@ -66,6 +67,11 @@ export type LinkedRepositories = {
 
 export const readHome = (signal?: AbortSignal) =>
   api<HomeData>("/home", { signal });
+
+/** Home read under the snapshot deadline (SNAPSHOT_TIMEOUT_MS, YN-221): a
+ * read Home and the open Asks make one at a time, so that one Core never
+ * answers cannot hold every later read. */
+export const readHomeSnapshot = (signal: AbortSignal) => readSnapshot<HomeData>("/home", signal);
 
 /**
  * The section under `key` as Core has it now (YN-38): the live one, else the

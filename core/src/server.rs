@@ -75,9 +75,9 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         // port and on the phone entry (YN-79).
         .merge(settings_routes())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
-        .with_state(ws)
+        .with_state(ws.clone())
         .merge(mcp);
-    finish(router, updates)
+    finish(router, updates, (ws.http_counts.clone(), crate::runtime_diag::LOCAL))
 }
 
 /// Core's entry for a phone through Tailscale Serve (T-170), on a loopback
@@ -95,8 +95,8 @@ pub fn remote_router(ws: Arc<Workspace>, assets: PathBuf, updates: Option<Arc<cr
         .merge(crate::previews::phone_router())
         .layer(middleware::from_fn(crate::previews::reserved))
         .layer(middleware::from_fn_with_state(Arc::new(entry), remote_browser_boundary))
-        .with_state(ws);
-    finish(router, updates)
+        .with_state(ws.clone());
+    finish(router, updates, (ws.http_counts.clone(), crate::runtime_diag::PHONE))
 }
 
 /// The settings a phone changes as the computer does (YN-79, the user's
@@ -122,11 +122,16 @@ fn settings_routes() -> Router<Arc<Workspace>> {
         .layer(middleware::from_fn(crate::routing_keys::routes::no_agent_credential))
 }
 
-fn finish(router: Router, updates: Option<Arc<crate::updates::controller::Controller>>) -> Router {
+/// Every route of an entry: update admission, then its count under the
+/// entry, route template and method (runtime_diag.rs), inside a task of
+/// its own (`run_to_completion`).
+fn finish(router: Router, updates: Option<Arc<crate::updates::controller::Controller>>,
+    counts: (Arc<crate::runtime_diag::Http>, &'static str)) -> Router {
     if let Some(updates) = updates {
         router.layer(middleware::from_fn_with_state(updates.admission.clone(), update_admission))
             .layer(Extension(updates))
     } else { router }
+    .layer(middleware::from_fn_with_state(counts, crate::runtime_diag::count))
     .layer(middleware::from_fn(run_to_completion))
 }
 
@@ -235,6 +240,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/requests/{id}/respond",post(respond))
         .route("/api/models",get(models))
         .route("/api/diagnostics/memory",get(memory_diagnostics))
+        .route("/api/diagnostics/runtime",get(runtime_diagnostics))
         .route("/api/diagnostics/memory/history",get(memory_history))
         .route("/api/events",get(events))
         .route("/api/collaboration/{operation}",post(collaboration))
@@ -294,6 +300,13 @@ async fn memory_diagnostics(State(ws): State<Arc<Workspace>>, updates: Option<Ex
         crate::heap::diagnostics(&ws.store, &ws.admission, own_permit, ws.stream_ticker_started())
     }).await?;
     Ok(Json(report))
+}
+
+/// What this process served and sent since it started (YN-221 S7a), read
+/// only when asked; see runtime_diag.rs. Off the async workers: it reads
+/// /proc.
+async fn runtime_diagnostics(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {
+    Ok(Json(tokio::task::spawn_blocking(move || crate::runtime_diag::report(&ws)).await?))
 }
 
 /// What /api/health says this is: `product` names it.

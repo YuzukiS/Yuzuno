@@ -585,21 +585,22 @@ test("on Home, a reply that names no section is told only by its very version", 
 });
 
 // R1 839f91d1: a section kept out of view (its author no longer a content
-// editor) is a card of the Project's own block (YN-212: before, the page's
-// closed "Cards from the team"): a reply to it opens the block.
-// W5: an open Ask is in its block's first look, so landing on it opens no block; its card is unfolded and focused.
-test("on Home, the section answered from the team is shown: in its block's first look, unfolded and focused, again on each opening", async (t) => {
+// editor) is the Project's own (YN-212: before, the page's closed "Cards from
+// the team"): a reply to it opens what holds it.
+// W5, R-27 §3.5: the Project's open Ask stands in Needs you, so landing on it opens nothing; its card is unfolded and
+// focused.
+test("on Home, the section answered from the team is shown: in Needs you, unfolded and focused, again on each opening", async (t) => {
   const team = (version) => homeData([section("other", 40, 1)], [], [ask("export-paging", 10, version)]);
-  const block = (page) => page.document.querySelector("[data-project-block]");
+  const group = (page) => page.document.querySelector("[data-project-block]");
   const shown = (page) => page.document.querySelector('[data-section-key="export-paging"]');
   await arrivals([
     ["same version", team(3), askReply, async (page) => {
-      assert.ok(shown(page).closest(".request-block-asks")?.closest("[data-project-block]"), "the Project's block shows it in its first look");
+      assert.ok(shown(page).closest(".project-ask")?.closest('.request-group[data-group="needs"]'), "the Project's Ask, on its own in Needs you");
       assert.equal(note(page), null);
       await focused(page, () => shown(page));
     }],
     ["changed", team(4), askReply, async (page) => {
-      assert.ok(shown(page).closest(".request-block-asks"));
+      assert.ok(shown(page).closest(".project-ask"));
       assert.equal(note(page).closest('[data-section-key="export-paging"]'), shown(page), "the note in the card it answered");
       await focused(page, () => shown(page));
     }],
@@ -610,11 +611,12 @@ test("on Home, the section answered from the team is shown: in its block's first
   shown(page).querySelector(".home-fold").click();
   await tick(40);
   assert.ok(shown(page).querySelector(".home-card-body").hidden, "folded by the user");
-  block(page).querySelector(".request-block-more").click();
-  await until(() => !block(page).hasAttribute("data-open"), "the block folded by the user");
+  // The Project's one other card is the banner alone (R-27): no Project cards group, nothing to open for the Ask.
+  assert.equal(group(page), null);
+  assert.equal(page.document.querySelector(".now-hero")?.dataset.sectionKey, "other");
   page.window.renderHome({ origin: askReply, back, n: 2 });
   await until(() => shown(page) && !shown(page).querySelector(".home-card-body").hidden, "shown again");
-  assert.ok(!block(page).hasAttribute("data-open"), "the block stays as the user folded it: the Ask is in its first look");
+  assert.equal(group(page), null, "nothing opened for it: the Ask is in Needs you");
   await tick(40);
   assert.equal(page.document.activeElement, shown(page));
   assert.ok(note(page).closest('[data-section-key="export-paging"]'));

@@ -5,18 +5,19 @@ import { MessageContent } from "../MessageContent";
 import { Tip, TipText } from "../Tip";
 import { useTimeDisplay } from "../time-preferences";
 import type { Agent } from "../types";
-import { requestDomId } from "./brief-layout";
+import { changedSinceSeen, requestDomId } from "./brief-layout";
 import { openTask } from "./CardResponsible";
 import { CardAgents } from "./card-responsible";
 import { DeckSizes } from "./card-sizes";
 import { absolute, relative } from "./format";
 import type { SeenMark } from "./home-api";
+import { homeText } from "./home-text";
 import { conversation, untitledHint } from "./project-talk";
 import type { ProjectRequest } from "./project-talk-api";
 import { deckCard, deckItems, useDeckPacking } from "./deck-packing";
 import { DeliverableLine, type OpenDeliveredReport } from "./DeliverableLine";
 import { talkText } from "./talk-text";
-import { openAsk, type BlockAction, type BlockFact, type BlockGroup, type ProjectBlock, type RequestBlock, type TaskRow, type Who } from "./request-blocks";
+import { authorOf, openAsk, type BlockAction, type BlockFact, type BlockGroup, type ProjectBlock, type RequestBlock, type TaskRow, type Who } from "./request-blocks";
 import { SectionCard } from "./SectionCard";
 import { SummaryCard } from "./SummaryCard";
 import type { Section } from "./types";
@@ -31,13 +32,21 @@ export const blockText = strings(
     requestsTab: (n: number) => `Requests ${n}`,
     chatTab: "Conversation",
     project: "Project",
+    projectCards: "Project cards",
     projectNote: "Not part of a request",
+    nowLabel: "Where the project stands",
+    now: "Now",
+    nowStale: "Past its validity",
+    nowOpen: (title: string | null) => `for you${title ? ` · ${title}` : ""}`,
+    nowMore: (n: number) => `${n} more · on the status page`,
+    nowCards: (n: number) => `Project cards ${n}`,
     untitled: (hint: string) => `Waiting for a title · ${hint}`,
     newMark: "New",
     actions: { answer: "Answer", resend: "Send again", confirm: "Confirm done", follow: "Follow up" } as Record<BlockAction, string>,
+    /** Beside Confirm done (R-30): not done enough, add to the same request. */
+    followOn: "Follow up",
     actionLabel: (action: string, n: number) => `${action}: R-${n}`,
     more: (tasks: number, said: number) => `${tasks ? `${tasks} ${tasks === 1 ? "task" : "tasks"} · ` : ""}${said} in the conversation`,
-    projectMore: (n: number) => `${n} ${n === 1 ? "card" : "cards"}`,
     less: "Fold",
     fact: {
       unconfirmed: "Not confirmed delivered",
@@ -54,6 +63,7 @@ export const blockText = strings(
       waiting: "Delivered · the project is looking at it",
       stale: "Card past its validity",
       by: (name: string) => `by ${name}`,
+      settle: { waiting: "Waiting for you to confirm", confirmed: "Confirmed by you" } as Record<Settle, string>,
     },
     alsoFor: (ns: number[]) => `Also for ${ns.map((n) => `R-${n}`).join(", ")}`,
     joined: (task: string, title: string, home: number) => `Joined ${task} “${title}” · its card is under R-${home}`,
@@ -81,13 +91,20 @@ export const blockText = strings(
     requestsTab: (n) => `请求 ${n}`,
     chatTab: "对话",
     project: "项目",
+    projectCards: "项目卡",
     projectNote: "不属于任何请求",
+    nowLabel: "项目近况",
+    now: "近况",
+    nowStale: "已过有效期",
+    nowOpen: (title) => `项待你${title ? ` · ${title}` : ""}`,
+    nowMore: (n) => `另 ${n} 项 · 在状态页`,
+    nowCards: (n) => `项目卡 ${n}`,
     untitled: (hint) => `等待标题 · ${hint}`,
     newMark: "新",
     actions: { answer: "回答", resend: "再发一次", confirm: "确认完成", follow: "追问" },
+    followOn: "继续跟进",
     actionLabel: (action, n) => `${action}：R-${n}`,
     more: (tasks, said) => `${tasks ? `${tasks} 个任务 · ` : ""}对话 ${said} 条`,
-    projectMore: (n) => `${n} 张卡`,
     less: "收起",
     fact: {
       unconfirmed: "没确认送达",
@@ -104,6 +121,7 @@ export const blockText = strings(
       waiting: "已送达 · 项目在看",
       stale: "卡片已过有效期",
       by: (name) => `${name} 写`,
+      settle: { waiting: "等你确认", confirmed: "你已确认" },
     },
     alsoFor: (ns) => `也服务于 ${ns.map((n) => `R-${n}`).join("、")}`,
     joined: (task, title, home) => `并入 ${task}「${title}」· 卡片在 R-${home} 下`,
@@ -126,6 +144,12 @@ export const blockText = strings(
     olderRequests: "读更早的请求",
   },
 );
+
+/**
+ * Whether the user has settled a request (R-30): delivered and waiting for the user's confirmation, or confirmed by
+ * them (YN-184); a task being done is neither.
+ */
+type Settle = "waiting" | "confirmed";
 
 /** What every block's cards need from the page. */
 export type BlockCommon = {
@@ -162,7 +186,7 @@ export const requestTitle = (request: ProjectRequest, untitled: (hint: string) =
   request.title?.trim() || untitled(untitledHint(request.text));
 
 /** A time as the page says it, the exact one in its tip. */
-function When({ at }: { at: string | null | undefined }) {
+export function When({ at }: { at: string | null | undefined }) {
   const language = useLanguage();
   const time = useTimeDisplay();
   if (!at) return null;
@@ -173,8 +197,11 @@ function When({ at }: { at: string | null | undefined }) {
   );
 }
 
-/** The fact's line and the line under it (§3.2). */
-function FactLines({ fact }: { fact: BlockFact }) {
+/**
+ * The fact's line and the line under it (§3.2). A settled request's line under it says so first (R-30): waiting for
+ * the user's confirmation, or confirmed by them, then when they confirmed it.
+ */
+function FactLines({ fact, settle, confirmedAt }: { fact: BlockFact; settle: Settle | null; confirmedAt?: string | null }) {
   const t = blockText(useLanguage());
   const agents = useContext(CardAgents);
   const name = (who: Who | null, fallback: string) => (who ? agents.get(who.agentId)?.name || who.name : "") || fallback;
@@ -223,6 +250,10 @@ function FactLines({ fact }: { fact: BlockFact }) {
       text = t.fact.working(name(fact.who, fact.task));
       meta = <When at={fact.at} />;
       break;
+  }
+  if (settle) {
+    const mark = <span className="request-block-settle" data-confirmation={settle}>{t.fact.settle[settle]}</span>;
+    meta = settle === "confirmed" && confirmedAt ? <>{mark} · <When at={confirmedAt} /></> : meta ? <>{mark} · {meta}</> : mark;
   }
   return (
     <p className="request-block-fact-text">
@@ -318,6 +349,7 @@ export function RequestBlockView({
   // Its own open Ask is the fact, shown whole below: no line repeats its question.
   const askedHere = fact.kind === "ask" && fact.home === null && asks.length > 0;
   const elsewhere = block.askedElsewhere;
+  const settle: Settle | null = action === "confirm" ? "waiting" : block.group === "done" ? "confirmed" : null;
   return (
     <article
       className="request-block"
@@ -356,22 +388,39 @@ export function RequestBlockView({
       {!askedHere && (
         <div className="request-block-fact">
           <span className="request-block-fact-icon" data-kind={fact.kind}>{FACT_ICON[fact.kind]}</span>
-          <FactLines fact={fact} />
+          <FactLines fact={fact} settle={settle} confirmedAt={request.confirmedAt} />
         </div>
       )}
       {action && !common.readOnly && (
         <div className="request-block-act">
-          <button
-            type="button"
-            className={action === "follow" ? "request-block-action" : "request-block-action is-primary"}
-            data-action={action}
-            aria-label={t.actionLabel(label, request.n)}
-            disabled={busy}
-            onClick={() => onAction(action, request.n, fact.kind === "ask" ? fact.key : undefined)}
-          >
-            {busy ? <LoaderCircle size={12} className="spin" aria-hidden="true" /> : action === "follow" ? <Send size={12} aria-hidden="true" /> : null}
-            {label}
-          </button>
+          <span className="request-block-actions">
+            <button
+              type="button"
+              className={action === "follow" ? "request-block-action" : "request-block-action is-primary"}
+              data-action={action}
+              aria-label={t.actionLabel(label, request.n)}
+              disabled={busy}
+              onClick={() => onAction(action, request.n, fact.kind === "ask" ? fact.key : undefined)}
+            >
+              {busy ? <LoaderCircle size={12} className="spin" aria-hidden="true" /> : action === "follow" ? <Send size={12} aria-hidden="true" /> : null}
+              {label}
+            </button>
+            {/* Not done enough (R-30): the same request's follow-up in the composer; it confirms nothing, and the
+                request keeps what it delivered and keeps waiting for the confirmation. */}
+            {action === "confirm" && (
+              <button
+                type="button"
+                className="request-block-action"
+                data-action="follow"
+                aria-label={t.actionLabel(t.followOn, request.n)}
+                disabled={busy}
+                onClick={() => onAction("follow", request.n)}
+              >
+                <Send size={12} aria-hidden="true" />
+                {t.followOn}
+              </button>
+            )}
+          </span>
           {error && (
             <p className="inline-error request-block-error" role="alert">
               {error}
@@ -591,83 +640,96 @@ function RequestThread({ request }: { request: ProjectRequest }) {
   );
 }
 
-/** The Project's own block (§2.2 rule 3): what belongs to no request, one line each until opened. */
-export function ProjectBlockView({ block, open, onToggle, common }: { block: ProjectBlock; open: boolean; onToggle: () => void; common: BlockCommon }) {
+/**
+ * The Project's own open Asks in Needs you (R-27 §3.5): each its own entry, as an approval stands, saying it is the
+ * Project's and who asked, answerable there. One answered in this visit stays where it was (useAsksUpFront).
+ */
+export function ProjectAsks({ block, common }: { block: ProjectBlock; common: BlockCommon }) {
   const language = useLanguage();
   const t = blockText(language);
-  // Its open Asks in the first look, answerable there (W5); the rest one line each until opened.
-  const asks = block.asks.filter(common.upFront);
-  const all: Section[] = [...block.asks.filter((ask) => !asks.includes(ask)), ...block.sections];
-  // Opened, its cards keep their authors' sizes and are packed as the Project's deck packed them (YN-3,
-  // deck-packing.ts), in a deck of the block's own width.
+  const th = homeText(language);
+  return block.asks.filter(common.upFront).map((ask) => (
+    <div key={ask.key} className="home-approval project-ask" data-project-ask={ask.key}>
+      <span className="home-from">
+        {t.project} · {th.from(authorOf(ask))}
+      </span>
+      <AskCard section={ask} common={common} />
+    </div>
+  ));
+}
+
+/**
+ * The Project's cards that belong to no request (R-27 §3.6): a group of their own after In progress, closed until the
+ * user, a jump or a page with no request opens it; opened, the Project's deck at its authors' sizes, its Asks answered
+ * before this visit among them as their answer cards (YN-3, the user's D3: Reply again, the owner's update in place).
+ * Not drawn while closed, nor with nothing to hold but the card the banner shows (ProjectNow is then its one place).
+ */
+export function ProjectCards({
+  block,
+  count,
+  open,
+  onToggle,
+  common,
+}: {
+  block: ProjectBlock;
+  /** What it holds (projectCardsCount): none, and it is not drawn. */
+  count: number;
+  open: boolean;
+  /** The group opened or closed, by the user or by a jump (the details' own toggle). */
+  onToggle: (open: boolean) => void;
+  common: BlockCommon;
+}) {
+  const t = blockText(useLanguage());
+  const answered = block.asks.filter((ask) => !common.upFront(ask));
+  // New while closed, as the Project's block said it (#1102 R1): only for what the group holds, not an Ask up front.
+  const unread = [...answered, ...block.sections].some(changedSinceSeen);
+  if (count === 0) return null;
+  return (
+    <details
+      className="request-group project-cards"
+      data-group="project"
+      data-block-key={block.key}
+      data-project-block=""
+      data-open={open ? "" : undefined}
+      open={open}
+      onToggle={(event) => onToggle(event.currentTarget.open)}
+    >
+      <summary className="request-group-title">
+        {t.projectCards} <span>{count}</span>
+        {unread && <span className="home-chip is-new">{t.newMark}</span>}
+        <small className="request-group-note">{t.projectNote}</small>
+      </summary>
+      {open && <ProjectDeck sections={[...answered, ...block.sections]} common={common} />}
+    </details>
+  );
+}
+
+/** The Project's cards, opened: they keep their authors' sizes and are packed as the Project's deck packed them (YN-3,
+ * deck-packing.ts), in a deck of the group's own width. An answered Ask is its answer card there. */
+function ProjectDeck({ sections, common }: { sections: readonly Section[]; common: BlockCommon }) {
   const grid = useRef<HTMLDivElement>(null);
   useDeckPacking(grid, deckItems, deckCard);
   return (
-    <article className="request-block" data-block-key={block.key} data-project-block="" data-group={block.group} data-open={open ? "" : undefined} tabIndex={-1}>
-      <header className="request-block-head">
-        <span className="request-block-n">{t.project}</span>
-        <button type="button" className="request-block-title" aria-expanded={open} onClick={onToggle}>
-          {t.projectNote}
-        </button>
-        {block.unread && <span className="home-chip is-new">{t.newMark}</span>}
-      </header>
-      {asks.length > 0 && (
-        <div className="request-block-asks" role="group" aria-label={t.asks(t.projectNote)}>
-          {asks.map((ask) => (
-            <AskCard key={ask.key} section={ask} common={common} />
-          ))}
-        </div>
-      )}
-      {all.length === 0 ? null : open ? (
-        <div className="request-block-body project-block-cards">
-          <div ref={grid} className="home-brief">
-            {all.map((section) =>
-              section.kind === "ask" ? (
-                <SectionCard
-                  key={section.key}
-                  section={section}
-                  projectId={common.projectId}
-                  workspaceId={common.workspaceId}
-                  agents={common.agents}
-                  readOnly={common.readOnly}
-                  onSeen={common.onSeen}
-                  onChanged={common.onChanged}
-                  notice={common.notice?.(section)}
-                />
-              ) : (
-                <SummaryCard
-                  key={section.key}
-                  section={section}
-                  projectId={common.projectId}
-                  workspaceId={common.workspaceId}
-                  agents={common.agents}
-                  deck
-                  readOnly={common.readOnly}
-                  onSeen={common.onSeen}
-                  notice={common.notice?.(section)}
-                />
-              ),
-            )}
-          </div>
-        </div>
-      ) : (
-        <ul className="project-block-lines">
-          {all.map((section) => (
-            <li key={section.key}>
-              <button type="button" onClick={onToggle}>
-                <span className="project-block-line-title">{section.title}</span>
-                <span className="project-block-line-time">{relative(section.updatedAt, language)}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {all.length > 0 && (
-        <button type="button" className="request-block-more" aria-expanded={open} onClick={onToggle}>
-          <ChevronDown size={13} aria-hidden="true" />
-          {open ? t.less : t.projectMore(all.length)}
-        </button>
-      )}
-    </article>
+    <div className="project-block-cards">
+      <div ref={grid} className="home-brief">
+        {sections.map((section) =>
+          section.kind === "ask" ? (
+            <AskCard key={section.key} section={section} common={common} />
+          ) : (
+            <SummaryCard
+              key={section.key}
+              section={section}
+              projectId={common.projectId}
+              workspaceId={common.workspaceId}
+              agents={common.agents}
+              deck
+              readOnly={common.readOnly}
+              onSeen={common.onSeen}
+              notice={common.notice?.(section)}
+            />
+          ),
+        )}
+      </div>
+    </div>
   );
 }

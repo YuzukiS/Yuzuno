@@ -4,7 +4,10 @@
 // joining is pure; the page that draws it is W3's.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { askUpFront, authorOf, blockCounts, blockOfSection, isPlaceholder, pageBlocks } from "../src/home/request-blocks.ts";
+import {
+  askUpFront, authorOf, blockCounts, blockOfSection, forYouTodo, isPlaceholder, pageBlocks, projectCardsCount, projectLine, splitLead,
+} from "../src/home/request-blocks.ts";
+import { summaryOf } from "../src/home/report/report-model.ts";
 
 const NOW = Date.now();
 const at = (minutes) => new Date(NOW - minutes * 60_000).toISOString();
@@ -174,7 +177,9 @@ test("each request is one block, and the order is needs you, then in progress ne
   const { blocks, project } = page("asked");
   assert.deepEqual(blocks.map((b) => b.request.n).sort((a, b) => a - b), [7, 12, 14, 19, 21]);
   assert.deepEqual(blocks.map((b) => [b.request.n, b.group]), [[7, "needs"], [21, "doing"], [19, "doing"], [14, "doing"], [12, "doing"]]);
-  assert.deepEqual(blockCounts(blocks, project), { needs: 1, doing: 5, done: 0 }, "the Project's own block counted where it stands");
+  assert.ok(project.sections.length > 0, "the Project has cards of its own");
+  // R-27 §3.7: requests only; the Project's own block is no request.
+  assert.deepEqual(blockCounts(blocks), { needs: 1, doing: 4, done: 0 }, "the Project's own block is not counted");
 });
 
 test("a task serving two requests is one row under the first; the other names it and shares its fact (R-12, R-14)", () => {
@@ -228,13 +233,15 @@ test("two tasks, two deliverables, the newest result first; a card written since
 test("the Project's own block: every live section bound to no request's task, never a placeholder", () => {
   const { blocks, project } = page("working");
   assert.deepEqual(project.sections.map((s) => s.key), ["development", "desktop-check"]);
-  assert.deepEqual([project.group, project.asks], ["doing", []]);
+  assert.deepEqual(project.asks, []);
+  assert.equal("group" in project, false, "in no group of requests (R-27)");
   assert.equal(blockOfSection("development", blocks, project), "project");
-  // An open Ask of its own puts it in Needs you.
+  // An open Ask of its own is shown up front (in Needs you, R-27 §3.5): a jump to it opens nothing.
   const pick = section("pick", "ask", "选一个", 1, 3, lead, { ask: ask("选哪个？", "open") });
   const withAsk = pageBlocks([], [pick, ...neighbours().sections.slice(-2)]).project;
-  assert.deepEqual([withAsk.group, withAsk.asks.map((s) => s.key)], ["needs", ["pick"]]);
-  assert.equal(askUpFront("pick", [], withAsk), true, "its open Ask is in its first look too");
+  assert.deepEqual(withAsk.asks.map((s) => s.key), ["pick"]);
+  assert.equal(askUpFront("pick", [], withAsk), true, "its open Ask is up front");
+  assert.equal(blockOfSection("pick", [], withAsk), "project");
   assert.equal(pageBlocks([], []).project, null);
   // A section bound to a task no request has is the Project's too; a history entry is not.
   const loose = section("yn-300", "status", "无请求的任务", 1, 4, lead, { card: binding("YN-300", "doing", null) });
@@ -336,4 +343,85 @@ test("a task's card and Ask kept live and in history count once, the live one fi
   const row = blocks[0].tasks[0];
   assert.deepEqual([row.card.title, row.earlier.length], ["现在", 0], "a removed section is no card of the task");
   assert.equal(blocks[0].unread, true, "changed since seen");
+});
+
+// R-27 §3.1: the card the project's page leads with. Only a lead's cards of no task; the newest status, stale or not,
+// else the newest report; the first of two written at once; any member's when the project names no leads.
+test("the banner's card: a lead's newest status of no task, stale or not, else its newest report", () => {
+  ids = 2000;
+  const older = section("week", "status", "This week", 1, 30, lead, { status: status(30) });
+  const stale = section("development", "status", "开发状态", 1, 10, lead, { status: status(10, true) });
+  const bound = section("yn-300", "status", "绑任务的卡", 1, 1, lead, { card: binding("YN-300", "doing", null), status: status(1) });
+  const other = section("notes", "status", "成员的卡", 1, 2, lead2, { status: status(2) });
+  const newer = section("summary", "report", "周报", 1, 0, lead);
+  assert.equal(projectLine([older, stale, bound, other, newer], ["lead"])?.key, "development", "a status before a report; stale, still it");
+  assert.equal(projectLine([older, bound, other, newer], ["lead"])?.key, "week");
+  assert.equal(projectLine([bound, other, newer], ["lead"])?.key, "summary", "no status of a lead's: its newest report");
+  assert.equal(projectLine([bound, newer], ["lead2"]), null, "nothing a lead wrote");
+  assert.equal(projectLine([other, older], null)?.key, "notes", "no leads named: any member's, the newest");
+  const twin = section("twin", "status", "同时写的", 1, 30, lead, { status: status(30) });
+  assert.equal(projectLine([older, twin], ["lead"])?.key, "week", "the first of two written at the same time");
+  assert.equal(projectLine([], null), null);
+});
+
+// R-27 §3.2: the heading is the lead's bold opening, else its first sentence, else all of it, as plain text.
+test("the banner's heading: a bold opening, else the first sentence, else the whole lead", () => {
+  assert.deepEqual(splitLead("**core.38 已安装，新版项目首页已启用。** 项目页正在修复长对话。"), { head: "core.38 已安装，新版项目首页已启用。", rest: "项目页正在修复长对话。" });
+  assert.deepEqual(splitLead("core.38 已安装。项目页正在修复长对话。"), { head: "core.38 已安装。", rest: "项目页正在修复长对话。" }, "a full stop inside a version is no sentence's end");
+  assert.deepEqual(splitLead("Two cards run. One waits for `you`."), { head: "Two cards run.", rest: "One waits for `you`." }, "the rest stays Markdown");
+  assert.deepEqual(splitLead("Ready? Ship it"), { head: "Ready?", rest: "Ship it" });
+  assert.deepEqual(splitLead("The [release](https://example.com/r) is out"), { head: "The release is out", rest: null }, "no sentence's end: all of it, plain");
+  assert.deepEqual(splitLead("Done."), { head: "Done.", rest: null });
+  assert.equal(splitLead(""), null);
+  assert.equal(splitLead(null), null);
+});
+
+/** A status whose summary names `forYou` (R-27 §3.3). */
+function withForYou(items, { title = "桌面0.6.0待你有空实测", type = "Checklist", slot = "todo" } = {}) {
+  return section("development", "status", "开发状态", 2, 5, lead, {
+    status: status(5),
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", forYou: slot, size: "wide" } }, children: ["lead", "todo", "mine"] },
+      lead: { type: "Markdown", props: { text: "**core.38 已安装。** 其余在做。" } },
+      todo: type === "Checklist" ? { type: "Checklist", props: { title, items } } : { type: "Plan", props: { steps: items.map((i) => ({ id: i.id, text: i.text, state: "todo" })) } },
+      mine: { type: "Checklist", props: { items: [{ id: "self", text: "Agent 自己的待办", done: false }] } },
+    } },
+  });
+}
+
+test("what the user is asked to do: only the Checklist the author names forYou, its open items in order", () => {
+  const items = [
+    { id: "a", text: "在 0.5.0 里检查更新", done: false }, { id: "b", text: "已做完的", done: true },
+    { id: "c", text: "拖文件进输入框", done: false }, { id: "d", text: "第三项", done: false },
+  ];
+  assert.deepEqual(forYouTodo(withForYou(items)), {
+    title: "桌面0.6.0待你有空实测", open: 3,
+    items: [{ id: "a", text: "在 0.5.0 里检查更新" }, { id: "c", text: "拖文件进输入框" }, { id: "d", text: "第三项" }],
+  });
+  assert.equal(summaryOf(withForYou(items))?.forYou, "todo");
+  assert.equal(forYouTodo(withForYou(items, { title: "" }))?.title, null, "no title: none");
+  assert.equal(forYouTodo(withForYou(items.map((i) => ({ ...i, done: true })))), null, "every item done: nothing for the user");
+  assert.equal(forYouTodo(withForYou(items, { type: "Plan" })), null, "a Plan named forYou is taken as none");
+  assert.equal(summaryOf(withForYou(items, { type: "Plan" }))?.lead, "lead", "and the summary still holds");
+  assert.equal(forYouTodo(withForYou(items, { slot: "lead" })), null, "the lead's block is no forYou");
+  // No forYou named: an Agent's own Checklist on the card is never the user's.
+  const plain = withForYou(items);
+  delete plain.body.elements.body.props.summary.forYou;
+  assert.equal(forYouTodo(plain), null);
+  assert.equal(summaryOf(plain)?.forYou, null);
+  assert.equal(forYouTodo(section("x", "status", "No body", 1, 1, lead)), null);
+});
+
+// R-27 §3.6: the group holds the Project's cards, the banner's among them, and its Asks answered before this visit;
+// with only the banner's card, no group: the banner is that card's one place (the lead's call, seq 12072).
+test("the Project cards group's count: its cards and answered Asks, none when only the banner's card is there", () => {
+  ids = 2100;
+  const dev = section("development", "status", "开发状态", 1, 5, lead, { status: status(5) });
+  const notes = section("notes", "report", "Notes", 1, 9, lead);
+  const block = (sections) => ({ kind: "project", key: "project", sections, asks: [], unread: false, last: 0 });
+  assert.equal(projectCardsCount(block([dev, notes]), 0, dev), 2, "both: the banner's card is in the group too");
+  assert.equal(projectCardsCount(block([dev]), 0, dev), 0, "only the banner's: no group");
+  assert.equal(projectCardsCount(block([dev]), 1, dev), 2, "and an answered Ask: a group of both");
+  assert.equal(projectCardsCount(block([dev]), 0, null), 1, "no banner: every card is the group's");
+  assert.equal(projectCardsCount(null, 0, null), 0);
 });

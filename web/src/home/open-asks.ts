@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { readHome } from "./home-api";
+import { readHomeSnapshot } from "./home-api";
 import type { NeedsYouItem } from "./types";
 
 /** Home's own reads cover a deferred Ask coming back; away from Home this does. */
@@ -24,7 +24,7 @@ export function useOpenAsks(workspaceId: string, away: boolean, revision: number
   );
   // One read at a time, as Home's (YN-221): a change while one is on its way
   // asks for one more after it; only coming back to Home, or another
-  // Workspace, drops it.
+  // Workspace, drops it, and one never answered ends at the snapshot deadline.
   const reading = useRef<{ controller: AbortController | null; again: boolean }>({ controller: null, again: false });
   useEffect(() => {
     if (!away || !workspaceId) return;
@@ -37,7 +37,7 @@ export function useOpenAsks(workspaceId: string, away: boolean, revision: number
       const controller = new AbortController();
       state.controller = controller;
       state.again = false;
-      readHome(controller.signal)
+      readHomeSnapshot(controller.signal)
         .then((value) => {
           if (!controller.signal.aborted && Array.isArray(value?.needsYou)) report(value.needsYou);
         })

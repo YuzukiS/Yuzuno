@@ -9,7 +9,7 @@ import { arrivalOf, sameSectionLive } from "../home-reply/home-reply-model";
 import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { keepUnchanged, projectDomId, sectionDomId, widgetsDomId } from "./brief-layout";
-import { markOpened, markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
+import { markOpened, markSeen, readHomeSnapshot, saveHomeOrder, type SeenMark } from "./home-api";
 import { usePhone } from "../phone-layout";
 import { useDelayedPresence, useSurfaceIn } from "../surface";
 import { ProjectGlance } from "./ProjectGlance";
@@ -238,7 +238,8 @@ export function Home({
   // One read of Home at a time (YN-221): a change while one is on its way
   // asks for one more after it and never aborts it, since Core would build
   // the aborted answer whole anyway. Only leaving, or another Workspace,
-  // drops the read on its way.
+  // drops the read on its way; one Core does not answer ends at the snapshot
+  // deadline (readHomeSnapshot), and the read asked for after it goes next.
   const readInFlight = useRef<{ controller: AbortController | null; again: boolean }>({ controller: null, again: false });
   useEffect(() => {
     if (readOnly) return;
@@ -256,10 +257,11 @@ export function Home({
       const controller = new AbortController();
       state.controller = controller;
       state.again = false;
-      readHome(controller.signal)
+      readHomeSnapshot(controller.signal)
         .then((value) => {
           if (controller.signal.aborted) return;
-          setRefreshing(false);
+          // Busy until the read a Refresh asked for has answered, not an older one.
+          if (!state.again) setRefreshing(false);
           if (!value || !Array.isArray(value.projects) || !Array.isArray(value.needsYou)) {
             setError({ kind: "unavailable", reason: "" });
             failed();
@@ -276,7 +278,7 @@ export function Home({
         .catch((e) => {
           // The last read stays on screen; nothing is blanked while retrying.
           if (controller.signal.aborted) return;
-          setRefreshing(false);
+          if (!state.again) setRefreshing(false);
           setError({ kind: "read", reason: errorText(e) });
           failed();
         })

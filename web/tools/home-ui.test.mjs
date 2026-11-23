@@ -121,7 +121,7 @@ const machineLoad = () => ({
 });
 
 // open: a Project's page to show once Home has read, where that project's cards are (YN-86).
-async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], activity = {}, workspaceAgents = agents, research = null, before = null, url = "http://127.0.0.1:4317/", pressHome = true, open = null } = {}) {
+async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, requestsRead = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], activity = {}, workspaceAgents = agents, research = null, before = null, url = "http://127.0.0.1:4317/", pressHome = true, open = null } = {}) {
   // holdWorkspace: /api/workspace answers only on releaseWorkspace(), so Home opens first.
   let releaseWorkspace = () => {};
   const workspaceRead = holdWorkspace ? new Promise((resolve) => (releaseWorkspace = resolve)) : null;
@@ -192,10 +192,13 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
     if (/\/api\/requests\/[^/]+\/respond$/.test(url)) return respond({ ok: true });
     // Talking to a project (YN-86 §4.2): b is its front desk; what is said is kept as request R-1.
     if (/\/api\/projects\/[^/]+\/front-desk$/.test(url)) return respond({ version: 1, agentId: "b", effectiveAgentId: "b" });
-    if (/\/api\/projects\/[^/]+\/requests$/.test(url))
+    if (/\/api\/projects\/[^/]+\/requests$/.test(url)) {
+      // requestsRead(url): a promise it returns holds a read of a Project's requests until it settles.
+      if (request.method !== "POST") await requestsRead?.(url);
       return respond(request.method === "POST"
         ? { request: { n: 1 }, receipt: { input: request.body, status: "accepted", turnId: "t11", error: null } }
         : { requests: [], hasMore: false });
+    }
     if (url.endsWith("/api/collaboration/github_repositories"))
       return respond({ repositories: request.body?.projectId === "p-app" ? linked : [], links: [] });
     if (url.endsWith("/api/projects/p-app/repo-activity"))
@@ -1605,7 +1608,9 @@ test("a report or status pins to the widget column: the same section, its source
   // Earlier content of a member who may no longer edit: shown under Team details, never pinned.
   home.projects[0].brief.teamSections = [section("old-notes", "report", "Old notes", 1, owner("b", "Hana"), { id: 150 })];
   const notes = () => home.projects[0].brief.sections.find((s) => s.key === "notes");
-  const p = await mount({ home });
+  // While set, App's requests are not read yet (below: its page drawn before its card).
+  let unread = null;
+  const p = await mount({ home, requestsRead: (url) => (url.includes("/api/projects/p-app/") ? unread?.promise : undefined) });
   try {
     let column = p.doc.querySelector(".home-widget-column");
     const pinned = () => column?.querySelector(".home-pinned");
@@ -1664,10 +1669,18 @@ test("a report or status pins to the widget column: the same section, its source
     await refresh(() => /Round 2 notes/.test(pinned()?.textContent || ""), "the new version shows");
     assert.equal(pinned().querySelector(".home-pinned-head h2").textContent, "Notes, round 2");
     assert.equal(JSON.stringify(layout()), saved, "an update leaves the layout as it was");
-    // Back to the source: its Project's page opens at it, highlighted (YN-86 §2.4).
+    // Back to the source: its Project's page opens at it, highlighted (YN-86 §2.4). Its requests are read slowly here,
+    // as on a busy runner (main CI after PR 1103): the page is there before its card is, or before the card is
+    // highlighted, and waiting for the highlight waits through that instead of reading a card not drawn yet.
+    unread = Promise.withResolvers();
+    const reads = p.calls.length;
     p.button("Open in App", pinned()).click();
     await waitFor(() => p.doc.querySelector('[data-project-home="p-app"]'), "the Project's page opens from the pin");
-    await waitFor(() => card(p, "p-app", "notes").hasAttribute("data-home-highlight"), "the source is highlighted");
+    assert.ok(p.calls.slice(reads).some((c) => c.method === "GET" && c.url.endsWith("/api/projects/p-app/requests")), "its requests are being read");
+    assert.ok(!card(p, "p-app", "notes")?.hasAttribute("data-home-highlight"), "its requests unread, the source is not highlighted yet");
+    setTimeout(() => unread.resolve(), 200);
+    await waitFor(() => card(p, "p-app", "notes")?.hasAttribute("data-home-highlight"), "the source is highlighted");
+    unread = null;
     assert.equal(p.w.location.hash, "#/home?w=ws-home&p=p-app", "the page is in the address");
     // Back to the whole of Home for the rest of the test; the pin stays as it was.
     p.w.history.back();
@@ -3928,18 +3941,23 @@ test("a Project's name on the rail opens its page; the arrow only folds; Back re
     assert.equal(name.getAttribute("aria-current"), "page", "the rail says which Project's page is open");
     assert.equal(p.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);
     await pageOpened(p, "p-app");
-    // YN-212 §3.4: "n need you" counts the blocks in Needs you, the approvals and the executors' matters: here the
-    // Project's own block, which holds both open Asks.
-    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-attention").textContent, "1 needs you");
+    // YN-212 §3.4, R-27 §3.7: "n need you" counts the blocks in Needs you, the approvals, the executors' matters and
+    // the Project's own open Asks: here its two, each on its own in Needs you.
+    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-attention").textContent, "2 need you");
     assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-new").textContent, "2 new");
+    const needs = p.doc.querySelector('[data-project-home="p-app"] .request-group[data-group="needs"]');
+    assert.deepEqual([...needs.querySelectorAll(".project-ask")].map((el) => el.dataset.projectAsk).sort(), ["budget", "release"], "both open Asks, each on its own");
+    assert.equal(needs.querySelector(".request-group-title span").textContent, "2",
+      "the group's heading counts what it shows, as the chip does (PR 1092 R1)");
+    assert.equal(p.doc.querySelector('[data-project-home="p-app"] [data-tab="requests"]').textContent, "Requests 0", "no request: the Project's own are none");
     const block = p.doc.querySelector('[data-project-home="p-app"] [data-project-block]');
-    assert.equal(block.closest(".request-group")?.dataset.group, "needs", "with open Asks, in Needs you");
-    assert.equal(block.closest(".request-group").querySelector(".request-group-title span").textContent, "1",
-      "the group's heading counts the Project's block once, as the chip does (PR 1092 R1)");
+    assert.equal(block.closest(".request-group")?.dataset.group, "project", "its cards, a group of their own");
     unfoldBlocks(p.doc);
-    await waitFor(() => p.doc.getElementById("home-section-p-app-release"), "the Project's block open");
-    for (const key of ["release", "budget", "notes/review", "notes", "reviewed"])
-      assert.ok(block.contains(p.doc.getElementById(`home-section-p-app-${key}`)), `${key} is the Project's block's`);
+    await waitFor(() => p.doc.getElementById("home-section-p-app-notes"), "the Project's cards open");
+    for (const key of ["release", "budget"])
+      assert.ok(needs.contains(p.doc.getElementById(`home-section-p-app-${key}`)), `${key} is in Needs you`);
+    for (const key of ["notes/review", "notes", "reviewed"])
+      assert.ok(block.contains(p.doc.getElementById(`home-section-p-app-${key}`)), `${key} is in the Project's cards`);
     // A report opens over the page and closes back onto it, the card where it was.
     const card = p.doc.getElementById("home-section-p-app-notes/review");
     card.querySelector(".home-report-open").click();
@@ -3975,10 +3993,12 @@ test("a Project's page in Chinese, and #/home?w&p opening it directly (YN-86)", 
     name.click();
     await waitFor(() => zh.doc.querySelector('[data-project-home="p-app"]'), "the Chinese Project's page");
     assert.equal(zh.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);
-    // The page by request (YN-212): its groups in Chinese, the Project's own block among them.
+    // The page by request (YN-212): its groups in Chinese, the Project's own among them (R-27): its Asks in 等你, each
+    // saying it is the Project's, and its cards in a group of their own.
     const titles = [...zh.doc.querySelectorAll(".request-group-title")].map((title) => title.textContent);
     assert.match(titles[0], /^等你/);
-    assert.equal(zh.doc.querySelector("[data-project-block] .request-block-n").textContent, "项目");
+    assert.match(zh.doc.querySelector(".project-ask .home-from").textContent, /^项目 · 来自 /);
+    assert.equal(zh.doc.querySelector("[data-project-block] > summary").textContent, "项目卡 2新不属于任何请求", "Review notes not read yet");
     zh.doc.querySelector('.project-home [aria-label="刷新 Home"]').click();
     assert.deepEqual(zh.errors, []);
   } finally {
@@ -3994,5 +4014,76 @@ test("a Project's page in Chinese, and #/home?w&p opening it directly (YN-86)", 
     assert.deepEqual(direct.errors, []);
   } finally {
     direct.close();
+  }
+});
+
+// R-27 (the user's H4; the lead's call on YN-218, seq 12072): where the project stands heads its page, in both views.
+// Alone, a lead's status of no task is the banner only, its one place: one copy, its "Data as of", and the card's own
+// Seen, Reply and Pin; Back from its page returns the focus to the banner. With a second card the group holds both,
+// and the banner's Project cards opens it.
+test("R-27 a Project's one card is its banner alone, with the card's Seen, Reply and Pin; with a second, the group holds both", async () => {
+  const home = homeFixture();
+  const app = home.projects.find((entry) => entry.project.id === "p-app");
+  app.contentEditors = { version: 1, editorAgentIds: ["a"] };
+  const development = section("development", "status", "Development", 3, owner("a", "Mori"), {
+    id: 640, status: { asOf: at(90), validFor: 3600, stale: true }, body: body("**Release 2 is out.** The docs follow this week."),
+  });
+  app.brief.sections = [development];
+  home.needsYou = home.needsYou.filter((item) => item.projectId !== "p-app");
+  const p = await mount({ open: "p-app", home });
+  try {
+    await waitFor(() => p.panel("p-app")?.querySelector(".now-hero"), "the banner");
+    const page = p.panel("p-app");
+    const hero = () => page.querySelector(".now-hero");
+    assert.equal(hero().querySelector(".now-hero-head").textContent, "Release 2 is out.");
+    assert.equal(hero().querySelector(".now-hero-text").textContent.trim(), "The docs follow this week.");
+    assert.ok(hero().compareDocumentPosition(page.querySelector(".project-view-tabs-bar")) & p.w.Node.DOCUMENT_POSITION_FOLLOWING, "above the tabs");
+    // One copy: the banner is the card, by its id; no group.
+    assert.equal(hero().id, "home-section-p-app-development");
+    assert.equal(page.querySelector("[data-project-block]"), null);
+    assert.equal(p.doc.querySelectorAll('[data-section-key="development"]').length, 1, "drawn once");
+    assert.equal(hero().querySelector(".now-actions .talk-link"), null, "no Project cards to go to");
+    // Its validity, as its card says it.
+    assert.ok(hero().classList.contains("is-stale"));
+    assert.match(hero().querySelector(".now-meta").textContent, /Data as of .* · older than its .* validity/);
+    // In the conversation too.
+    page.querySelector('[data-tab="chat"]').click();
+    await waitFor(() => page.querySelector(".project-home-body")?.hidden, "the conversation");
+    assert.ok(hero() && !hero().closest("[hidden]"), "shown in the conversation's view");
+    page.querySelector('[data-tab="requests"]').click();
+    // Seen marks the version shown, as the card's does.
+    hero().querySelector(".home-seen").click();
+    await waitFor(() => p.posts(/brief\/seen$/).length === 1, "Seen sent");
+    assert.deepEqual(p.posts(/brief\/seen$/)[0].body.sections, [{ key: "development", version: 3 }]);
+    // Reply opens the card's own reply under the banner.
+    p.button("Reply", hero()).click();
+    await waitFor(() => hero().querySelector(".now-hero-reply .home-card-reply"), "the card's reply");
+    // Pin, from its More actions, as from the card.
+    hero().querySelector('[aria-label="Pin “Development” to My widgets"]').click();
+    await waitFor(() => JSON.parse(p.w.localStorage.getItem("yuzuno.homeWidgets.ws-home") ?? "{}").pins?.length === 1, "pinned");
+    assert.equal(hero().querySelector(".home-pin").getAttribute("aria-pressed"), "true");
+    // Its page opens over Home; Back returns the focus to the banner's Open status.
+    const opener = hero().querySelector(".home-report-open");
+    opener.click();
+    await waitFor(() => p.doc.querySelector(".home-report .report-head h1")?.textContent === "Development", "the status page");
+    p.doc.querySelector(".home-report .report-back").click();
+    await waitFor(() => !p.doc.querySelector(".home-report"), "back on the page");
+    await waitFor(() => p.doc.activeElement === hero().querySelector(".home-report-open"), "the focus back on Open status");
+    // A second card: the group holds both, the banner names it and is no longer the card.
+    p.state.home.projects.find((entry) => entry.project.id === "p-app").brief.sections = [development, section("notes", "report", "Notes", 1, owner("a", "Mori"), { id: 641 })];
+    p.doc.querySelector('.project-home [aria-label="Refresh Home"]').click();
+    await waitFor(() => hero().querySelector(".now-actions .talk-link")?.textContent === "Project cards 2", "two cards");
+    const group = page.querySelector("[data-project-block]");
+    assert.equal(hero().id, "", "the card itself is in the group now");
+    assert.equal(hero().querySelector(".now-card-actions"), null);
+    if (group.open) group.querySelector("summary").click();
+    await waitFor(() => !group.open && !group.hasAttribute("data-open"), "the group closed");
+    hero().querySelector(".now-actions .talk-link").click();
+    await waitFor(() => group.open && p.doc.getElementById("home-section-p-app-development")?.closest("[data-project-block]") === group, "opened, the card in it");
+    assert.ok(group.contains(p.doc.getElementById("home-section-p-app-notes")));
+    assert.equal(p.doc.querySelectorAll('[id="home-section-p-app-development"]').length, 1, "one card by its id");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
   }
 });

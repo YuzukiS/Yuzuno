@@ -8,11 +8,15 @@
 //  - a Project's name on the rail opens its page; the arrow before it only
 //    folds the group, and Tab goes arrow, name, +;
 //  - the page's three groups: Needs you, In progress (cards stay put for the
-//    visit), and Done, closed at first, with the 30-day history inside;
+//    visit), and Done, closed at first, with the 30-day history inside; what
+//    belongs to no request (R-27): its Ask on its own in Needs you, its cards
+//    in the Project cards group (open on a page with no request), each card
+//    once, the group opened and closed from the keyboard; a project of one
+//    card shows it once, as its banner, with the card's Reply and More;
 //  - an unread report opened from its card comes back with New gone and the
 //    card in the same place and the same group;
 //  - on a phone (390), the whole of Home from the address and a project's
-//    page from its glance; 1920, 1440, 940 and Chinese at 1440 otherwise;
+//    page from its glance; 1920, 1440, 1400, 940 and Chinese at 1440 otherwise;
 //  - a project's cards in three columns from 932 px of card area and the
 //    team's facts beside them only from 1250 px of page, under them below
 //    that (YN-157);
@@ -69,7 +73,18 @@ const sections = [
   section("q1", "ask", "Ship the settings page this week?", spec(["q"], { q: md("The layout is ready; the copy is not.") }), {
     ask: { question: "Ship the settings page this week?", state: "open", reply: { options: [{ id: "yes", label: "Yes" }, { id: "no", label: "Not yet" }], freeText: true } },
   }),
-  section("status", "status", "This week", spec(["s"], { s: md("Two cards run; one waits for your choice.") }), {
+  // The card the page leads with (R-27): a lead's newest status, naming what the user is asked to do.
+  section("status", "status", "This week", {
+    root: "body",
+    elements: {
+      body: node("BriefBody", { summary: { lead: "s", forYou: "todo", size: "wide" } }, ["s", "todo"]),
+      s: md("Two cards run; one waits for your choice."),
+      todo: node("Checklist", { title: "Try the settings page", items: [
+        { id: "a", text: "Open Settings and change the theme", done: false }, { id: "b", text: "Read the release notes", done: true },
+        { id: "c", text: "Switch the language to Chinese and back", done: false }, { id: "d", text: "Reply on the design card", done: false },
+      ] }),
+    },
+  }, {
     status: { asOf: at(20), validFor: 86_400, stale: false },
   }),
   section("design", "report", "Settings groups", spec(["a", "b"], {
@@ -144,13 +159,15 @@ const findSection = (projectId, key) =>
   ?? state.home.projects.find((panel) => panel.project.id === projectId)?.brief.history.find((section) => section.key === key);
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
-  en: { needs: /^Needs you/, newMark: "New", inProgress: "In progress" },
-  "zh-Hans": { needs: /^等你/, newMark: "新", inProgress: "进行中" },
+  en: { needs: /^Needs you/, newMark: "New", inProgress: "In progress", projectCards: /^Project cards 4\s*New\s*Not part of a request$/,
+    now: { label: "Now", cards: "Project cards 4", todo: "3for you · Try the settings page", more: "1 more · on the status page" } },
+  "zh-Hans": { needs: /^等你/, newMark: "新", inProgress: "进行中", projectCards: /^项目卡 4\s*新\s*不属于任何请求$/,
+    now: { label: "近况", cards: "项目卡 4", todo: "3项待你 · Try the settings page", more: "另 1 项 · 在状态页" } },
 };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 const runs = [];
-for (const [name, viewport, phone] of [["1920", { width: 1920, height: 1100 }, false], ["1440", { width: 1440, height: 1000 }, false], ["940", { width: 940, height: 1100 }, false], ["phone-390", { width: 390, height: 844 }, true]]) {
+for (const [name, viewport, phone] of [["1920", { width: 1920, height: 1100 }, false], ["1440", { width: 1440, height: 1000 }, false], ["1400", { width: 1400, height: 1000 }, false], ["940", { width: 940, height: 1100 }, false], ["phone-390", { width: 390, height: 844 }, true]]) {
   runs.push({ name: `${name}`, viewport, phone, language: "en" });
 }
 runs.push({ name: "zh-1440", viewport: { width: 1440, height: 1000 }, phone: false, language: "zh-Hans" });
@@ -230,6 +247,8 @@ async function check(run) {
       "/api/collaboration/github_repositories": { repositories: [], links: [] },
     }[path];
     if (json) return route.fulfill({ json });
+    // No project has a request here: the page holds what belongs to no request (YN-212, R-27).
+    if (/^\/api\/projects\/[^/]+\/requests$/.test(path)) return route.fulfill({ json: { requests: [], hasMore: false } });
     if (path.startsWith("/api/")) return route.fulfill({ json: {} });
     const file = resolve(dist, `.${path === "/" ? "/index.html" : path}`);
     assert.ok(file.startsWith(dist + "/"));
@@ -429,18 +448,72 @@ async function check(run) {
     pass(`${run.phone ? "a glance tapped" : "the rail's name clicked"} opens the page at its heading, framed by nothing on the way or landed (R-23)`, opened);
     assert.equal(await page.locator(".home-view").first().getAttribute("lang"), run.language);
     // No horizontal overflow: the page and Home's own scroller.
-    await noOverflow(".project-home-head, .request-blocks");
-    // YN-212: the page reads by request. With none, the Project's own block is all of it, open, in Needs you while an
-    // Ask of its own waits; the 30-day history is in Done, closed.
+    await noOverflow(".project-home-head, .now-hero, .now-hero-main, .now-hero-aside, .request-blocks");
+    // R-27: where the project stands, under its name, in both views: the lead's opening, two of the three things the
+    // user is asked to do and how many more, and the Project cards below; on a phone Needs you's first item still in
+    // the first screen.
+    const now = await page.evaluate(() => {
+      const hero = document.querySelector('[data-project-home="p-dev"] .now-hero');
+      const first = document.querySelector('.request-group[data-group="needs"] > :not(h2)');
+      const text = (el) => el?.textContent.replace(/\s+/g, " ").trim() ?? null;
+      return {
+        key: hero?.dataset.nowKey, label: text(hero?.querySelector(".now-hero-label")), head: text(hero?.querySelector(".now-hero-head")),
+        todo: text(hero?.querySelector(".now-todo-head")), items: [...(hero?.querySelectorAll(".now-todo-list li") ?? [])].map(text),
+        more: text(hero?.querySelector(".now-todo-more")), cards: text(hero?.querySelector(".now-actions .talk-link")),
+        beside: hero ? getComputedStyle(hero).gridTemplateColumns.split(" ").length : 0,
+        above: hero && document.querySelector(".project-view-tabs-bar") ? hero.compareDocumentPosition(document.querySelector(".project-view-tabs-bar")) === Node.DOCUMENT_POSITION_FOLLOWING : false,
+        needsTop: first ? Math.round(first.getBoundingClientRect().top) : null, screen: innerHeight,
+      };
+    });
+    assert.deepEqual([now.key, now.label, now.head, now.todo, now.items, now.more, now.cards],
+      ["status", w.now.label, "Two cards run; one waits for your choice.", w.now.todo,
+        ["Open Settings and change the theme", "Switch the language to Chinese and back"], w.now.more, w.now.cards], JSON.stringify(now));
+    assert.ok(now.above, "above the tabs' bar, so in both views");
+    assert.equal(now.beside, run.phone ? 1 : 2, `what is asked of the user beside the conclusion, under it on a phone: ${JSON.stringify(now)}`);
+    if (run.phone) assert.ok(now.needsTop !== null && now.needsTop < now.screen, `Needs you's first item in the first screen: ${JSON.stringify(now)}`);
+    pass("the banner: the conclusion, what the user is asked to do and the Project cards; nothing wider than the window", now);
+    // YN-212: the page reads by request. R-27: with none, the Project's own Ask stands on its own in Needs you and its
+    // cards are a group of their own after it, open; the 30-day history is in Done, closed.
     const titles = await page.locator(".request-group-title").evaluateAll((els) => els.map((el) => el.textContent.trim()));
     assert.match(titles[0], w.needs);
-    assert.equal(await page.locator('.request-group[data-group="needs"] [data-project-block][data-open]').count(), 1, "the Project's block, open, in Needs you");
-    assert.equal(await page.locator(".request-done").evaluate((el) => el.open), false, "Done is closed at first");
+    assert.equal(await page.locator('.request-group[data-group="needs"] .project-ask #home-section-p-dev-q1').count(), 1, "the Project's Ask on its own in Needs you");
+    assert.equal(await page.locator('.request-group[data-group="needs"] [data-project-block]').count(), 0, "its cards are not in Needs you");
+    const group = page.locator("details.project-cards");
+    assert.equal(await group.evaluate((el) => el.open), true, "the Project's cards, open on a page with no request");
+    assert.match(titles[1], w.projectCards);
+    assert.equal(await page.locator('.request-done[data-group="done"]').evaluate((el) => el.open), false, "Done is closed at first");
     assert.equal(await page.locator(".request-done .home-history").count(), 1, "the 30-day history is inside Done");
+    const once = await page.evaluate(() => {
+      const ids = [...document.querySelectorAll('[data-project-home="p-dev"] [id^="home-section-p-dev-"]')].map((el) => el.id).filter((id) => !/-(title|body)$/.test(id));
+      return { ids, repeated: ids.filter((id, i) => ids.indexOf(id) !== i) };
+    });
+    assert.deepEqual(once.repeated, [], `each card once: ${JSON.stringify(once)}`);
+    for (const key of ["q1", "status", "design", "read-a", "old-status"]) assert.ok(once.ids.includes(`home-section-p-dev-${key}`), `${key} is on the page`);
     await shot("project");
-    pass("the Project's block open in Needs you; Done closed with the history inside; no overflow", titles);
+    // The keyboard: the group's heading closes and opens it, its focus shown, its cards drawn only while open.
+    await group.locator("summary").focus();
+    await page.keyboard.press("Enter");
+    // The details close at once; the page takes it from their toggle, a task later, and its data-open follows.
+    await page.waitForFunction(() => !document.querySelector("details.project-cards").open);
+    await page.waitForFunction(() => !document.querySelector("details.project-cards").hasAttribute("data-open"));
+    const focusShown = await group.locator("summary").evaluate((el) => el === document.activeElement && getComputedStyle(el).outlineStyle !== "none");
+    assert.equal(await group.locator(".project-block-cards").count(), 0, "closed: no card drawn");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.querySelector("details.project-cards")?.hasAttribute("data-open"));
+    await card("design").waitFor({ timeout: 5_000 });
+    assert.ok(focusShown, "the group's heading shows its focus");
+    // The banner's Project cards: back to the group, open, at its top.
+    await page.locator('[data-project-home="p-dev"] .now-hero').evaluate((el) => el.scrollIntoView({ block: "start" }));
+    await page.locator('[data-project-home="p-dev"] .now-actions .talk-link').click();
+    await page.waitForFunction(() => {
+      const top = document.querySelector("details.project-cards")?.getBoundingClientRect().top;
+      return top !== undefined && top > 0 && top < innerHeight * 0.6;
+    }, null, { timeout: 5_000 });
+    await page.waitForTimeout(400);
+    await shot("project-cards");
+    pass("the Project's Ask on its own in Needs you; its cards in their group, open, each once, closed and opened by the keyboard; Done closed with the history inside; no overflow", { titles, cards: once.ids.length });
     // The cards' columns and where the team's facts stand (YN-157): the team beside them only from 1250 px of page;
-    // the cards' columns follow the Project's block's own width (a deck of its own, YN-212), at most 920 px.
+    // the cards' columns follow the Project cards group's own width (a deck of its own, YN-212, R-27), at most 920 px.
     const shape = await page.evaluate(() => {
       const page = document.querySelector('[data-project-home="p-dev"]');
       const main = page.querySelector(".project-home-main");
@@ -466,7 +539,7 @@ async function check(run) {
       assert.equal(shape.team, "aside", `the team beside at 1920: ${JSON.stringify(shape)}`);
     }
     if (run.phone) assert.equal(shape.columns, 1, `one column on a phone: ${JSON.stringify(shape)}`);
-    pass("the cards' columns follow the Project's block, and the team stands beside them only from 1250 px", shape);
+    pass("the cards' columns follow the Project cards group, and the team stands beside them only from 1250 px", shape);
     // The unread report: New, open it, read it, come back with New gone and the card in the same place.
     const unread = card("design");
     await unread.scrollIntoViewIfNeeded();
@@ -557,6 +630,31 @@ async function check(run) {
     const status = await cardMarked("status");
     await shot("project-status-marked");
     pass("the status card, from its glance, opens the page at that card, marked (R-23)", status);
+    // R-27, the lead's call on YN-218: a project with one card and no request shows it once, as its banner, with the
+    // card's own Reply and More actions; the keyboard opens its reply there.
+    await page.evaluate(() => { location.hash = "#/home?w=ws-project&p=p-site"; });
+    const site = page.locator('[data-project-home="p-site"]');
+    await site.locator(".now-hero").waitFor({ timeout: 15_000 });
+    const alone = await page.evaluate(() => {
+      const site = document.querySelector('[data-project-home="p-site"]');
+      const hero = site.querySelector(".now-hero");
+      const shown = (el) => !!el && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+      return {
+        copies: site.querySelectorAll('[data-section-key="about"]').length, isBanner: hero.dataset.sectionKey === "about" && hero.classList.contains("is-alone"),
+        id: hero.id, group: !!site.querySelector("details.project-cards"), reply: shown(hero.querySelector(".now-card-actions .home-reply-open")),
+        more: shown(hero.querySelector(".now-card-actions .home-summary-more > span > button, .now-card-actions .home-summary-more button")),
+        cards: !!hero.querySelector(".now-actions .talk-link"), top: Math.round(hero.getBoundingClientRect().top), bottom: Math.round(hero.getBoundingClientRect().bottom), screen: innerHeight,
+      };
+    });
+    assert.deepEqual([alone.copies, alone.isBanner, alone.id, alone.group, alone.reply, alone.more, alone.cards], [1, true, "home-section-p-site-about", false, true, true, false], JSON.stringify(alone));
+    assert.ok(alone.bottom <= alone.screen, `the banner whole in the first screen: ${JSON.stringify(alone)}`);
+    await noOverflow(".project-home-head, .now-hero, .now-hero-main, .request-blocks");
+    await site.locator(".now-card-actions .home-reply-open").focus();
+    await page.keyboard.press("Enter");
+    await site.locator(".now-hero-reply .home-card-reply").waitFor({ timeout: 5_000 });
+    await noOverflow(".now-hero, .now-hero-reply");
+    await shot("project-alone");
+    pass("one card and no request: the banner alone is the card, with its Reply and More; the keyboard opens its reply", alone);
   } finally {
     await context.close();
   }
