@@ -586,9 +586,11 @@ test("while the page is hidden the shown conversation, Home and the board wait, 
       await pause(200);
     }
     assert.equal(since("/api/agents/a"), 0, "the shown conversation waits");
-    assert.equal(since("/api/ci/live") + since("/api/waits/live"), 0, "so does the board");
+    assert.equal(since("/api/ci/live"), 0, "so does the board");
     const lists = since("/api/workspace");
     assert.ok(lists >= 1 && lists <= 2, `the Agent list, for the badge and title: at most every 5 s (${lists} in 6 s)`);
+    // The rail's waits are read with the Agent list (App.tsx, YN-51), never more often.
+    assert.ok(since("/api/waits/live") <= lists, `waits with the list: ${since("/api/waits/live")}`);
     assert.doesNotMatch(p.d.querySelector('[data-item-id="m-a"]').textContent, /Changed while hidden/);
     // Shown again: each waiting read once, now.
     const back = p.core.calls.length;
