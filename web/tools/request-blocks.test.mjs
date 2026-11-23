@@ -4,7 +4,10 @@
 // joining is pure; the page that draws it is W3's.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { askUpFront, authorOf, blockCounts, blockOfSection, isPlaceholder, pageBlocks } from "../src/home/request-blocks.ts";
+import {
+  askUpFront, authorOf, blockCounts, blockOfSection, forYouTodo, isPlaceholder, pageBlocks, projectCardsCount, projectLine, splitLead,
+} from "../src/home/request-blocks.ts";
+import { summaryOf } from "../src/home/report/report-model.ts";
 
 const NOW = Date.now();
 const at = (minutes) => new Date(NOW - minutes * 60_000).toISOString();
@@ -340,4 +343,85 @@ test("a task's card and Ask kept live and in history count once, the live one fi
   const row = blocks[0].tasks[0];
   assert.deepEqual([row.card.title, row.earlier.length], ["现在", 0], "a removed section is no card of the task");
   assert.equal(blocks[0].unread, true, "changed since seen");
+});
+
+// R-27 §3.1: the card the project's page leads with. Only a lead's cards of no task; the newest status, stale or not,
+// else the newest report; the first of two written at once; any member's when the project names no leads.
+test("the banner's card: a lead's newest status of no task, stale or not, else its newest report", () => {
+  ids = 2000;
+  const older = section("week", "status", "This week", 1, 30, lead, { status: status(30) });
+  const stale = section("development", "status", "开发状态", 1, 10, lead, { status: status(10, true) });
+  const bound = section("yn-300", "status", "绑任务的卡", 1, 1, lead, { card: binding("YN-300", "doing", null), status: status(1) });
+  const other = section("notes", "status", "成员的卡", 1, 2, lead2, { status: status(2) });
+  const newer = section("summary", "report", "周报", 1, 0, lead);
+  assert.equal(projectLine([older, stale, bound, other, newer], ["lead"])?.key, "development", "a status before a report; stale, still it");
+  assert.equal(projectLine([older, bound, other, newer], ["lead"])?.key, "week");
+  assert.equal(projectLine([bound, other, newer], ["lead"])?.key, "summary", "no status of a lead's: its newest report");
+  assert.equal(projectLine([bound, newer], ["lead2"]), null, "nothing a lead wrote");
+  assert.equal(projectLine([other, older], null)?.key, "notes", "no leads named: any member's, the newest");
+  const twin = section("twin", "status", "同时写的", 1, 30, lead, { status: status(30) });
+  assert.equal(projectLine([older, twin], ["lead"])?.key, "week", "the first of two written at the same time");
+  assert.equal(projectLine([], null), null);
+});
+
+// R-27 §3.2: the heading is the lead's bold opening, else its first sentence, else all of it, as plain text.
+test("the banner's heading: a bold opening, else the first sentence, else the whole lead", () => {
+  assert.deepEqual(splitLead("**core.38 已安装，新版项目首页已启用。** 项目页正在修复长对话。"), { head: "core.38 已安装，新版项目首页已启用。", rest: "项目页正在修复长对话。" });
+  assert.deepEqual(splitLead("core.38 已安装。项目页正在修复长对话。"), { head: "core.38 已安装。", rest: "项目页正在修复长对话。" }, "a full stop inside a version is no sentence's end");
+  assert.deepEqual(splitLead("Two cards run. One waits for `you`."), { head: "Two cards run.", rest: "One waits for `you`." }, "the rest stays Markdown");
+  assert.deepEqual(splitLead("Ready? Ship it"), { head: "Ready?", rest: "Ship it" });
+  assert.deepEqual(splitLead("The [release](https://example.com/r) is out"), { head: "The release is out", rest: null }, "no sentence's end: all of it, plain");
+  assert.deepEqual(splitLead("Done."), { head: "Done.", rest: null });
+  assert.equal(splitLead(""), null);
+  assert.equal(splitLead(null), null);
+});
+
+/** A status whose summary names `forYou` (R-27 §3.3). */
+function withForYou(items, { title = "桌面0.6.0待你有空实测", type = "Checklist", slot = "todo" } = {}) {
+  return section("development", "status", "开发状态", 2, 5, lead, {
+    status: status(5),
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", forYou: slot, size: "wide" } }, children: ["lead", "todo", "mine"] },
+      lead: { type: "Markdown", props: { text: "**core.38 已安装。** 其余在做。" } },
+      todo: type === "Checklist" ? { type: "Checklist", props: { title, items } } : { type: "Plan", props: { steps: items.map((i) => ({ id: i.id, text: i.text, state: "todo" })) } },
+      mine: { type: "Checklist", props: { items: [{ id: "self", text: "Agent 自己的待办", done: false }] } },
+    } },
+  });
+}
+
+test("what the user is asked to do: only the Checklist the author names forYou, its open items in order", () => {
+  const items = [
+    { id: "a", text: "在 0.5.0 里检查更新", done: false }, { id: "b", text: "已做完的", done: true },
+    { id: "c", text: "拖文件进输入框", done: false }, { id: "d", text: "第三项", done: false },
+  ];
+  assert.deepEqual(forYouTodo(withForYou(items)), {
+    title: "桌面0.6.0待你有空实测", open: 3,
+    items: [{ id: "a", text: "在 0.5.0 里检查更新" }, { id: "c", text: "拖文件进输入框" }, { id: "d", text: "第三项" }],
+  });
+  assert.equal(summaryOf(withForYou(items))?.forYou, "todo");
+  assert.equal(forYouTodo(withForYou(items, { title: "" }))?.title, null, "no title: none");
+  assert.equal(forYouTodo(withForYou(items.map((i) => ({ ...i, done: true })))), null, "every item done: nothing for the user");
+  assert.equal(forYouTodo(withForYou(items, { type: "Plan" })), null, "a Plan named forYou is taken as none");
+  assert.equal(summaryOf(withForYou(items, { type: "Plan" }))?.lead, "lead", "and the summary still holds");
+  assert.equal(forYouTodo(withForYou(items, { slot: "lead" })), null, "the lead's block is no forYou");
+  // No forYou named: an Agent's own Checklist on the card is never the user's.
+  const plain = withForYou(items);
+  delete plain.body.elements.body.props.summary.forYou;
+  assert.equal(forYouTodo(plain), null);
+  assert.equal(summaryOf(plain)?.forYou, null);
+  assert.equal(forYouTodo(section("x", "status", "No body", 1, 1, lead)), null);
+});
+
+// R-27 §3.6: the group holds every card of the Project's own, the banner's among them even alone (its Pin, Reply and
+// Seen stay on the page), and its Asks answered before this visit.
+test("the Project cards group's count: every card of its own, the banner's too, and its answered Asks", () => {
+  ids = 2100;
+  const dev = section("development", "status", "开发状态", 1, 5, lead, { status: status(5) });
+  const notes = section("notes", "report", "Notes", 1, 9, lead);
+  const block = (sections) => ({ kind: "project", key: "project", sections, asks: [], unread: false, last: 0 });
+  assert.equal(projectCardsCount(block([dev, notes]), 0), 2);
+  assert.equal(projectCardsCount(block([dev]), 0), 1, "the banner's card alone is still a card");
+  assert.equal(projectCardsCount(block([dev]), 1), 2, "and an answered Ask");
+  assert.equal(projectCardsCount(block([]), 0), 0, "nothing: no group");
+  assert.equal(projectCardsCount(null, 0), 0);
 });

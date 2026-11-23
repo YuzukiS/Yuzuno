@@ -28,9 +28,14 @@ try {
 import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
 import {RequestBlockView, ProjectAsks, ProjectCards, useAsksUpFront} from ${JSON.stringify(path.join(root, "src/home/RequestBlocks.tsx"))};
-import {pageBlocks} from ${JSON.stringify(path.join(root, "src/home/request-blocks.ts"))};
+import {pageBlocks, projectCardsCount} from ${JSON.stringify(path.join(root, "src/home/request-blocks.ts"))};
 import {CardAgents} from ${JSON.stringify(path.join(root, "src/home/card-responsible.ts"))};
+import {ProjectNow} from ${JSON.stringify(path.join(root, "src/home/ProjectNow.tsx"))};
+import {ReportOpen} from ${JSON.stringify(path.join(root, "src/home/report/report-open.ts"))};
 const root=createRoot(document.getElementById('root'));
+const nowRoot=createRoot(document.getElementById('now'));
+window.renderNow=(props)=>flushSync(()=>nowRoot.render(<ReportOpen.Provider value={(projectId, section, from) => window.calls.push({open: section.key, projectId, from: from.className})}>
+  <ProjectNow projectId="p1" onMore={() => window.calls.push({more: true})} {...props}/></ReportOpen.Provider>));
 window.calls=[];
 function Page({requests, sections, readOnly}) {
   const {blocks, project} = pageBlocks(requests, sections);
@@ -43,7 +48,8 @@ function Page({requests, sections, readOnly}) {
   return <div>{blocks.map((block) => <RequestBlockView key={block.key} block={block} open={open.has(block.key)} onToggle={() => toggle(block.key)}
     onAction={(action, n, key) => window.calls.push({action, n, key: key ?? null})} onShowBlock={(n) => window.calls.push({show: n})} common={common}/>)}
     {project && <div className="needs"><ProjectAsks block={project} common={common}/></div>}
-    {project && <ProjectCards block={project} open={open.has('project')} onToggle={(on) => choose('project', on)} common={common}/>}</div>;
+    {project && <ProjectCards block={project} count={projectCardsCount(project, project.asks.filter((ask) => !upFront(ask)).length)}
+      open={open.has('project')} onToggle={(on) => choose('project', on)} common={common}/>}</div>;
 }
 window.renderPage=(props)=>flushSync(()=>root.render(<CardAgents.Provider value={new Map(window.agents.map((a)=>[a.id,a]))}><Page {...props}/></CardAgents.Provider>));`,
   );
@@ -122,7 +128,7 @@ function mount({ lang = "en", readOnly = false, opened = [] } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div><div id="now"></div></body></html>', {
     url: "https://request-blocks.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole,
   });
   const { window } = dom;
@@ -415,4 +421,97 @@ test("the Project's cards: a closed group drawing nothing until opened, then the
   assert.equal(group(), null);
   assert.deepEqual([...page.document.querySelectorAll(".project-ask")].map((el) => el.dataset.projectAsk), ["pick"]);
   assert.deepEqual(page.errors, []);
+});
+
+/** A lead's status for the banner (R-27); `forYou` items name the Checklist of what the user is asked to do. */
+function nowCard({ stale = false, forYou = null, lead = "**core.38 is installed; the new page is on.** The long conversation's view is being fixed." } = {}) {
+  const elements = {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", size: "wide", ...(forYou ? { forYou: "todo" } : {}) } }, children: ["lead", ...(forYou ? ["todo"] : []), "mine"] },
+    lead: { type: "Markdown", props: { text: lead } },
+    mine: { type: "Checklist", props: { items: [{ id: "own", text: "The lead's own step", done: false }] } },
+  };
+  if (forYou) elements.todo = { type: "Checklist", props: { title: "Try the new page", items: forYou } };
+  return section("development", "status", "Development state", 15, {
+    owner: { agentId: "d", name: "Dev Lead", state: "active" }, status: { asOf: ago(15), validFor: 3600, stale }, body: { root: "body", elements },
+  });
+}
+
+// R-27 (the user's H4): where the project stands, under its name: the lead's opening as a heading, the rest under it,
+// who wrote it and when; "Project cards N" to the group below, where the card itself is; Open status, and a click on
+// the banner itself, open the card's page, once.
+test("the banner: the conclusion as its heading, who and when, the Project cards below, and the card's page opened once", () => {
+  const page = mount();
+  page.window.renderNow({ section: nowCard(), more: 3 });
+  const now = page.document.querySelector("#now .now-hero");
+  assert.equal(now.getAttribute("aria-label"), "Where the project stands");
+  assert.equal(page.text(now.querySelector(".now-hero-label")), "Now");
+  assert.equal(page.text(now.querySelector(".now-hero-head")), "core.38 is installed; the new page is on.", "the bold opening, plain");
+  assert.equal(page.text(now.querySelector(".now-hero-text")), "The long conversation's view is being fixed.");
+  assert.deepEqual([...now.querySelectorAll(".now-meta-part")].map(page.text), ["Development state", "Dev Lead", "15 min ago"], "its title, who wrote it, when");
+  assert.equal(now.querySelector(".now-hero-aside"), null, "no forYou named: the conclusion alone, never the lead's own list");
+  assert.equal(now.id, "", "the card itself is in the group, by its id: the banner names it, never stands in for it");
+  assert.equal(now.dataset.sectionKey, undefined);
+  const [more, open] = now.querySelectorAll(".now-actions button");
+  assert.equal(page.text(more), "Project cards 3");
+  assert.equal(page.text(open), "Open status");
+  assert.equal(open.getAttribute("aria-label"), "Open the report “Development state”");
+  more.click();
+  open.click();
+  now.querySelector(".now-hero-head").click();
+  assert.deepEqual(page.calls(), [{ more: true }, { open: "development", projectId: "p1", from: "home-report-open" },
+    { open: "development", projectId: "p1", from: "now-hero" }], "each once: a button does what it says, the banner opens its page");
+  assert.deepEqual(page.errors, []);
+});
+
+test("the banner lists what the author names forYou: two open items and how many more, past its validity in the attention colour", () => {
+  const page = mount();
+  const items = [{ id: "a", text: "Check for updates in 0.5.0", done: false }, { id: "b", text: "Done already", done: true },
+    { id: "c", text: "Drag a file into the composer", done: false }, { id: "d", text: "Open a report", done: false }, { id: "e", text: "Reply on a card", done: false }];
+  page.window.renderNow({ section: nowCard({ forYou: items }), more: 0 });
+  const now = page.document.querySelector("#now .now-hero");
+  assert.ok(now.classList.contains("has-side"));
+  const aside = now.querySelector(".now-hero-aside");
+  assert.equal(aside.getAttribute("aria-label"), "Try the new page");
+  assert.equal(page.text(aside.querySelector(".now-todo-head")), "4for you · Try the new page");
+  assert.deepEqual([...aside.querySelectorAll(".now-todo-list li")].map(page.text), ["Check for updates in 0.5.0", "Drag a file into the composer"], "the first two open ones");
+  assert.equal(aside.querySelector("input, [role=checkbox]"), null, "the banner ticks nothing: the author does");
+  const rest = aside.querySelector(".now-todo-more");
+  assert.equal(page.text(rest), "2 more · on the status page");
+  rest.click();
+  assert.deepEqual(page.calls(), [{ open: "development", projectId: "p1", from: "now-todo-more" }]);
+  // Two open: no "more"; every item done: the conclusion alone.
+  page.window.renderNow({ section: nowCard({ forYou: items.slice(0, 3) }), more: 0 });
+  assert.equal(now.querySelector(".now-todo-more"), null);
+  page.window.renderNow({ section: nowCard({ forYou: items.map((i) => ({ ...i, done: true })) }), more: 0 });
+  assert.equal(now.querySelector(".now-hero-aside"), null);
+  // Past its validity: said, the same card, in the attention colour.
+  page.window.renderNow({ section: nowCard({ stale: true }), more: 0 });
+  assert.ok(now.classList.contains("is-stale"));
+  assert.equal(page.text(now.querySelector(".now-hero-label")), "Past its validity");
+  assert.ok([...now.querySelectorAll(".now-meta-part")].map(page.text).includes("Card past its validity"));
+  // A lead with no sentence's end is the heading whole; with no lead at all, the card's title is, and the meta does
+  // not say it again.
+  page.window.renderNow({ section: nowCard({ lead: "Two cards run and one waits" }), more: 0 });
+  assert.equal(page.text(now.querySelector(".now-hero-head")), "Two cards run and one waits");
+  assert.equal(now.querySelector(".now-hero-text"), null);
+  const untitled = nowCard();
+  untitled.body.elements.body.props = {};
+  untitled.body.elements.body.children = [];
+  page.window.renderNow({ section: untitled, more: 0 });
+  assert.equal(page.text(now.querySelector(".now-hero-head")), "Development state");
+  assert.equal(now.querySelector(".now-meta-title"), null);
+  assert.deepEqual(page.errors, []);
+});
+
+test("the banner in Chinese", () => {
+  const page = mount({ lang: "zh" });
+  page.window.renderNow({ section: nowCard({ forYou: [1, 2, 3].map((n) => ({ id: `i${n}`, text: `第 ${n} 项`, done: false })) }), more: 2 });
+  const now = page.document.querySelector("#now .now-hero");
+  assert.equal(now.getAttribute("aria-label"), "项目近况");
+  assert.equal(page.text(now.querySelector(".now-hero-label")), "近况");
+  assert.equal(page.text(now.querySelector(".now-todo-head")), "3项待你 · Try the new page");
+  assert.equal(page.text(now.querySelector(".now-todo-more")), "另 1 项 · 在状态页");
+  assert.deepEqual([...now.querySelectorAll(".now-actions button")].map(page.text), ["项目卡 2", "打开状态"]);
+  page.window.renderNow({ section: nowCard({ stale: true }), more: 0 });
+  assert.equal(page.text(now.querySelector(".now-hero-label")), "已过有效期");
 });

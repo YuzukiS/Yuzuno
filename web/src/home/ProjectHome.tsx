@@ -25,8 +25,11 @@ import { ProjectTalkLink, type TalkLink } from "./talk-link";
 import { talkText } from "./talk-text";
 import { openTask } from "./CardResponsible";
 import { KeptCardReplies, referableHistory } from "./CardReply";
-import { askUpFront, blockCounts, blockOfSection, openAsk, pageBlocks, type BlockAction, type BlockGroup, type RequestBlock } from "./request-blocks";
+import {
+  askUpFront, blockCounts, blockOfSection, openAsk, pageBlocks, projectCardsCount, projectLine, type BlockAction, type BlockGroup, type RequestBlock,
+} from "./request-blocks";
 import { blockText, ProjectAsks, ProjectCards, RequestBlockView, useAsksUpFront, type BlockCommon } from "./RequestBlocks";
+import { ProjectNow } from "./ProjectNow";
 import type { OpenDeliveredReport } from "./DeliverableLine";
 import { projectUnseen } from "./unseen";
 import type { NeedsYouItem, ProjectPanel, Section } from "./types";
@@ -91,7 +94,8 @@ function useHeldBlocks(projectId: string, blocks: readonly RequestBlock[], ready
 
 /**
  * One Project's page on Home (YN-212 §3, by request; YN-86 §2.2): its header
- * and tools, its own jumps, "Requests | Conversation", then each request once
+ * and tools, where the project stands (R-27, in both views), its own jumps,
+ * "Requests | Conversation", then each request once
  * in three groups (needs you, in progress, done), what belongs to no request
  * (its Asks in Needs you, its cards in a group of their own after In progress,
  * R-27), and the team and its running work beside them
@@ -203,6 +207,10 @@ export function ProjectHome({
   const openBlock = (key: string) => choose(key, true);
   const toggleBlock = (key: string) => choose(key, !isOpen(key));
   const editorIds = panel?.contentEditors?.editorAgentIds ?? null;
+  // Where the project stands (R-27): the card the page leads with, and what the Project cards group holds, that card
+  // among them.
+  const line = useMemo(() => (projectBlock ? projectLine(projectBlock.sections, editorIds) : null), [projectBlock, editorIds]);
+  const cardsCount = projectCardsCount(projectBlock, projectAsks.filter((ask) => !upFront(ask)).length);
   const executors = needsYou.filter((item) => item.kind === "executor");
   const pending = panel?.pending ?? [];
   // What needs the user (§3.4): the blocks in Needs you, the approvals, the executors' matters and the Project's
@@ -298,6 +306,12 @@ export function ProjectHome({
     if (!askUpFront(key, blocks, projectBlock)) openBlock(block);
     setLanding((was) => ({ key, block, seq: (was?.seq ?? 0) + 1 }));
     return true;
+  }
+  /** The banner's "Project cards N": the requests shown and the Project cards group opened, at its top (R-27 §3.8). */
+  function showProjectCards() {
+    if (view !== "requests") setView("requests");
+    openBlock("project");
+    setLanding((was) => ({ key: null, block: "project", seq: (was?.seq ?? 0) + 1 }));
   }
   /** Shows request `n`'s block, opened, at the top of the page. */
   function showBlock(n: number) {
@@ -500,6 +514,7 @@ export function ProjectHome({
           {!readOnly && <RefreshHome busy={refreshing} onRefresh={onRefresh} />}
         </span>
       </header>
+      {line && <ProjectNow projectId={id} section={line} more={cardsCount} onMore={showProjectCards} />}
       <HomeJumps
         asks={asks.length}
         report={latest ? { title: latest.title, projectName: panel.project.name } : null}
@@ -569,7 +584,7 @@ export function ProjectHome({
               </section>
             ) : null}
             {projectBlock && (
-              <ProjectCards block={projectBlock} open={isOpen("project")} onToggle={(open) => choose("project", open)} common={common} />
+              <ProjectCards block={projectBlock} count={cardsCount} open={isOpen("project")} onToggle={(open) => choose("project", open)} common={common} />
             )}
             {(groups.done.length > 0 || restOfHistory.length > 0) && (
               <details className="request-group request-done" data-group="done">

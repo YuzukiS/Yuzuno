@@ -261,3 +261,214 @@
 .project-cards > .project-block-cards .home-brief {
   padding-top: 0;
 }
+
+/* Where the project stands (R-27, the user's H4): under the project's name, in its colour, the lead's opening as a
+   heading; beside it, when the card names one, what the user is asked to do. Past its validity, the attention colour.
+   It scrolls with the page; the tabs' bar below still sticks (R-25). */
+.now-hero {
+  display: grid;
+  gap: 6px 28px;
+  margin: -2px 0 16px;
+  padding: 18px 24px 14px;
+  border: 1px solid color-mix(in srgb, var(--project-colour) 32%, var(--line));
+  border-radius: 16px;
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--project-colour) 30%, transparent) 0%, transparent 60%),
+    var(--home-surface);
+  cursor: pointer;
+}
+/* Focused by a jump: its highlight says where it landed, not a ring (as a request's block). */
+.now-hero:focus {
+  outline: none;
+}
+.now-hero.is-stale {
+  border-color: color-mix(in srgb, var(--home-attention) 45%, var(--line));
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--home-attention) 18%, transparent) 0%, transparent 60%),
+    var(--home-surface);
+}
+.now-hero.has-side {
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  align-items: start;
+}
+.now-hero-main {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.now-hero-label {
+  margin: 0;
+  color: color-mix(in srgb, var(--project-colour) 88%, var(--ink));
+  font-size: calc(8px + var(--font-adjust, 3px));
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.now-hero.is-stale .now-hero-label {
+  color: var(--home-attention-ink);
+}
+.now-hero-head {
+  display: -webkit-box;
+  max-width: 34em;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(17px + var(--font-adjust, 3px));
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.now-hero-text {
+  max-width: 52em;
+  color: color-mix(in srgb, var(--ink) 82%, var(--home-surface));
+  font-size: calc(11px + var(--font-adjust, 3px));
+  line-height: 1.6;
+}
+.now-hero-text > .brief-markdown {
+  display: -webkit-box;
+  overflow: hidden;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.now-hero-text .brief-markdown > * {
+  display: inline;
+  margin: 0;
+}
+.now-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  min-width: 0;
+  margin: 6px 0 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.now-meta > .now-meta-part + .now-meta-part::before {
+  content: "·";
+  margin-right: 6px;
+}
+.now-meta-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.now-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+}
+.now-actions .talk-link {
+  padding: 2px 0;
+  font-size: inherit;
+}
+.now-actions .home-report-open {
+  min-height: 28px;
+  margin-left: 0;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--accent-ink) 50%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--paper) 40%, transparent);
+}
+.now-hero-aside {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 22px;
+  border-left: 1px solid color-mix(in srgb, var(--project-colour) 30%, var(--line));
+}
+.now-todo-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.now-todo-count {
+  color: var(--home-attention-ink);
+  font-size: calc(15px + var(--font-adjust, 3px));
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.now-todo-list {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  color: color-mix(in srgb, var(--ink) 86%, var(--home-surface));
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  line-height: 1.5;
+  list-style: none;
+}
+.now-todo-list li {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 8px;
+}
+/* An open item, as a box the author ticks: the banner only lists them. */
+.now-todo-list li::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  margin-top: 0.3em;
+  border: 1.5px solid var(--home-ink-2);
+  border-radius: 3px;
+}
+.now-todo-list span {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.now-todo-more {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+@container home (max-width: 520px) {
+  .now-hero {
+    padding: 15px 16px 10px;
+  }
+  .now-hero.has-side {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 12px;
+  }
+  .now-hero-aside {
+    padding: 10px 0 0;
+    border-top: 1px solid color-mix(in srgb, var(--project-colour) 30%, var(--line));
+    border-left: 0;
+  }
+  .now-hero-head {
+    font-size: calc(15px + var(--font-adjust, 3px));
+  }
+  .now-hero-text > .brief-markdown {
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+  }
+  .now-meta-title {
+    display: none;
+  }
+  .now-meta .now-meta-title + .now-meta-part::before {
+    content: none;
+  }
+}

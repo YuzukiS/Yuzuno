@@ -72,7 +72,18 @@ const sections = [
   section("q1", "ask", "Ship the settings page this week?", spec(["q"], { q: md("The layout is ready; the copy is not.") }), {
     ask: { question: "Ship the settings page this week?", state: "open", reply: { options: [{ id: "yes", label: "Yes" }, { id: "no", label: "Not yet" }], freeText: true } },
   }),
-  section("status", "status", "This week", spec(["s"], { s: md("Two cards run; one waits for your choice.") }), {
+  // The card the page leads with (R-27): a lead's newest status, naming what the user is asked to do.
+  section("status", "status", "This week", {
+    root: "body",
+    elements: {
+      body: node("BriefBody", { summary: { lead: "s", forYou: "todo", size: "wide" } }, ["s", "todo"]),
+      s: md("Two cards run; one waits for your choice."),
+      todo: node("Checklist", { title: "Try the settings page", items: [
+        { id: "a", text: "Open Settings and change the theme", done: false }, { id: "b", text: "Read the release notes", done: true },
+        { id: "c", text: "Switch the language to Chinese and back", done: false }, { id: "d", text: "Reply on the design card", done: false },
+      ] }),
+    },
+  }, {
     status: { asOf: at(20), validFor: 86_400, stale: false },
   }),
   section("design", "report", "Settings groups", spec(["a", "b"], {
@@ -147,8 +158,10 @@ const findSection = (projectId, key) =>
   ?? state.home.projects.find((panel) => panel.project.id === projectId)?.brief.history.find((section) => section.key === key);
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
-  en: { needs: /^Needs you/, newMark: "New", inProgress: "In progress", projectCards: /^Project cards 4\s*Not part of a request$/ },
-  "zh-Hans": { needs: /^等你/, newMark: "新", inProgress: "进行中", projectCards: /^项目卡 4\s*不属于任何请求$/ },
+  en: { needs: /^Needs you/, newMark: "New", inProgress: "In progress", projectCards: /^Project cards 4\s*Not part of a request$/,
+    now: { label: "Now", cards: "Project cards 4", todo: "3for you · Try the settings page", more: "1 more · on the status page" } },
+  "zh-Hans": { needs: /^等你/, newMark: "新", inProgress: "进行中", projectCards: /^项目卡 4\s*不属于任何请求$/,
+    now: { label: "近况", cards: "项目卡 4", todo: "3项待你 · Try the settings page", more: "另 1 项 · 在状态页" } },
 };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
@@ -434,7 +447,30 @@ async function check(run) {
     pass(`${run.phone ? "a glance tapped" : "the rail's name clicked"} opens the page at its heading, framed by nothing on the way or landed (R-23)`, opened);
     assert.equal(await page.locator(".home-view").first().getAttribute("lang"), run.language);
     // No horizontal overflow: the page and Home's own scroller.
-    await noOverflow(".project-home-head, .request-blocks");
+    await noOverflow(".project-home-head, .now-hero, .now-hero-main, .now-hero-aside, .request-blocks");
+    // R-27: where the project stands, under its name, in both views: the lead's opening, two of the three things the
+    // user is asked to do and how many more, and the Project cards below; on a phone Needs you's first item still in
+    // the first screen.
+    const now = await page.evaluate(() => {
+      const hero = document.querySelector('[data-project-home="p-dev"] .now-hero');
+      const first = document.querySelector('.request-group[data-group="needs"] > :not(h2)');
+      const text = (el) => el?.textContent.replace(/\s+/g, " ").trim() ?? null;
+      return {
+        key: hero?.dataset.nowKey, label: text(hero?.querySelector(".now-hero-label")), head: text(hero?.querySelector(".now-hero-head")),
+        todo: text(hero?.querySelector(".now-todo-head")), items: [...(hero?.querySelectorAll(".now-todo-list li") ?? [])].map(text),
+        more: text(hero?.querySelector(".now-todo-more")), cards: text(hero?.querySelector(".now-actions .talk-link")),
+        beside: hero ? getComputedStyle(hero).gridTemplateColumns.split(" ").length : 0,
+        above: hero && document.querySelector(".project-view-tabs-bar") ? hero.compareDocumentPosition(document.querySelector(".project-view-tabs-bar")) === Node.DOCUMENT_POSITION_FOLLOWING : false,
+        needsTop: first ? Math.round(first.getBoundingClientRect().top) : null, screen: innerHeight,
+      };
+    });
+    assert.deepEqual([now.key, now.label, now.head, now.todo, now.items, now.more, now.cards],
+      ["status", w.now.label, "Two cards run; one waits for your choice.", w.now.todo,
+        ["Open Settings and change the theme", "Switch the language to Chinese and back"], w.now.more, w.now.cards], JSON.stringify(now));
+    assert.ok(now.above, "above the tabs' bar, so in both views");
+    assert.equal(now.beside, run.phone ? 1 : 2, `what is asked of the user beside the conclusion, under it on a phone: ${JSON.stringify(now)}`);
+    if (run.phone) assert.ok(now.needsTop !== null && now.needsTop < now.screen, `Needs you's first item in the first screen: ${JSON.stringify(now)}`);
+    pass("the banner: the conclusion, what the user is asked to do and the Project cards; nothing wider than the window", now);
     // YN-212: the page reads by request. R-27: with none, the Project's own Ask stands on its own in Needs you and its
     // cards are a group of their own after it, open; the 30-day history is in Done, closed.
     const titles = await page.locator(".request-group-title").evaluateAll((els) => els.map((el) => el.textContent.trim()));
@@ -465,7 +501,14 @@ async function check(run) {
     await page.waitForFunction(() => document.querySelector("details.project-cards")?.hasAttribute("data-open"));
     await card("design").waitFor({ timeout: 5_000 });
     assert.ok(focusShown, "the group's heading shows its focus");
-    await group.locator("summary").evaluate((el) => el.scrollIntoView({ block: "start" }));
+    // The banner's Project cards: back to the group, open, at its top.
+    await page.locator('[data-project-home="p-dev"] .now-hero').evaluate((el) => el.scrollIntoView({ block: "start" }));
+    await page.locator('[data-project-home="p-dev"] .now-actions .talk-link').click();
+    await page.waitForFunction(() => {
+      const top = document.querySelector("details.project-cards")?.getBoundingClientRect().top;
+      return top !== undefined && top > 0 && top < innerHeight * 0.6;
+    }, null, { timeout: 5_000 });
+    await page.waitForTimeout(400);
     await shot("project-cards");
     pass("the Project's Ask on its own in Needs you; its cards in their group, open, each once, closed and opened by the keyboard; Done closed with the history inside; no overflow", { titles, cards: once.ids.length });
     // The cards' columns and where the team's facts stand (YN-157): the team beside them only from 1250 px of page;

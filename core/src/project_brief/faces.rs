@@ -74,11 +74,12 @@ fn attachment(entry: &Value) -> Value {
 }
 
 /// The summary's ids as the Agent sent them, before Core normalized or repaired the section; null when it named none.
+/// forYou (R-27) is the Checklist of what the user is asked to do, which Home shows in the project's banner.
 fn requested(section: &Value) -> Value {
     let body = &section["body"];
     let summary = body["root"].as_str().map(|root| &body["elements"][root]["props"]["summary"]);
     let mut ids = serde_json::Map::new();
-    for slot in ["lead", "visual", "conditions"] {
+    for slot in ["lead", "visual", "conditions", "forYou"] {
         if let Some(id) = summary.and_then(|summary| summary[slot].as_str()) {
             ids.insert(slot.into(), json!(id.chars().take(MAX_ID).collect::<String>()));
         }

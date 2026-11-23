@@ -34,6 +34,12 @@ export const blockText = strings(
     project: "Project",
     projectCards: "Project cards",
     projectNote: "Not part of a request",
+    nowLabel: "Where the project stands",
+    now: "Now",
+    nowStale: "Past its validity",
+    nowOpen: (title: string | null) => `for you${title ? ` · ${title}` : ""}`,
+    nowMore: (n: number) => `${n} more · on the status page`,
+    nowCards: (n: number) => `Project cards ${n}`,
     untitled: (hint: string) => `Waiting for a title · ${hint}`,
     newMark: "New",
     actions: { answer: "Answer", resend: "Send again", confirm: "Confirm done", follow: "Follow up" } as Record<BlockAction, string>,
@@ -84,6 +90,12 @@ export const blockText = strings(
     project: "项目",
     projectCards: "项目卡",
     projectNote: "不属于任何请求",
+    nowLabel: "项目近况",
+    now: "近况",
+    nowStale: "已过有效期",
+    nowOpen: (title) => `项待你${title ? ` · ${title}` : ""}`,
+    nowMore: (n) => `另 ${n} 项 · 在状态页`,
+    nowCards: (n) => `项目卡 ${n}`,
     untitled: (hint) => `等待标题 · ${hint}`,
     newMark: "新",
     actions: { answer: "回答", resend: "再发一次", confirm: "确认完成", follow: "追问" },
@@ -163,7 +175,7 @@ export const requestTitle = (request: ProjectRequest, untitled: (hint: string) =
   request.title?.trim() || untitled(untitledHint(request.text));
 
 /** A time as the page says it, the exact one in its tip. */
-function When({ at }: { at: string | null | undefined }) {
+export function When({ at }: { at: string | null | undefined }) {
   const language = useLanguage();
   const time = useTimeDisplay();
   if (!at) return null;
@@ -618,11 +630,14 @@ export function ProjectAsks({ block, common }: { block: ProjectBlock; common: Bl
  */
 export function ProjectCards({
   block,
+  count,
   open,
   onToggle,
   common,
 }: {
   block: ProjectBlock;
+  /** What it holds (projectCardsCount): none, and it is not drawn. */
+  count: number;
   open: boolean;
   /** The group opened or closed, by the user or by a jump (the details' own toggle). */
   onToggle: (open: boolean) => void;
@@ -630,7 +645,6 @@ export function ProjectCards({
 }) {
   const t = blockText(useLanguage());
   const answered = block.asks.filter((ask) => !common.upFront(ask));
-  const count = block.sections.length + answered.length;
   if (count === 0) return null;
   return (
     <details
