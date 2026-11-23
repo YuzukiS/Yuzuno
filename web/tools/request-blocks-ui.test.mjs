@@ -190,6 +190,28 @@ test("an action says which request it is for; a deliverable opens its version", 
   assert.deepEqual(page.calls().at(-1), { report: { key: "yn-92", version: 3, sectionId: 999 } });
 });
 
+// R-30: a delivery waiting for the user's confirmation has Follow up beside Confirm done, which goes to the same
+// request and confirms nothing; the line under its fact says it waits for the user, and a confirmed one says so.
+test("Confirm done has Follow up beside it; waiting for you and confirmed by you are said apart from a task being done", () => {
+  const page = mount();
+  const actions = (n) => [...page.block(n).querySelectorAll(".request-block-action")];
+  assert.deepEqual(actions(8).map((b) => [b.dataset.action, page.text(b), b.getAttribute("aria-label"), b.classList.contains("is-primary")]), [
+    ["confirm", "Confirm done", "Confirm done: R-8", true],
+    ["follow", "Follow up", "Follow up: R-8", false],
+  ]);
+  assert.deepEqual(actions(9).map((b) => b.dataset.action), ["follow"], "in progress: Follow up alone");
+  actions(8)[1].click();
+  assert.deepEqual(page.calls(), [{ action: "follow", n: 8, key: null }], "Follow up confirms nothing");
+  assert.match(page.text(page.block(8).querySelector(".request-block-fact-meta")), /^Waiting for you to confirm · /);
+  assert.match(page.text(page.block(11).querySelector(".request-block-fact-meta")), /^Confirmed by you · /);
+  assert.doesNotMatch(page.text(page.block(9).querySelector(".request-block-fact-meta")), /confirm/i);
+  const zh = mount({ lang: "zh" });
+  assert.deepEqual([...zh.block(8).querySelectorAll(".request-block-action")].map(zh.text), ["确认完成", "继续跟进"]);
+  assert.match(zh.text(zh.block(8).querySelector(".request-block-fact-meta")), /^等你确认 · /);
+  assert.match(zh.text(zh.block(11).querySelector(".request-block-fact-meta")), /^你已确认 · /);
+  assert.deepEqual([...page.errors, ...zh.errors], []);
+});
+
 test("unfolded: open Asks first, then the task's one card, the answered Asks, joined tasks and the request's own conversation", async () => {
   const page = mount({ opened: ["r7", "r10", "r9"] });
   const r7 = page.block(7);
