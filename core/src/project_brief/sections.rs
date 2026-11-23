@@ -670,44 +670,59 @@ pub(super) fn defer(store: &Store, project: &str, key: &str, until: Option<&str>
 /// no longer the live unresolved ask: a reply to it never marks a newer ask
 /// under the same key (T-9), as when its owner asked again meanwhile.
 pub(super) fn mark_replied(store: &Store, project: &str, key: &str, version: i64, text: &str) -> Result<bool> {
-    mark_replied_form(store, project, key, version, text, None, &[], &[], None)
+    mark_replied_form(store, project, key, version, text, Marked::default())
 }
 
-/// `mark_replied` with the form answers Home checked (form_answers), kept
-/// with the version they answer (YN-74), the images the reply carried
-/// (YN-134), and the reply as the user gave it to that version (YN-223:
-/// its receipt's snapshot, which Home's answered ask is drawn from); a reply
-/// without them clears any.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn mark_replied_form(store: &Store, project: &str, key: &str, version: i64, text: &str, form: Option<&Value>, images: &[String],
-    files: &[crate::input_files::FileRef], snapshot: Option<&Value>) -> Result<bool> {
-    let form = form.map(|form| json!({"version": version, "formId": form["formId"], "answers": form["answers"]}).to_string());
-    let images = (!images.is_empty()).then(|| json!(images).to_string());
-    let files = (!files.is_empty()).then(|| json!(files).to_string());
-    let snapshot = snapshot.map(Value::to_string);
+/// What a reply marks on the version it answers, besides its text.
+#[derive(Default)]
+pub(super) struct Marked<'a> {
+    /// The form answers Home checked (form_answers), kept with the version they answer (YN-74).
+    pub form: Option<&'a Value>,
+    /// The images (YN-134) and files (YN-145) the reply carried.
+    pub images: &'a [String],
+    pub files: &'a [crate::input_files::FileRef],
+    /// The reply as the user gave it to that version (YN-223): its receipt's snapshot, which Home's answered ask is
+    /// drawn from.
+    pub snapshot: Option<&'a Value>,
+    /// A retry of a reply already sent (YN-223): it marks the ask only while no reply is marked on it, as when the
+    /// first send was delivered but not marked, so a later reply the user sent meanwhile is never overwritten.
+    pub retry: bool,
+}
+
+/// `mark_replied` with what else the reply kept (Marked); a reply without one of them clears it.
+pub(super) fn mark_replied_form(store: &Store, project: &str, key: &str, version: i64, text: &str, marked: Marked) -> Result<bool> {
+    let form = marked.form.map(|form| json!({"version": version, "formId": form["formId"], "answers": form["answers"]}).to_string());
+    let images = (!marked.images.is_empty()).then(|| json!(marked.images).to_string());
+    let files = (!marked.files.is_empty()).then(|| json!(marked.files).to_string());
+    let snapshot = marked.snapshot.map(Value::to_string);
     let changed = store.db.write()?.execute(
         "UPDATE project_brief_sections SET ask_state='replied',replied_at=?3,reply_text=?4,reply_form=?6,reply_images=?7,reply_files=?8,reply_snapshot=?9
-         WHERE project_id=?1 AND key=?2 AND version=?5 AND live=1 AND kind='ask' AND ask_state IN ('open','replied')",
-        params![project, key, now(), text, version, form, images, files, snapshot],
+         WHERE project_id=?1 AND key=?2 AND version=?5 AND live=1 AND kind='ask'
+         AND (ask_state='open' OR (ask_state='replied' AND NOT ?10))",
+        params![project, key, now(), text, version, form, images, files, snapshot, marked.retry],
     )?;
     Ok(changed == 1)
 }
 
-/// The reply snapshot (YN-223) of each live replied ask of `project` that
-/// has one, by its row: what Home's answered ask is drawn from. A value Core
-/// cannot read shows none, as a reply from before snapshots were kept.
-pub(super) fn reply_snapshots(db: &Connection, project: &str) -> Result<HashMap<i64, Value>> {
+/// What Core kept of an answered ask's reply, by its row (YN-223): the reply as the user gave it (`snapshot`), and
+/// the form answers by id (`form`, YN-74) that a reply from before snapshots may still be read by. An ask replied
+/// or resolved, live or in History. A value Core cannot read shows none.
+pub(super) struct KeptReply {
+    pub snapshot: Option<Value>,
+    pub form: Option<Value>,
+}
+
+pub(super) fn kept_replies(db: &Connection, project: &str) -> Result<HashMap<i64, KeptReply>> {
     let mut query = db.prepare_cached(
-        "SELECT seq,reply_snapshot FROM project_brief_sections
-         WHERE project_id=?1 AND live=1 AND kind='ask' AND ask_state='replied' AND reply_snapshot IS NOT NULL",
+        "SELECT seq,reply_snapshot,reply_form FROM project_brief_sections
+         WHERE project_id=?1 AND kind='ask' AND ask_state IN ('replied','resolved') AND (reply_snapshot IS NOT NULL OR reply_form IS NOT NULL)",
     )?;
-    let rows = query.query_map([project], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    let rows = query.query_map([project], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))?;
+    let read = |raw: Option<String>| raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).filter(Value::is_object);
     let mut kept = HashMap::new();
     for row in rows {
-        let (seq, raw) = row?;
-        if let Some(snapshot) = serde_json::from_str::<Value>(&raw).ok().filter(Value::is_object) {
-            kept.insert(seq, snapshot);
-        }
+        let (seq, snapshot, form) = row?;
+        kept.insert(seq, KeptReply { snapshot: read(snapshot), form: read(form) });
     }
     Ok(kept)
 }

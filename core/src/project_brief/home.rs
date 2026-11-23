@@ -298,8 +298,8 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         let mut refreshed = std::collections::HashSet::new();
         // The user's notes on each ask (YN-213), apart from its reply.
         let notes = super::ask_notes::of_project(&db, id)?;
-        // Each replied ask's reply as the user gave it (YN-223), when Core kept one.
-        let snapshots = sections::reply_snapshots(&db, id)?;
+        // Each answered ask's reply as the user gave it (YN-223), when Core kept one.
+        let kept = sections::kept_replies(&db, id)?;
         let mut shown = |rows: &[sections::Row]| -> Result<Vec<Value>> {
             rows.iter().map(|row| {
                 let mut section = sections::section_json(row, &owner(row), seen.get(&row.key), refs.of(&row.data["body"]), at);
@@ -314,13 +314,14 @@ pub(super) fn build(store: &Store) -> Result<Value> {
                     if let Some(notes) = notes.get(&row.identity).filter(|_| row.kind == "ask") {
                         section["ask"]["notes"] = json!(notes);
                     }
-                    if let Some(snapshot) = snapshots.get(&row.seq).filter(|_| row.replied_ask()) {
-                        section["ask"]["replySnapshot"] = snapshot.clone();
-                    }
                 }
                 if !row.live {
                     section["historyReason"] = json!(row.history_reason);
                     section["currentSource"] = json!(current(row)?);
+                }
+                // An answered ask's reply as the user gave it (YN-223): replied, or resolved in History.
+                if let Some(snapshot) = kept.get(&row.seq).and_then(|kept| answered(row, &project.name, kept)) {
+                    section["ask"]["replySnapshot"] = snapshot;
                 }
                 if let Some(refresh) = refreshes.get(&row.identity).filter(|_| refreshed.insert(row.identity)) {
                     section["refresh"] = refresh.clone();
@@ -513,6 +514,23 @@ fn form_answers(row: &sections::Row, reply: &FormReply, text: &str) -> Result<Va
         return Err(refused("form_mismatch: the reply's text does not say these answers".into()));
     }
     Ok(json!({"id":reply.form_id,"title":title,"fields":kept}))
+}
+
+/// An answered ask's reply as the user gave it to the version it answers (YN-223): the snapshot Core kept with it; or,
+/// for a form reply from before Core kept one, the answers it kept by id (YN-74, reply_form) read as that very
+/// version's form labels them, only while the ask is still that version and the reply's text says exactly those
+/// answers (form_answers), so nothing is guessed: a note beside them, or any other text, leaves the reply as sent.
+fn answered(row: &sections::Row, project: &str, kept: &sections::KeptReply) -> Option<Value> {
+    if row.kind != "ask" || !matches!(row.ask_state.as_deref(), Some("replied" | "resolved")) {
+        return None;
+    }
+    if let Some(snapshot) = &kept.snapshot {
+        return Some(snapshot.clone());
+    }
+    let form = kept.form.as_ref().filter(|form| row.replied_ask() && form["version"].as_i64() == Some(row.version))?;
+    let reply: FormReply = serde_json::from_value(json!({"formId": form["formId"], "answers": form["answers"]})).ok()?;
+    let answers = form_answers(row, &reply, row.reply_text.as_deref()?).ok()?;
+    Some(snapshot(project, Some(row), None, None, None, Some(answers)))
 }
 
 /// The option of an ask's reply with this id: (id, label).
@@ -975,7 +993,10 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         _ => None,
     };
     let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
-    let receipt = if let Some(previous) = ws.stored(move |store| store.receipt(&agent, &client)).await? {
+    let previous = ws.stored(move |store| store.receipt(&agent, &client)).await?;
+    // A retry of a reply already sent marks the ask only while no reply is marked on it (sections::Marked).
+    let retry = previous.is_some();
+    let receipt = if let Some(previous) = previous {
         // The same reply to the same version, sent before: its receipt.
         let same = previous.origin.as_ref().is_some_and(|sent| {
             sent["kind"] == "home" && sent["projectId"] == project && sent["key"] == key
@@ -1075,7 +1096,10 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             snapshot(&name, Some(row), None, chosen.as_ref(), words, answers)
         });
         let (store, key, id, images, files) = (ws.store.clone(), key.clone(), project.clone(), input.images.clone(), input.files.clone());
-        if crate::db::blocking(move || sections::mark_replied_form(&store, &id, &key, version, &reply, form.as_ref(), &images, &files, kept.as_ref())).await? {
+        let marked = move || sections::mark_replied_form(&store, &id, &key, version, &reply, sections::Marked {
+            form: form.as_ref(), images: &images, files: &files, snapshot: kept.as_ref(), retry,
+        });
+        if crate::db::blocking(marked).await? {
             announce(ws, Some(&project));
         }
     }

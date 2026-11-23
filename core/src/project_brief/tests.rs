@@ -1555,8 +1555,29 @@ async fn a_delivered_form_reply_keeps_its_answers_by_id_with_the_version_it_answ
         choice: None, version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()), form: Some(form.clone()), images: vec![], files: vec![], intent: Default::default(), note: None };
     home::reply(&ws, project.clone(), reply).await.unwrap();
     assert_eq!(kept(&ws), Some(json!({"version":1,"formId":"prefs","answers":{"checks":["wide","keys"]}})));
+    // YN-223: Home shows the answers as given; a reply from before Core kept that is read by the answers kept by id,
+    // as this version's form labels them, only while its text says exactly those answers and the ask is that version.
+    let answers = json!({"id":"prefs","title":"Preview setup","fields":[{"id":"checks","label":"Checks","type":"multi","answer":["Wide text","Keyboard"]}]});
+    let given = snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],"form":answers}));
+    let shown = |ws: &Arc<Workspace>| -> Value {
+        let home = home::build(&ws.store).unwrap();
+        let setup = home["projects"][0]["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "setup").unwrap().clone();
+        setup["ask"].get("replySnapshot").cloned().unwrap_or(Value::Null)
+    };
+    let set = |ws: &Arc<Workspace>, column: &str, value: Option<&str>| {
+        ws.store.db.write().unwrap().execute(&format!("UPDATE project_brief_sections SET {column}=?2 WHERE project_id=?1 AND key='setup' AND live=1"),
+            rusqlite::params![project, value]).unwrap();
+    };
+    assert_eq!(shown(&ws), given);
+    set(&ws, "reply_snapshot", None);
+    assert_eq!(shown(&ws), given, "an earlier reply, read by the answers kept by id");
+    set(&ws, "reply_text", Some(format!("{text}\n\nAnd dark mode").as_str()));
+    assert_eq!(shown(&ws), Value::Null, "a note beside them: the reply as sent, nothing guessed");
+    set(&ws, "reply_text", Some(text.as_str()));
+    accept(&ws, "a", input("s1e", 1, vec![edit("setup", json!({"note":markdown("Later context.")}))])).await;
+    assert_eq!(shown(&ws), Value::Null, "the ask no longer that version: the reply as sent");
     // Asked again: the earlier reply's answers never count for the new question.
-    accept(&ws, "a", input("s2", 1, vec![put("setup", "ask")])).await;
+    accept(&ws, "a", input("s2", 2, vec![put("setup", "ask")])).await;
     assert_eq!(kept(&ws), None);
 }
 
@@ -2307,10 +2328,10 @@ async fn home_shows_a_replied_asks_reply_as_the_user_gave_it_to_that_version() {
         input: crate::model::MessageInput { client_message_id: "m1".into(), text: message, text_blocks: None, images: vec![],
             expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(sent)).unwrap();
-    let reply = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: "Go".into(), client_message_id: "m1".into(),
+    let reply = || home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: "Go".into(), client_message_id: "m1".into(),
         choice: Some("left".into()), version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None,
         images: vec![], files: vec![], intent: Default::default(), note: None };
-    home::reply(&ws, project.clone(), reply).await.unwrap();
+    home::reply(&ws, project.clone(), reply()).await.unwrap();
     let shown = |ws: &Workspace| -> Value {
         let home = home::build(&ws.store).unwrap();
         home["projects"][0]["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "decide").unwrap().clone()
@@ -2320,6 +2341,16 @@ async fn home_shows_a_replied_asks_reply_as_the_user_gave_it_to_that_version() {
     let answered = shown(&ws);
     assert_eq!((answered["ask"]["state"].clone(), answered["ask"]["replyText"].clone()), (json!("replied"), json!("Left: Go")));
     assert_eq!(answered["ask"]["replySnapshot"], given);
+    // The user replies again; a retry of the first send then never overwrites that later reply.
+    let later = snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way?","options":two_ways(),
+        "choice":{"id":"right","label":"Right"},"text":"On second thought"}));
+    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Right: On second thought",
+        sections::Marked { snapshot: Some(&later), ..Default::default() }).unwrap());
+    let retried = home::reply(&ws, project.clone(), reply()).await.unwrap();
+    assert_eq!(retried.status, "accepted", "the retry answers with the first send's receipt");
+    let kept_later = shown(&ws);
+    assert_eq!((kept_later["ask"]["replyText"].clone(), kept_later["ask"]["replySnapshot"].clone()), (json!("Right: On second thought"), later.clone()));
+    let given = later;
     // Its owner's edit of the body keeps the reply as it was given; an Agent's read never carries it.
     accept(&ws, "a", input("q2", 1, vec![edit("decide", json!({"note":markdown("Started on the left.")}))])).await;
     let edited = shown(&ws);
