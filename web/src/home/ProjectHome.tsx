@@ -150,6 +150,7 @@ export function ProjectHome({
   const tt = talkText(language);
   const life = useStrings(lifecycleText);
   const root = useRef<HTMLDivElement>(null);
+  const tabBar = useRef<HTMLDivElement>(null);
   const [wide, setWide] = useState(false);
   const [seeingAll, setSeeingAll] = useState(false);
   const [seenError, setSeenError] = useState("");
@@ -240,6 +241,22 @@ export function ProjectHome({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+  // The room Home keeps clear above a jump's target, from the tabs' bar as drawn (R-25): it sticks under the jumps,
+  // so a card landed on by a jump must start below it too (home.css).
+  useLayoutEffect(() => {
+    const element = tabBar.current;
+    const view = element?.closest<HTMLElement>(".home-view");
+    if (!element || !view) return;
+    const keep = () => view.style.setProperty("--project-tabs-height", `${Math.ceil(element.getBoundingClientRect().height)}px`);
+    keep();
+    if (typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(keep);
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      view.style.removeProperty("--project-tabs-height");
+    };
+  }, [panel !== null]);
   /** Scrolls to `target`, opens the card or fold that holds it, and settles once it has landed. */
   function jumpTo(target: HTMLElement | null, block: ScrollLogicalPosition = "center") {
     if (!target) return;
@@ -492,20 +509,22 @@ export function ProjectHome({
           {seenError}
         </p>
       )}
-      <div className="project-view-tabs" role="tablist" aria-label={tb.views}>
-        {(["requests", "chat"] as const).map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            role="tab"
-            data-tab={tab}
-            aria-selected={view === tab}
-            aria-controls={tab === "chat" ? `project-talk-chat-${id}` : `project-requests-${id}`}
-            onClick={() => chooseView(tab)}
-          >
-            {tab === "requests" ? tb.requestsTab(counts.needs + counts.doing) : tb.chatTab}
-          </button>
-        ))}
+      <div className="project-view-tabs-bar" ref={tabBar}>
+        <div className="project-view-tabs" role="tablist" aria-label={tb.views}>
+          {(["requests", "chat"] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              data-tab={tab}
+              aria-selected={view === tab}
+              aria-controls={tab === "chat" ? `project-talk-chat-${id}` : `project-requests-${id}`}
+              onClick={() => chooseView(tab)}
+            >
+              {tab === "requests" ? tb.requestsTab(counts.needs + counts.doing) : tb.chatTab}
+            </button>
+          ))}
+        </div>
       </div>
       <ProjectTalk
         projectId={id}

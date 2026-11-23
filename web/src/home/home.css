@@ -366,9 +366,10 @@
 /* Home's own jumps (YN-86): at the top of Home's scroller wherever it is
    scrolled, never over the app's toolbar; it goes with Home when a report
    covers it. Home keeps its measured height (HomeJumps.tsx) clear above a
-   jump's target. Opaque, so what scrolls under it is not read through it. */
+   jump's target, and that of a Project page's tabs stuck under it (R-25,
+   ProjectHome.tsx). Opaque, so what scrolls under it is not read through it. */
 .home-view {
-  scroll-padding-top: calc(var(--home-jumps-height, 0px) + 8px);
+  scroll-padding-top: calc(var(--home-jumps-height, 0px) + var(--project-tabs-height, 0px) + 8px);
 }
 .home-jumps {
   position: sticky;
