@@ -802,12 +802,18 @@ test("an Ask answered in Needs you keeps its answer card where it was until the 
   }
 });
 
+// As Core keeps a reply with the version it answers (YN-223, home.rs `snapshot`): the question and options the user
+// saw, and their answer.
+const kept = (s, answer) => ({ format: 1, projectName: "App", sectionKind: "ask", title: s.title, question: s.ask.question,
+  options: [...(s.ask.reply.options ?? []), ...Object.values(s.ask.reply.choice ?? {})].map(({ id, label }) => ({ id, label })),
+  choice: null, text: null, form: null, ...answer });
+
 // T-132: an answered ask is its owner's to act on, not the user's to decide.
 function repliedFixture() {
   const home = homeFixture();
   const app = home.projects[0].brief;
   const budget = app.sections.find((s) => s.key === "budget");
-  budget.ask = { ...budget.ask, state: "replied", repliedAt: at(3), replyText: "Plan B" };
+  budget.ask = { ...budget.ask, state: "replied", repliedAt: at(3), replyText: "Plan B", replySnapshot: kept(budget, { choice: { id: "plan-b", label: "Plan B" } }) };
   app.sections.push(
     section("deploy", "ask", "Deploy now?", 2, owner("b", "Hana"), {
       updatedAt: at(1),
@@ -820,11 +826,19 @@ function repliedFixture() {
       history: true, historyReason: "resolved", body: body("Migrated 12 tables"),
       ask: { question: "Run the migration now?", state: "resolved", repliedAt: at(80), replyText: "Run it tonight", reply: { freeText: true } },
     }),
+    // Resolved after a reply Core kept as the user gave it (YN-223).
+    section("region", "ask", "Which region?", 2, owner("a", "Mori"), {
+      history: true, historyReason: "resolved", body: body("Moved to the EU region"),
+      ask: { question: "Move the data to the EU region?", state: "resolved", repliedAt: at(90), replyText: "EU: before Friday",
+        reply: { options: [{ id: "eu", label: "EU" }, { id: "us", label: "US" }], freeText: true },
+        replySnapshot: { format: 1, projectName: "App", sectionKind: "ask", title: "Which region?", question: "Move the data to the EU region?",
+          options: [{ id: "eu", label: "EU" }, { id: "us", label: "US" }], choice: { id: "eu", label: "EU" }, text: "before Friday", form: null } },
+    }),
   );
   return home;
 }
 
-test("YN-3 a replied ask is an answer card: whom it waits for, its title, the reply quoted, who acts next, never New; Reply again and the question and details on it; an owner's later update in place (T-132, the user's D3)", async () => {
+test("YN-3 a replied ask is an answer card, as R-29 settled it (YN-223): the question as the user answered it, then the reply as given, whom it waits for, never New; the options then, Details and Reply again on it; an owner's later update apart; an earlier reply said so", async () => {
   const p = await mount({ open: "p-app", home: repliedFixture() });
   try {
     const budget = card(p, "p-app", "budget");
@@ -833,23 +847,44 @@ test("YN-3 a replied ask is an answer card: whom it waits for, its title, the re
     assert.ok(budget.classList.contains("is-answer"), "an answer card");
     assert.equal(budget.dataset.cardSize, "small", "a small card on the deck");
     const kind = budget.querySelector(".home-kind");
-    assert.equal(kind.textContent.trim(), "Replied · waiting for Hana");
+    assert.equal(kind.textContent.trim(), "Waiting for Hana");
     assert.ok(kind.classList.contains("is-replied"), "no attention colour once answered");
-    assert.equal(budget.querySelector(".home-answer-title h3").textContent, "Which plan?");
-    assert.match(budget.querySelector(".home-answer-reply").textContent, /^You\s*Plan B$/, "the reply quoted, as the user's");
-    assert.equal(budget.querySelector(".home-answer-next").textContent, "Next: Hana acts on your reply");
+    // Read in order: whose card, the question as the user answered it, then their reply as they gave it.
+    assert.equal(budget.querySelector(".home-answer-source").textContent, "Which plan?·The question as you answered it");
+    assert.equal(budget.getAttribute("aria-labelledby"), budget.querySelector(".home-answer-name").id, "named by its title");
+    assert.equal(budget.querySelector(".home-answer-ask").textContent, "Plan A or B?");
+    assert.equal(budget.querySelector(".home-answer-hint"), null, "a question of one sentence has no note");
+    assert.equal(budget.querySelector(".home-answer-unkept"), null, "the question kept with the reply");
+    assert.equal(budget.querySelector(".home-answer-label").textContent, "Your reply");
+    assert.equal(budget.querySelector(".home-answer-given .home-reply-choice").textContent, "Plan B", "the option chosen, as chosen");
+    assert.equal(budget.querySelector(".home-answer-given .home-reply-words"), null, "no words of the user's");
+    const order = [...budget.querySelectorAll(".home-answer-ask, .home-answer-label, .home-reply-choice")].map((el) => el.className);
+    assert.deepEqual(order, ["home-answer-ask", "home-answer-label", "home-reply-choice"], "the question before the answer");
     assert.equal(budget.querySelector(".home-answer-update"), null);
     assert.ok(!budget.querySelector(".home-changed"), "answered, it is not New, though never marked seen");
     assert.ok(budget.querySelector(":scope > .home-card-body").hidden, "the rest folded");
+    // Its actions: Copy answer, the options then, Details, Reply again.
+    assert.deepEqual([...budget.querySelectorAll(".home-answer-given footer button")].map((b) => b.textContent.trim()),
+      ["Copy answer", "Options then", "Details", "Reply again"]);
+    const options = budget.querySelector(".home-answer-options-toggle");
+    assert.equal(options.getAttribute("aria-expanded"), "false");
+    options.click();
+    await waitFor(() => budget.querySelector(".home-answer-options"), "the options then");
+    assert.equal(options.getAttribute("aria-expanded"), "true");
+    assert.equal(budget.querySelector(".home-answer-options").id, options.getAttribute("aria-controls"));
+    assert.deepEqual([...budget.querySelectorAll(".home-answer-options li")].map((li) => [li.textContent, li.getAttribute("aria-current")]),
+      [["Plan A", null], ["Plan Bchosen", "true"]]);
+    options.click();
+    await waitFor(() => !budget.querySelector(".home-answer-options"), "closed again");
     const details = budget.querySelector(".home-answer-details");
-    assert.equal(details.textContent.trim(), "Question and details");
+    assert.equal(details.textContent.trim(), "Details");
     assert.equal(details.getAttribute("aria-expanded"), "false");
     details.click();
     await waitFor(() => !budget.querySelector(":scope > .home-card-body").hidden, "unfolded");
-    // Unfolded: the question and details; the reply is on the card's face, not again; no controls, no Defer.
+    // Unfolded: the Ask's body; the question and reply are on the card's face, not again; no controls, no Defer.
     assert.equal(details.getAttribute("aria-expanded"), "true");
     assert.ok(budget.classList.contains("is-open") && budget.dataset.cardSize === undefined, "opened, it takes its row");
-    assert.equal(budget.querySelector(":scope > .home-card-body > .home-question").textContent, "Plan A or B?");
+    assert.equal(budget.querySelector(":scope > .home-card-body > .home-question"), null, "the question is not drawn twice");
     assert.match(budget.querySelector(":scope > .home-card-body > .home-section-body").textContent, /Which plan\? body/);
     assert.equal(budget.querySelector(".home-ask-replied"), null, "the reply is not drawn twice");
     assert.equal(budget.querySelector(".home-ask-reply"), null);
@@ -857,15 +892,22 @@ test("YN-3 a replied ask is an answer card: whom it waits for, its title, the re
     // Reply again, on the card, brings the controls back.
     p.button("Reply again", budget).click();
     await waitFor(() => radioOf(budget, "Plan B"), "the choice is offered again");
-    // Updated by its owner after the reply: Updated, not New, and what the owner says now in place.
+    // Updated by its owner after the reply: Updated, not New, and what the owner says now apart from the reply. A
+    // reply from before Core kept the question with it: its text as sent, the Ask's question now, said so, and no
+    // option shown as chosen from the text.
     const deploy = card(p, "p-app", "deploy");
     assert.ok(deploy.classList.contains("is-replied") && deploy.classList.contains("is-answer"));
     assert.equal(deploy.querySelector(".home-changed").textContent, "Updated");
-    assert.match(deploy.querySelector(".home-answer-reply").textContent, /^You\s*Yes, deploy$/);
+    assert.equal(deploy.querySelector(".home-kind").textContent.trim(), "Hana updated it");
+    assert.equal(deploy.querySelector(".home-answer-source").textContent, "Deploy now?·QuestionUpdated");
+    assert.equal(deploy.querySelector(".home-answer-ask").textContent, "Deploy to production?");
+    assert.match(deploy.querySelector(".home-answer-unkept").textContent, /no copy of the question with this earlier reply/);
+    assert.equal(deploy.querySelector(".home-answer-given .home-reply-words").textContent.trim(), "Yes, deploy");
+    assert.equal(deploy.querySelector(".home-reply-choice"), null, "nothing read back from the text as chosen");
+    assert.equal(deploy.querySelector(".home-answer-options-toggle"), null, "no options then without the snapshot");
     const update = deploy.querySelector(".home-answer-update");
     assert.match(update.querySelector(".home-answer-update-head").textContent, /^Hana updated it .+, after your reply$/);
     assert.match(update.textContent, /Deploy started; waiting for CI/);
-    assert.equal(deploy.querySelector(".home-answer-next"), null, "its owner has said what is next");
     assert.ok(deploy.querySelector(":scope > .home-card-body").hidden, "the rest folded");
     // The page's new count is Core's, less the answered Ask its owner has not changed since.
     assert.equal(p.panel("p-app").querySelector(".home-panel-chips .home-chip.is-new").textContent, "1 new");
@@ -885,6 +927,17 @@ test("YN-3 a replied ask is an answer card: whom it waits for, its title, the re
     assert.equal(migrate.querySelector(".home-question").textContent, "Run the migration now?");
     assert.equal(migrate.querySelector(".home-history-reply").textContent, "Your reply: Run it tonight");
     assert.match(migrate.textContent, /Migrated 12 tables/);
+    // One whose reply Core kept as the user gave it (YN-223): the option chosen and their words, as on its answer card.
+    const region = [...history.querySelectorAll("li details")].find((d) => /Which region\?/.test(d.textContent));
+    region.open = true;
+    region.dispatchEvent(new p.w.Event("toggle"));
+    await waitFor(() => region.querySelector(".home-history-answer"), "the resolved ask with its kept reply opens");
+    assert.equal(region.querySelector(".home-question").textContent, "Move the data to the EU region?");
+    assert.equal(region.querySelector(".home-history-answer .home-reply-choice").textContent, "EU");
+    assert.equal(region.querySelector(".home-history-answer .home-reply-words").textContent.trim(), "before Friday");
+    assert.equal(region.querySelector(".home-history-reply"), null, "not the text as sent besides");
+    assert.deepEqual([...region.querySelectorAll(".home-answer-options li")].map((li) => [li.querySelector("span").textContent, li.getAttribute("aria-current")]),
+      [["EU", "true"], ["US", null]], "the options as the user saw them, the chosen one marked");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -904,17 +957,22 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
       fields: [{ id: "part", type: "single", label: "First part", required: false, options: [{ id: "ui", label: "The UI" }, { id: "core", label: "Core" }] }] } } },
   }));
   const live = (key) => app.brief.sections.find((s) => s.key === key);
-  const replied = (s, replyText) => {
-    s.ask = { ...s.ask, state: "replied", repliedAt: new Date().toISOString(), replyText };
+  const replied = (s, replyText, replySnapshot) => {
+    s.ask = { ...s.ask, state: "replied", repliedAt: new Date().toISOString(), replyText, replySnapshot };
     home.needsYou = home.needsYou.filter((item) => item.sectionKey !== s.key);
   };
-  // As Core: a reply marks that version of the ask replied before its receipt comes back (home.rs mark_replied).
+  // As Core: a reply marks that version of the ask replied before its receipt comes back (home.rs mark_replied), and
+  // keeps the reply as the user gave it to that version (YN-223).
   const replyAnswer = (reply) => {
     const s = live(reply.key);
     if (s?.ask && s.version === reply.askVersion) {
       const labels = [...(s.ask.reply.options ?? []), ...Object.values(s.ask.reply.choice ?? {})];
       const label = labels.find((option) => option.id === reply.choice)?.label;
-      replied(s, label && reply.text ? `${label}: ${reply.text}` : label ?? reply.text);
+      const form = reply.form && s.ask.reply.form;
+      const answers = form && { id: form.id, title: form.title, fields: form.fields.map((field) => ({ id: field.id, label: field.label, type: field.type,
+        answer: field.options?.find((option) => option.id === reply.form.answers[field.id])?.label ?? reply.form.answers[field.id] ?? "" })) };
+      replied(s, label && reply.text ? `${label}: ${reply.text}` : label ?? reply.text,
+        kept(s, { choice: label ? { id: reply.choice, label } : null, text: (answers ? null : reply.text) || null, form: answers || null }));
     }
     return null;
   };
@@ -934,24 +992,26 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     // Core has it: the answer card at once, as a fresh visit shows it, with nothing held for the card it was.
     await waitFor(() => release().classList.contains("is-answer"), "an answer card as soon as Core has the reply");
     assert.equal(release().dataset.cardSize, "small", "a small card on the deck");
-    assert.ok(release().querySelector(":scope > .home-card-body").hidden, "the question and details folded");
+    assert.ok(release().querySelector(":scope > .home-card-body").hidden, "its details folded");
     assert.equal(release().style.minHeight, "", "no height held for the card it was");
-    assert.equal(release().querySelector(".home-kind").textContent.trim(), "Replied · waiting for Mori");
-    assert.match(release().querySelector(".home-answer-reply").textContent, /^You\s*Ship it after the docs fix$/);
-    assert.equal(release().querySelector(".home-answer-next").textContent, "Next: Mori acts on your reply");
+    assert.equal(release().querySelector(".home-kind").textContent.trim(), "Waiting for Mori");
+    assert.equal(release().querySelector(".home-answer-ask").textContent, "Ship the release today?", "the question it answered");
+    assert.equal(release().querySelector(".home-answer-given .home-reply-words").textContent.trim(), "Ship it after the docs fix");
     assert.ok(p.button("Reply again", release()), "Reply again on its face");
-    assert.equal(release().querySelector(".home-answer-details").textContent.trim(), "Question and details");
+    assert.equal(release().querySelector(".home-answer-details").textContent.trim(), "Details");
     assert.ok(p.doc.activeElement === release(), "focus, gone with the reply's controls, is on the card");
     assert.deepEqual(deck(), order, "its place on the deck kept: only its size changed");
     // A choice.
     await pickAndSend(budget(), "Plan B");
     await waitFor(() => budget().classList.contains("is-answer"), "a choice: the answer card as soon as Core has it");
-    assert.match(budget().querySelector(".home-answer-reply").textContent, /^You\s*Plan B$/);
+    assert.equal(budget().querySelector(".home-reply-choice").textContent, "Plan B");
     // A form, sent at its defaults (it copies its answers as it sends them).
     p.w.structuredClone = structuredClone;
     scope().querySelector(".clarification footer .primary-button").click();
     await waitFor(() => scope().classList.contains("is-answer"), "a form: the answer card as soon as Core has it");
     assert.equal(p.posts(/\/brief\/reply$/).at(-1).body.form?.formId, "scope", "sent as the form's answers");
+    assert.deepEqual([...scope().querySelectorAll(".home-answer-given dl > div")].map((row) => [row.querySelector("dt").textContent, row.querySelector("dd").textContent]),
+      [["First part", "Not answered"]], "the form's answers by field, as the conversation shows them");
     // Its owner updates it after the reply, in this visit: still the answer card, with what the owner says now.
     Object.assign(live("release"), { version: 4, updatedAt: new Date().toISOString(), body: body("Shipping once the docs fix lands.") });
     p.doc.querySelector('[aria-label="Refresh Home"]').click();
@@ -964,7 +1024,7 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     assert.ok(release().classList.contains("is-open"));
     await type(p, release().querySelector(".home-card-body .home-text-reply [data-composer-input]"), "Ship it tomorrow instead");
     p.button("Send", release().querySelector(".home-card-body")).click();
-    await waitFor(() => !release().classList.contains("is-open") && /Ship it tomorrow instead$/.test(release().querySelector(".home-answer-reply").textContent),
+    await waitFor(() => !release().classList.contains("is-open") && release().querySelector(".home-reply-words")?.textContent.trim() === "Ship it tomorrow instead",
       "Reply again: closed back to the answer card, the new reply on it");
     assert.ok(release().querySelector(":scope > .home-card-body").hidden);
     assert.equal(p.posts(/\/brief\/reply$/).at(-1).body.askVersion, 4, "the version on screen answered");
@@ -983,7 +1043,7 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     await openProject(p, "p-app");
     await waitFor(() => seed()?.classList.contains("is-answer"), "an answer card at the next visit");
     assert.ok(["release", "budget", "scope"].every((key) => card(p, "p-app", key).classList.contains("is-answer")));
-    assert.match(seed().querySelector(".home-answer-reply").textContent, /^You\s*Seed 7$/);
+    assert.equal(seed().querySelector(".home-reply-words").textContent.trim(), "Seed 7");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -3501,7 +3561,7 @@ test("YN-3 Enter sends a reply from Home as the composer's Return does: from an 
     assert.equal(replies()[0].body.text, "Ship it after the docs fix");
     // Reply again, on an Ask the user answered before this visit.
     const tokenizer = card(p, "p-app", "tokenizer");
-    tokenizer.querySelector(".home-fold").click();
+    tokenizer.querySelector(".home-answer-details").click();
     await waitFor(() => p.button("Reply again", tokenizer), "Reply again");
     p.button("Reply again", tokenizer).click();
     await waitFor(() => replyField(tokenizer), "the field again");

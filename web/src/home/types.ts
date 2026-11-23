@@ -114,6 +114,10 @@ export type Section = {
      * attached, sent to an Agent without answering. Kept apart from the reply; absent without any, and from
      * older Cores. */
     notes?: AskNote[];
+    /** A replied ask's reply as the user gave it to this version (YN-223): the snapshot its receipt keeps (T-9
+     * format 1), with the question and options they answered. Absent for a reply from before Core kept it, and
+     * from older Cores. */
+    replySnapshot?: import("../types").HomeReplySnapshot;
   };
   status?: { asOf: string; validFor: number; stale: boolean };
   time?: { due?: string; eta?: string; nextUpdate?: string };

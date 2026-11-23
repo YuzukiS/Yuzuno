@@ -1,7 +1,7 @@
 import { Component, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
-import { BookOpen, CalendarClock, Check, ChevronDown, ChevronRight, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
+import { BookOpen, CalendarClock, Check, ChevronDown, ChevronRight, ClipboardCopy, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
 import { errorText } from "../api";
 import { CopyButton } from "../components";
 import type { Agent } from "../types";
@@ -30,6 +30,9 @@ import { ImageAttachments } from "../ImageAttachments";
 import { FileAttachments } from "../FileAttachments";
 import { homeImageUrl } from "./home-images";
 import { homeFileUrl } from "./home-files";
+import { homeReplyText, ReplyAnswer, useCopy, Words } from "../home-reply/HomeReply";
+import { answerText } from "../home-reply/home-reply-model";
+import { answerShown, optionsThen, questionParts } from "./answer-card";
 
 /** When a status's data is from, and whether it is past its validity. */
 export function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
@@ -136,7 +139,7 @@ const CHANGED = {
   close: ":scope > .home-card-glance",
   step: ":scope > .home-card-body .home-ask",
   reply: ":scope > .home-card-reply",
-  content: ":scope > .home-card-body, :scope > .home-answer > .home-answer-update, :scope > .home-answer > .home-answer-next, :scope > .home-card-glance",
+  content: ":scope > .home-card-body, :scope > .home-answer .home-answer-update, :scope > .home-card-glance",
 };
 const same = (a: Readonly<ResizeProps>, b: Readonly<ResizeProps>) =>
   a.face === b.face && a.open === b.open && a.step === b.step && a.reply === b.reply && a.content === b.content;
@@ -216,6 +219,7 @@ export const SectionCard = memo(function SectionCard({
   onSeen,
   onChanged,
   notice,
+  answer = false,
 }: {
   section: Section;
   projectId: string;
@@ -228,6 +232,8 @@ export const SectionCard = memo(function SectionCard({
   onChanged: () => void;
   /** A note above the card's head: where a reply's "Open on Home" landed (T-9). */
   notice?: ReactNode;
+  /** An answered Ask drawn as its answer card wherever it is, as a request's line opened to it (YN-223), resolved too. */
+  answer?: boolean;
 }) {
   const time = useTimeDisplay();
   const language = useLanguage();
@@ -246,7 +252,9 @@ export const SectionCard = memo(function SectionCard({
   // the next visit (card-sizes.ts).
   const replied = section.ask?.state === "replied";
   const sizes = useContext(DeckSizes);
-  const short = sizes ? sizes.short(projectId, section.key, section.version, replied) : replied;
+  const short = (answer && !!section.ask && section.ask.state !== "open") || (sizes ? sizes.short(projectId, section.key, section.version, replied) : replied);
+  // Its owner resolved it: nothing more is sent from its card (YN-223).
+  const resolved = section.ask?.state === "resolved";
   const [rowOpen, setRowOpen] = useState(false);
   // Each step is the answer card's Reply again (AskReply).
   const [againRequest, setAgainRequest] = useState(0);
@@ -274,7 +282,18 @@ export const SectionCard = memo(function SectionCard({
   );
   // Each own reply the card now shows in short collapses it once, as Core's read has it.
   const collapse = short && !awaiting && own?.version === section.version ? String(own.n) : null;
-  const collapsed = short ? !rowOpen : chosenFold;
+  // The answer card folded (YN-223), by the card's own fold: the question and what was chosen stay in view.
+  const folded = short && chosenFold;
+  // Its body shown: the Ask as its owner keeps it, and Reply again's controls.
+  const opened = rowOpen && !folded;
+  const fold = () => {
+    if (!folded) setRowOpen(false);
+    toggleFold();
+  };
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const replyWords = useStrings(homeReplyText);
+  const [answerCopy, copyAnswer] = useCopy();
+  const collapsed = short ? !opened : chosenFold;
   const [ref, release] = useReservedHeight(`${section.version}:${section.ask?.state ?? ""}`, collapsed);
   // A press in the card, by pointer or keyboard: what it changes there glides too (YN-203, surface.ts watchAct).
   const acted = () => {
@@ -314,7 +333,7 @@ export const SectionCard = memo(function SectionCard({
       target={ref}
       face={short ? "answer" : "ask"}
       open={!collapsed}
-      step={`${own?.n ?? 0}:${again}`}
+      step={`${own?.n ?? 0}:${again}:${folded}:${optionsOpen}`}
       reply={replyable && replying}
       content={`${section.version}:${section.ask?.state ?? ""}`}
     />
@@ -373,15 +392,14 @@ export const SectionCard = memo(function SectionCard({
       setBusy(false);
     }
   }
-  // The title, and whether it changed for the user or nobody keeps it up to date.
-  const heading = (
+  // Whether it changed for the user, or nobody keeps it up to date.
+  const badges = (
     <>
-      <h3 id={`${sectionDomId(projectId, section.key)}-title`}>{section.title}</h3>
-      {/* Answered, it is never new to the user: only its owner's change since (YN-3). */}
+      {/* Answered, it is never new to the user: only its owner's change since (YN-3), resolving it too (YN-223). */}
       {changed && (
         <Tip content={<TipText body={t.changedTitle} />}>
           <span className="home-changed">
-            {readBefore(section) || replied ? t.updated : t.new}
+            {readBefore(section) || replied || resolved ? t.updated : t.new}
           </span>
         </Tip>
       )}
@@ -401,6 +419,13 @@ export const SectionCard = memo(function SectionCard({
       )}
     </>
   );
+  // The title, and those marks.
+  const heading = (
+    <>
+      <h3 id={`${sectionDomId(projectId, section.key)}-title`}>{section.title}</h3>
+      {badges}
+    </>
+  );
   const seenButton = seenable && !readOnly && (
     <button
       type="button"
@@ -414,32 +439,54 @@ export const SectionCard = memo(function SectionCard({
     </button>
   );
   if (short) {
-    const bodyId = `${sectionDomId(projectId, section.key)}-body`;
+    const domId = sectionDomId(projectId, section.key);
+    const bodyId = `${domId}-body`;
+    const answerId = `${domId}-answer`;
+    const optionsId = `${domId}-options`;
     // A form's answers without the line of IDs Core reads them by, then the user's words (YN-213).
     const replyText = withoutFormIds(section.ask?.replyText ?? "").trim();
+    // R-29's answer card (YN-223, the design the user settled): the question as the user answered it, its note,
+    // then their reply as they gave it, from the snapshot Core kept with it; an earlier reply as it was sent.
+    const shownAnswer = answerShown(section.ask!, replyText);
+    const question = questionParts(shownAnswer.question);
+    const options = shownAnswer.snapshot ? optionsThen(shownAnswer.snapshot) : [];
+    const copied = shownAnswer.snapshot ? answerText(shownAnswer.snapshot, replyWords.notAnswered) : replyText;
     return (
       <article
         ref={ref}
-        id={sectionDomId(projectId, section.key)}
+        id={domId}
         data-section-key={section.key}
         data-section-version={section.version}
         // Closed, a small card the deck packs (deck-packing.ts); opened, it takes its row, as an open Ask does.
-        data-card-size={rowOpen ? undefined : "small"}
+        data-card-size={opened ? undefined : "small"}
         tabIndex={-1}
-        className={`home-section kind-ask is-replied is-short is-answer${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${rowOpen ? " is-open" : " is-collapsed"}`}
+        className={`home-section kind-ask is-replied is-short is-answer${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${opened ? " is-open" : " is-collapsed"}${folded ? " is-folded" : ""}`}
         onPointerDown={release}
         onClickCapture={acted}
         onKeyDownCapture={actedByKey}
-        aria-labelledby={`${sectionDomId(projectId, section.key)}-title`}
+        aria-labelledby={`${domId}-title`}
       >
         {resize}
         {notice}
-        <header className="home-section-head">
+        {/* Whose card it is and that the heading below is the question as the user answered it; whom it waits for. */}
+        <header className="home-section-head home-answer-byline">
+          <FoldButton collapsed={folded} onToggle={fold} label={section.title} controls={answerId} />
           {topic !== undefined && <span className="home-sub-of">{t.inTopic(topic)}</span>}
-          <span className="home-kind kind-ask is-replied">{t.repliedWaiting(section.owner.name)}</span>
-          <span className="home-section-meta">
-            {/* The reply's time: the owner's, if changed since, is with what it says. */}
-            {section.ask?.repliedAt ? (
+          <span className="home-answer-source">
+            {/* Its title gives way on one line: whole in its tip, when cut. */}
+            <Tip content={<TipText body={section.title} />} cut describe={false}>
+              <span id={`${domId}-title`} className="home-answer-name">{section.title}</span>
+            </Tip>
+            <span aria-hidden="true">·</span>
+            <span className="home-answer-then">{shownAnswer.questionKept ? t.askedThen : t.askedNow}</span>
+            {badges}
+          </span>
+          <span className="home-section-meta home-answer-state">
+            <span className="home-kind kind-ask is-replied">
+              {resolved ? t.resolvedBy(section.owner.name) : updatedSinceReply ? t.updatedBy(section.owner.name) : t.waitingFor(section.owner.name)}
+            </span>
+            {/* The reply's time; once its owner changed it since, that change's. */}
+            {section.ask?.repliedAt && !updatedSinceReply ? (
               <Tip content={<TipText title={absolute(section.ask.repliedAt, time)} />}>
                 <span>{relative(section.ask.repliedAt, language)}</span>
               </Tip>
@@ -452,77 +499,116 @@ export const SectionCard = memo(function SectionCard({
           {!readOnly && <PinButton section={section} projectId={projectId} />}
           {seenButton}
         </header>
-        <div className="home-answer">
-          <div className="home-answer-title">{heading}</div>
-          {replyText && (
-            // The whole reply, when its lines are cut.
-            <Tip content={<TipText body={replyText} />} size="wide" cut>
-              <blockquote className="home-answer-reply">
-                <span className="home-answer-who">{t.you}</span>
-                {replyText}
-              </blockquote>
-            </Tip>
-          )}
-          {/* The images and files that reply took (YN-134, YN-145), to open and download. */}
-          <ImageAttachments
-            images={(section.ask?.replyImages ?? []).map((id) => ({ id }))}
-            imageUrl={(id, thumb) => homeImageUrl(projectId, id, thumb)}
-          />
-          <FileAttachments
-            files={section.ask?.replyFiles ?? []}
-            href={(file) => homeFileUrl(projectId, file.id, file.name)}
-            projectId={projectId}
-          />
-          {updatedSinceReply ? (
-            <div className="home-answer-update">
-              <p className="home-answer-update-head">{t.updatedAfterReply(section.owner.name, relative(section.updatedAt, language))}</p>
-              {update && <BriefMarkdown text={update} />}
-            </div>
-          ) : (
-            <p className="home-answer-next">{t.nextActs(section.owner.name)}</p>
-          )}
-          <div className="home-answer-foot">
-            {!readOnly && (
-              <button
-                type="button"
-                className="secondary-button home-answer-again"
-                onClick={() => {
-                  setAwaiting(null);
-                  setRowOpen(true);
-                  setAgainRequest((n) => n + 1);
-                }}
-              >
-                <MessageSquareReply size={13} />
-                {t.replyAgain}
-              </button>
+        <div className="home-answer" id={answerId}>
+          <div className="home-answer-question">
+            <h3 className="home-answer-ask">{question.head}</h3>
+            {question.note && <p className="home-answer-hint">{question.note}</p>}
+            {!shownAnswer.questionKept && <p className="home-answer-unkept">{t.questionNotKept}</p>}
+          </div>
+          <p className="home-answer-label">{t.yourAnswer}</p>
+          {/* The answer as the conversation shows a reply from Home (HomeReply), at the card's width. */}
+          <div className="home-reply home-answer-given home-answer-reply">
+            {shownAnswer.snapshot ? (
+              <ReplyAnswer snapshot={shownAnswer.snapshot} brief={folded} />
+            ) : (
+              <div className="home-reply-answer">{replyText && <Words text={replyText} lines={folded ? 2 : undefined} />}</div>
             )}
-            {/* The card's fold, as a jump to it opens it (card-fold.tsx unfoldAround). */}
-            <button
-              type="button"
-              className="quiet-button home-fold home-answer-details"
-              aria-expanded={rowOpen}
-              aria-controls={bodyId}
-              onClick={() => {
-                setAwaiting(null);
-                setRowOpen((open) => !open);
-              }}
-            >
-              {rowOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-              {t.questionAndDetails}
-            </button>
+            {!folded && (
+              <>
+                {/* The images and files that reply took (YN-134, YN-145), to open and download. */}
+                <ImageAttachments
+                  images={(section.ask?.replyImages ?? []).map((id) => ({ id }))}
+                  imageUrl={(id, thumb) => homeImageUrl(projectId, id, thumb)}
+                />
+                <FileAttachments
+                  files={section.ask?.replyFiles ?? []}
+                  href={(file) => homeFileUrl(projectId, file.id, file.name)}
+                  projectId={projectId}
+                />
+              </>
+            )}
+            {/* What its owner says now, after the reply: apart from the reply, never as part of it. */}
+            {!folded && updatedSinceReply && (
+              <div className="home-answer-update">
+                <p className="home-answer-update-head">{t.updatedAfterReply(section.owner.name, relative(section.updatedAt, language))}</p>
+                {update && <BriefMarkdown text={update} />}
+              </div>
+            )}
+            {folded ? (
+              <button type="button" className="home-reply-action more home-answer-unfold" aria-expanded={false} aria-controls={answerId} onClick={fold}>
+                <ChevronRight size={14} aria-hidden="true" />
+                {t.wholeReply}
+              </button>
+            ) : (
+              <footer>
+                {copied && (
+                  <button type="button" className={`home-reply-action${answerCopy === "copied" ? " done" : ""}`} onClick={() => copyAnswer(copied)}>
+                    {answerCopy === "copied" ? <Check size={15} aria-hidden="true" /> : <ClipboardCopy size={15} aria-hidden="true" />}
+                    {answerCopy === "copied" ? replyWords.copied : answerCopy === "error" ? replyWords.copyFailed : replyWords.copyAnswer}
+                  </button>
+                )}
+                {options.length > 0 && (
+                  <button type="button" className="home-reply-action home-answer-options-toggle" aria-expanded={optionsOpen} aria-controls={optionsId}
+                    onClick={() => setOptionsOpen((open) => !open)}>
+                    {t.optionsThen}
+                    <ChevronDown size={14} className="chev" aria-hidden="true" />
+                  </button>
+                )}
+                {/* The card's body, the Ask as its owner keeps it now; a jump to the card opens it (card-fold.tsx unfoldAround). */}
+                <button
+                  type="button"
+                  className="home-reply-action home-fold home-answer-details"
+                  aria-expanded={opened}
+                  aria-controls={bodyId}
+                  onClick={() => {
+                    setAwaiting(null);
+                    setRowOpen((open) => !open);
+                  }}
+                >
+                  <ChevronRight size={14} className="chev" aria-hidden="true" />
+                  {t.answerDetails}
+                </button>
+                {!readOnly && !resolved && (
+                  <button
+                    type="button"
+                    className="home-reply-action home-answer-again"
+                    onClick={() => {
+                      setAwaiting(null);
+                      setRowOpen(true);
+                      setAgainRequest((n) => n + 1);
+                    }}
+                  >
+                    <MessageSquareReply size={15} aria-hidden="true" />
+                    {t.addReply}
+                  </button>
+                )}
+              </footer>
+            )}
+            {!folded && optionsOpen && (
+              <section id={optionsId} className="home-answer-options" aria-label={t.optionsThenLabel}>
+                <ul>
+                  {options.map((option) => (
+                    <li key={option.id} aria-current={option.chosen || undefined}>
+                      {option.chosen && <Check size={14} aria-hidden="true" />}
+                      <span>{option.label}</span>
+                      {option.chosen && <small>{t.chosenOption}</small>}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
           </div>
         </div>
-        <div className="home-card-body" id={bodyId} hidden={!rowOpen}>
+        <div className="home-card-body" id={bodyId} hidden={!opened}>
           {orphaned && (
             <p className="home-note home-unmaintained-note">
               {t.notMaintainedNote(section.owner.name, gone, t.kindInSentence[section.kind])}
             </p>
           )}
-          <p className="home-question">{section.ask!.question}</p>
           <div className="home-section-body">
             <SectionBody section={section} projectId={projectId} changes={blocks} />
           </div>
-          <div className="home-ask">
+          {!resolved && <div className="home-ask">
             <AskReply
               key={section.key}
               section={section}
@@ -536,7 +622,7 @@ export const SectionCard = memo(function SectionCard({
               onSent={onChanged}
               onReplied={repliedHere}
             />
-          </div>
+          </div>}
         </div>
         {error && (
           <p className="inline-error" role="alert">

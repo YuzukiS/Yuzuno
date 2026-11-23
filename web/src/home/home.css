@@ -1801,82 +1801,158 @@ fieldset.home-ask-options {
   margin-top: 6px;
 }
 /* A replied Ask waiting for its owner, as it was when first shown in this
-   visit: an answer card (YN-3, the design the user chose, D3). Whom it waits
-   for and when; the question's title; the reply quoted, up to three lines;
-   who acts next, or what its owner says since; Reply again and the question
-   and details below. A small card on the deck, as other small cards are. */
+   visit: an answer card (YN-3), drawn as R-29's design settled it (YN-223,
+   question-first): whose card it is and whom it waits for on one small line;
+   the question as the user answered it, and its note, whole; then the reply
+   as the conversation shows a reply from Home (home-reply.css), its actions
+   under a dashed rule. Folded, the question and what was chosen stay in
+   view. A small card on the deck, as other small cards are. */
 .home-section.is-answer {
   display: flex;
   flex-direction: column;
-  padding-block: 10px 12px;
-}
-.home-section.is-answer > .home-section-head {
-  flex-wrap: nowrap;
-  align-items: center;
+  /* As wide as its place, never its one-line byline's width (a grid's auto column, as a request's Asks are). */
   min-width: 0;
-  margin-bottom: 4px;
+  padding: 14px 18px 8px;
+  border-radius: 12px;
 }
-.home-section.is-answer .home-kind {
+.home-section.is-answer > .home-section-head.home-answer-byline {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  min-width: 0;
+  margin-bottom: 8px;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+/* Whose card, on one line as the design's "R-29 · 当时的问题": its title gives way first, whole in its tip. Its
+   one line never widens the card or what holds it (contain): it takes the room the byline gives it. */
+.home-answer-source {
+  display: inline-flex;
+  flex: 1 1 10em;
+  contain: inline-size;
+  align-items: baseline;
+  gap: 0 0.4em;
+  min-width: 0;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.home-answer-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.home-answer-source > :not(.home-answer-name) {
+  flex: none;
+}
+.home-answer-state {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 0 8px;
+  margin-left: auto;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-section.is-answer .home-kind {
+  padding: 0;
+  background: none;
+  color: inherit;
+  font-size: inherit;
   text-transform: none;
   letter-spacing: 0;
-  white-space: nowrap;
 }
 .home-section.is-answer .home-section-meta {
   flex: none;
   width: auto;
-  margin-left: auto;
 }
+/* The question's heading is as wide as the card lets it read (the design's
+   18–23 px): sized by the card, so a small card on the deck reads as a phone. */
 .home-answer {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-width: 0;
+  container: answer / inline-size;
 }
-.home-answer-title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 8px;
-  min-width: 0;
+.home-answer-question {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
 }
-.home-answer-title h3 {
+.home-answer-ask {
+  max-width: 34em;
   margin: 0;
-  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: calc(15px + var(--font-adjust, 3px));
+  font-weight: 650;
+  line-height: 1.5;
+  letter-spacing: -0.015em;
+  white-space: pre-wrap;
 }
-.home-answer-reply {
-  display: -webkit-box;
-  margin: 6px 0 0;
-  padding: 1px 0 1px 10px;
-  overflow: hidden;
-  border-left: 3px solid var(--green);
-  overflow-wrap: anywhere;
-  white-space: pre-line;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
+@container answer (min-width: 600px) {
+  .home-answer-ask {
+    font-size: clamp(calc(15px + var(--font-adjust, 3px)), 3.2cqi, calc(20px + var(--font-adjust, 3px)));
+  }
 }
-.home-answer-who {
-  margin-right: 6px;
+.home-answer-hint {
+  margin: 5px 0 0;
   color: var(--home-ink-2);
-  font-size: calc(9px + var(--font-adjust, 3px));
+  font-size: calc(11.5px + var(--font-adjust, 3px));
+  line-height: 1.65;
+  white-space: pre-wrap;
 }
-.home-answer-next {
+/* An earlier reply, from before Core kept the question with it: said, quietly. */
+.home-answer-unkept {
   margin: 6px 0 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.home-answer-label {
+  margin: 12px 0 8px;
   color: var(--home-ink-2);
   font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 500;
 }
-.home-answer-next::before {
-  content: "→ ";
+/* The reply drawn as in the conversation, on the card's own surface. */
+.home-reply.home-answer-given {
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-size: calc(13px + var(--font-adjust, 3px));
 }
-.home-answer-update {
+.home-answer-given footer {
+  margin-top: 12px;
+}
+.home-answer-given .home-reply-action.home-answer-again {
+  margin-left: auto;
+  color: var(--green);
+  font-weight: 600;
+}
+.home-answer-given .home-answer-options-toggle[aria-expanded="true"] .chev {
+  transform: rotate(180deg);
+}
+.home-section.is-answer .home-fold.home-answer-details {
+  align-self: auto;
+  width: auto;
+  height: auto;
+  margin: 0;
+}
+.home-answer-given .home-answer-unfold {
   margin-top: 6px;
-  padding: 6px 8px;
+}
+/* What its owner says now, after the reply: apart from it. */
+.home-answer-update {
+  margin-top: 10px;
+  padding: 8px 10px;
   border-radius: 8px;
   background: var(--home-soft);
-  font-size: calc(10px + var(--font-adjust, 3px));
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
 }
 .home-answer-update > * {
   margin: 0;
@@ -1884,33 +1960,65 @@ fieldset.home-ask-options {
 .home-answer-update-head {
   color: var(--home-ink-2);
 }
-.home-answer-foot {
+/* The options as the user saw them, the chosen one marked. */
+.home-answer-options ul {
+  margin: 8px 0 4px;
+  padding: 8px 14px;
+  border-radius: 7px;
+  background: var(--home-soft);
+  list-style: none;
+}
+.home-answer-options li {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 12px;
-  margin-top: auto;
-  padding-top: 10px;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  color: var(--home-ink-2);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
-.home-section.is-answer .home-fold.home-answer-details {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  width: auto;
-  height: auto;
-  margin: 0;
+.home-answer-options li svg {
+  flex: none;
+  align-self: center;
+  color: var(--green);
 }
-.app.phone .home-section.is-answer .home-fold.home-answer-details {
-  min-width: 0;
-  min-height: 36px;
-  width: auto;
-  height: auto;
-  margin: 0;
+.home-answer-options li[aria-current] {
+  color: var(--ink);
+  font-weight: 600;
+}
+.home-answer-options small {
+  flex: none;
+  color: var(--green);
+  font-weight: 500;
 }
 .home-section.is-answer > .home-card-body {
-  margin-top: 10px;
-  padding-top: 8px;
+  margin-top: 6px;
+  padding-top: 10px;
   border-top: 1px solid var(--line);
+}
+/* A phone: the actions are 44 px targets; Reply again keeps the row's end. */
+.app.phone .home-section.is-answer {
+  padding: 12px 13px 6px;
+}
+.app.phone .home-answer-given footer {
+  gap: 0 2px;
+}
+.app.phone .home-answer-given .home-reply-action {
+  min-height: 44px;
+  padding: 0 3px;
+  gap: 0.25em;
+}
+.app.phone .home-answer-given footer > .home-reply-action:first-child {
+  margin-left: 0;
+}
+.app.phone .home-answer-hint {
+  font-size: calc(11px + var(--font-adjust, 3px));
+}
+/* A resolved Ask's answer as the user gave it (YN-223), at History's own size. */
+.home-reply.home-history-answer {
+  margin: 4px 0 8px;
+  font-size: inherit;
 }
 .home-history-reply {
   margin: 4px 0 0;

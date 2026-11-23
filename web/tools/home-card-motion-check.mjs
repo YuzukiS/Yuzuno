@@ -4,7 +4,7 @@
 // - Its edge moves over --motion-card (500 ms); what it showed fades out over --motion-card-out (190 ms) as a copy,
 //   and what changed fades in over --motion-card-in (310 ms) only once that copy is gone (the user's "渐隐到消失之后
 //   再开始渐显" and "一共500ms", yn-203/ask rounds 3 and 4). What did not change does not fade.
-// - The reply (the form, then the answer card), Question and details opened and closed, Reply again, a new version
+// - The reply (the form, then the answer card), Details opened and closed, Reply again, a new version
 //   from Core part way in (it starts again from nothing, never seen with its copy, taking no pointer meanwhile).
 // - The copy takes no pointer, focus or reading, shares no id with the page, and its pictures' references find its
 //   own parts; it keeps inner scrolls; one at most, nested no deeper than one.
@@ -40,12 +40,12 @@ const filler = "A result worth reading, with enough words to take a few lines in
 const report_ = (n) => ({ id: 100 + n, key: `p1-r${n}`, kind: "report", title: `Result ${n}`, version: 1, owner,
   updatedAt: "2026-11-05T10:00:00Z", updatedTurnId: null, body: md(filler), attachments: [], refs: {}, seen: null, history: false });
 const atlasBody = (lead) => [lead, ...Array.from({ length: 16 }, (_, i) => `Part ${i + 1}. ${filler}`)].join("\n\n");
-let atlas = { state: "open", version: 1, replyText: null, repliedAt: null, body: "" };
+let atlas = { state: "open", version: 1, replyText: null, repliedAt: null, replySnapshot: null, body: "" };
 const atlasAsk = () => ({ id: 99, key: "p1-ask", kind: "ask", title: "How should the release go out?", version: atlas.version, owner,
   updatedAt: "2026-11-05T10:00:00Z", updatedTurnId: null, body: md(atlas.body || atlasBody("Choose how the release goes out.")), attachments: [], refs: {},
   seen: null, history: false,
   ask: { question: "Ship it now or hold it a day?", reply: { options: [{ id: "ship", label: "Ship it" }, { id: "hold", label: "Hold a day" }], freeText: true },
-    state: atlas.state, ...(atlas.state === "replied" ? { replyText: atlas.replyText, repliedAt: atlas.repliedAt } : {}) } });
+    state: atlas.state, ...(atlas.state === "replied" ? { replyText: atlas.replyText, repliedAt: atlas.repliedAt, replySnapshot: atlas.replySnapshot } : {}) } });
 const home = () => ({ generatedAt: new Date().toISOString(), order: ["p1"],
   // As Core does: an open Ask needs the user; replied, it no longer does.
   needsYou: atlas.state === "open"
@@ -81,7 +81,7 @@ function cardHelpers() {
   const live = (card, selector) => [...card.querySelectorAll(selector)].find((e) => !e.closest(".card-ghost")) ?? null;
   window.__card = (card) => {
     const body = card.querySelector(":scope > .home-card-body");
-    const details = [...card.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.includes("Question and details"));
+    const details = [...card.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details");
     const view = card.closest(".home-view").getBoundingClientRect();
     const r = card.getBoundingClientRect();
     const ghosts = card.querySelectorAll(":scope > .card-ghost");
@@ -181,7 +181,11 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
       // A report's reply is delivered and changes nothing on Home; the Ask's makes it replied.
       if (sent.key === "p1-ask") {
         const picked = sent.choice ? atlasAsk().ask.reply.options.find((o) => o.id === sent.choice)?.label : null;
-        atlas = { ...atlas, state: "replied", replyText: picked || sent.text, repliedAt: new Date().toISOString() };
+        // With the reply as the user gave it to that version (YN-223, home.rs `snapshot`), which the answer card draws.
+        const ask = atlasAsk();
+        const replySnapshot = { format: 1, projectName: "Atlas", sectionKind: "ask", title: ask.title, question: ask.ask.question,
+          options: ask.ask.reply.options, choice: picked ? { id: sent.choice, label: picked } : null, text: sent.text?.trim() || null, form: null };
+        atlas = { ...atlas, state: "replied", replyText: picked || sent.text, repliedAt: new Date().toISOString(), replySnapshot };
       }
       return send(response, 200, { input: { ...sent, expectedTurnId: null, question: null }, status: "accepted", turnId: "t-own", error: null });
     }
@@ -226,7 +230,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
       }
     };
     const fresh = async (project = null) => {
-      atlas = { state: "open", version: atlas.version + 1, replyText: null, repliedAt: null, body: "" };
+      atlas = { state: "open", version: atlas.version + 1, replyText: null, repliedAt: null, replySnapshot: null, body: "" };
       sel = project ? DECK : LIST;
       await page.evaluate(([n, p]) => window.renderHome(n, p), [++mounts, project]);
       // The option picked, so the one button sends it (YN-213): pressing that button is the reply these scenes follow.
@@ -241,7 +245,8 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
       await option().click();
       await page.locator(`${sel}.is-answer`).waitFor({ state: "attached", timeout: 8000 });
     };
-    const toggle = () => page.locator(`${sel} > .home-answer`).getByRole("button", { name: "Question and details" });
+    // The answer card's Details (YN-223: the question is on its face; Details opens the Ask's body, as its old toggle did).
+    const toggle = () => page.locator(`${sel} > .home-answer`).getByRole("button", { name: "Details", exact: true });
     const again = () => page.locator(`${sel} > .home-answer`).getByRole("button", { name: "Reply again" });
     // Pressed where it is drawn now, as a pointer does (a locator click waits for it to stand still).
     const pressAt = async (locator) => {
@@ -318,7 +323,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           await answer();
           await idle();
           const rows = await card().evaluate((c) => new Promise((done) => {
-            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.includes("Question and details"));
+            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details");
             const body = c.querySelector(":scope > .home-card-body");
             const answer = c.querySelector(":scope > .home-answer");
             const out = [];
@@ -335,7 +340,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           const late = rows.filter((r) => r[0] >= OUT_MS + IN_MS + 80);
           const answerMin = Math.min(...rows.map((r) => r[3]));
           y.openAfterOut = { early: early.map((r) => [r[1], r[4]]), late: late.slice(0, 2), answerMin };
-          ok(`${tag}: Question and details: the body stays unseen and takes no pointer until the old has faded out (${OUT_MS} ms), then fades in`,
+          ok(`${tag}: Details: the body stays unseen and takes no pointer until the old has faded out (${OUT_MS} ms), then fades in`,
             early.length > 0 && early.every((r) => r[1] <= 0.02 && r[4] === "none") && late.length > 0 && late[0][1] === 1 && late[0][4] === "auto", y.openAfterOut);
           ok(`${tag}: opening changes only the body: the answer part never fades (min ${answerMin})`, answerMin === 1, y.openAfterOut);
         }
@@ -346,7 +351,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           await toggle().click();
           await idle();
           const rows = await card().evaluate((c) => new Promise((done) => {
-            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.includes("Question and details"));
+            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details");
             const out = [];
             const t0 = performance.now();
             button.click();
@@ -363,7 +368,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           y.close = { first: rows[0], last: rows.at(-1), moved: Math.max(...tops) - Math.min(...tops) };
           ok(`${tag}: closing details: the body fades out in the copy as the card closes, none left`,
             rows[0].hidden === true && !!rows[0].ghost?.body && rows[0].ghost.opacity >= 0.85 && rows.at(-1).ghost === null, y.close);
-          ok(`${tag}: closing, Question and details stays under the pointer (moves < 2 px)`, y.close.moved < 2, y.close);
+          ok(`${tag}: closing, Details stays under the pointer (moves < 2 px)`, y.close.moved < 2, y.close);
         }
         if (scene === "svg-ids") {
           await fresh();
@@ -382,7 +387,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
             c.querySelector(":scope > .home-card-body").prepend(holder);
           });
           const seen = await card().evaluate((c) => new Promise((done) => {
-            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.includes("Question and details"));
+            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details");
             button.click();
             requestAnimationFrame(() => {
               const g = c.querySelector(":scope > .card-ghost");
@@ -430,7 +435,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
             box.scrollTop = 50;
           });
           const seen = await card().evaluate((c) => new Promise((done) => {
-            [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.includes("Question and details")).click();
+            [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details").click();
             requestAnimationFrame(() => {
               const g = c.querySelector(":scope > .card-ghost");
               const copy = g?.querySelector(".yn203-scroll-probe");
@@ -512,7 +517,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           }
           const s = await idle();
           y.detailsFast = s;
-          ok(`${tag}: three fast presses on Question and details end open and consistent`,
+          ok(`${tag}: three fast presses on Details end open and consistent`,
             s.expanded === "true" && s.hidden === false && s.opacity === 1 && s.anims.length === 0 && s.ghosts === 0 && s.pointer === "auto", s);
         }
         if (scene === "restart") {
@@ -523,7 +528,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           await idle();
           atlas = { ...atlas, version: atlas.version + 1, body: atlasBody("Owner's update: the release waits for the signed build.") };
           const rows = await card().evaluate((c) => new Promise((done) => {
-            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.includes("Question and details"));
+            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details");
             const out = [];
             const t0 = performance.now();
             let asked = false;
@@ -757,7 +762,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
             { again: y.reportReply.again, sent: y.reportReply.sent, delivered, after: y.reportReply.after });
         }
         if (scene === "deck") {
-          // On its project's page, in a cell of the deck: reply, Reply again, Question and details twice, fast.
+          // On its project's page, in a cell of the deck: reply, Reply again, Details twice, fast.
           await fresh("p1");
           const cols = await card().evaluate((c) => c.closest("[data-deck-cols]")?.getAttribute("data-deck-cols") ?? c.getAttribute("data-deck-cols"));
           await answer();
@@ -771,7 +776,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           await toggle().evaluate((b) => b.click());
           const toggled = await idle();
           y.deck = { cols, settled, opened, focusIn, toggled };
-          ok(`${tag}: on the project's deck, reply, Reply again and Question and details twice all settle consistently, no copy left${motion("", ", at once")}`,
+          ok(`${tag}: on the project's deck, reply, Reply again and Details twice all settle consistently, no copy left${motion("", ", at once")}`,
             settledShut(settled) && opened.open && opened.form >= 1 && opened.ghosts === 0 && focusIn
               && toggled.expanded === "true" && toggled.hidden === false && toggled.opacity === 1 && toggled.ghosts === 0 && toggled.anims.length === 0, y.deck);
         }

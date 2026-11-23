@@ -310,13 +310,54 @@
 .request-task-none {
   color: var(--home-ink-2);
 }
+/* An Ask answered before this visit (YN-223): one compact line, opened in place to its answer card. */
 .request-task-answered {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
+  min-width: 0;
   margin: 0;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
   color: var(--home-ink-2);
+  font: inherit;
   font-size: calc(9px + var(--font-adjust, 3px));
+  text-align: left;
+  cursor: pointer;
+}
+.request-task-answered > span {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.request-task-answered svg {
+  flex: none;
+}
+.request-task-answered .chev {
+  transition: transform var(--motion-micro) var(--ease-standard);
+}
+.request-task-answered[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+}
+.request-task-answered:hover {
+  color: var(--ink);
+}
+.request-task-answered:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.app.phone .request-task-answered {
+  min-height: 44px;
+}
+.request-task-answered-card {
+  margin: 6px 0 8px;
 }
 /* An ended task with nothing delivered: why, then its task (YN-208). */
 .request-deliverables-none {

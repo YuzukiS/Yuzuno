@@ -7,7 +7,7 @@ import { strings, useStrings } from "../i18n";
 import { loadFullItem, useFullItem } from "../item-payload";
 import { userText } from "../message-content";
 import { usePhone } from "../phone-layout";
-import type { HomeReplyOrigin, NativeItem } from "../types";
+import type { HomeReplyOrigin, HomeReplySnapshot, NativeItem } from "../types";
 import { answerText, foldSource, messagePreview, unanswered } from "./home-reply-model";
 import "./home-reply.css";
 
@@ -73,7 +73,8 @@ export interface HomeReplyLinksApi {
 export const HomeReplyLinks = createContext<HomeReplyLinksApi | null>(null);
 
 type Copied = "ready" | "copied" | "error";
-function useCopy(): [Copied, (text: string | Promise<string>) => void] {
+/** A copy button's state: Copied or Couldn't copy for a moment, then ready again. */
+export function useCopy(): [Copied, (text: string | Promise<string>) => void] {
   const [state, setState] = useState<Copied>("ready");
   useEffect(() => {
     if (state === "ready") return;
@@ -167,40 +168,7 @@ export function HomeReply({ origin, item, agentId, turnId }: { origin: HomeReply
           <span className="home-reply-title">{t.earlier}</span>
         )}
       </div>
-      {snapshot && (
-        <div className="home-reply-answer">
-          {snapshot.choice && (
-            <p className="home-reply-choice">
-              <Check size={16} aria-hidden="true" />
-              {snapshot.choice.label}
-            </p>
-          )}
-          {snapshot.text && <Words text={snapshot.text} />}
-          {snapshot.form && (
-            <>
-              <p className="home-reply-form-title">{t.answersTo(snapshot.form.title)}</p>
-              <dl>
-                {snapshot.form.fields.map((field) => (
-                  <div key={field.id}>
-                    <dt>{field.label}</dt>
-                    <dd data-empty={unanswered(field.answer) || undefined}>
-                      {unanswered(field.answer) ? (
-                        t.notAnswered
-                      ) : Array.isArray(field.answer) || field.type !== "text" ? (
-                        <ul>
-                          {[field.answer].flat().map((label, n) => <li key={n}>{label}</li>)}
-                        </ul>
-                      ) : (
-                        <Words text={String(field.answer)} />
-                      )}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </>
-          )}
-        </div>
-      )}
+      {snapshot && <ReplyAnswer snapshot={snapshot} />}
       <footer>{actions}</footer>
       {asked && snapshot && questionOpen && (
         <div className="home-reply-question" id={`${id}-question`} role="region" aria-label={t.question}>
@@ -306,33 +274,82 @@ function useSentText(agentId: string, turnId: string, item: NativeItem, open: bo
  * the same ids name other things (T-195). */
 const originalKey = (agentId: string, turnId: string, itemId: string) => [requestScope(), agentId, turnId, itemId].join("\n");
 
+/**
+ * The answer as the user gave it (T-9, hr5), from its snapshot: the option
+ * chosen, the user's words, or a form's answers by field. The conversation's
+ * reply and Home's answered ask (YN-223) draw it alike. `brief`: only what
+ * was chosen, as a folded answer card shows it: the option, or the form's
+ * answers without its title; words alone, their first lines.
+ */
+export function ReplyAnswer({ snapshot, brief = false }: { snapshot: HomeReplySnapshot; brief?: boolean }) {
+  const t = useStrings(homeReplyText);
+  const chosen = !!snapshot.choice || !!snapshot.form;
+  return (
+    <div className="home-reply-answer">
+      {snapshot.choice && (
+        <p className="home-reply-choice">
+          <Check size={16} aria-hidden="true" />
+          {snapshot.choice.label}
+        </p>
+      )}
+      {snapshot.text && (!brief || !chosen) && <Words text={snapshot.text} lines={brief ? 2 : undefined} />}
+      {snapshot.form && (
+        <>
+          {!brief && <p className="home-reply-form-title">{t.answersTo(snapshot.form.title)}</p>}
+          <dl>
+            {snapshot.form.fields.map((field) => (
+              <div key={field.id}>
+                <dt>{field.label}</dt>
+                <dd data-empty={unanswered(field.answer) || undefined}>
+                  {unanswered(field.answer) ? (
+                    t.notAnswered
+                  ) : Array.isArray(field.answer) || field.type !== "text" ? (
+                    <ul>
+                      {[field.answer].flat().map((label, n) => <li key={n}>{label}</li>)}
+                    </ul>
+                  ) : (
+                    <Words text={String(field.answer)} lines={brief ? 2 : undefined} />
+                  )}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </>
+      )}
+    </div>
+  );
+}
+
 /** The user's words as Markdown (YN-201: a table is a table), folded after
  * six lines behind "Show all", never cut: folded, only their start is drawn
- * (`foldSource`), and shown all, the whole. */
-function Words({ text }: { text: string }) {
+ * (`foldSource`), and shown all, the whole. `lines`: a folded answer card's
+ * first lines only, with no Show all: the whole is one unfold away. */
+export function Words({ text, lines }: { text: string; lines?: number }) {
   const t = useStrings(homeReplyText);
   const words = useRef<HTMLDivElement>(null);
   const [overflow, setOverflow] = useState(false);
   const [all, setAll] = useState(false);
   const start = useMemo(() => foldSource(text), [text]);
   const long = start.length < text.length || overflow;
+  const shownAll = all && !lines;
   useLayoutEffect(() => {
     const element = words.current;
-    if (!element || all) return;
+    if (!element || shownAll) return;
     const measure = () => setOverflow(element.scrollHeight > element.clientHeight + 1);
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [start, all]);
+  }, [start, shownAll, lines]);
   return (
     <>
-      <div ref={words} className={`home-reply-words${all ? "" : " clamped"}${long && !all ? " folded" : ""}`}>
+      <div ref={words} className={`home-reply-words${shownAll ? "" : " clamped"}${long && !shownAll ? " folded" : ""}`}
+        style={lines ? { maxHeight: `calc(1.75em * ${lines})` } : undefined}>
         {/* Drawn anew when shown all: the rest is not words streaming in (stream-reveal). */}
-        <Prose key={all ? "all" : "start"} text={all ? text : start} />
+        <Prose key={shownAll ? "all" : "start"} text={shownAll ? text : start} />
       </div>
-      {long && (
+      {long && !lines && (
         <button type="button" className="home-reply-action more" aria-expanded={all} onClick={() => setAll(!all)}>
           {all ? t.showLess : t.showAll}
         </button>

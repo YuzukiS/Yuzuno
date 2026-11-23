@@ -289,6 +289,10 @@ struct Shown<'a> {
     db: &'a Connection,
     waiting: &'a Waiting<'a>,
     project: &'a str,
+    /// The Project's name, as a reply's snapshot names it.
+    name: &'a str,
+    /// Each answered ask's reply as the user gave it (YN-223), of the rows it is read for (sections::KeptRows).
+    kept: HashMap<i64, sections::KeptReply>,
     policy: editors::Policy,
     seen: HashMap<String, (i64, String)>,
     opened: HashMap<i64, (i64, String)>,
@@ -298,12 +302,15 @@ struct Shown<'a> {
 }
 
 impl<'a> Shown<'a> {
-    fn read(db: &'a Connection, waiting: &'a Waiting<'a>, project: &'a str, at: DateTime<Utc>) -> Result<Self> {
-        let name = |agent: &str| waiting.by_id.get(agent).map(|a| a.name.clone());
+    fn read(db: &'a Connection, waiting: &'a Waiting<'a>, project: &'a str, name: &'a str, kept: sections::KeptRows,
+        at: DateTime<Utc>) -> Result<Self> {
+        let agent_name = |agent: &str| waiting.by_id.get(agent).map(|a| a.name.clone());
         Ok(Self {
             db,
             waiting,
             project,
+            name,
+            kept: sections::kept_replies(db, project, kept)?,
             policy: editors::policy(db, project)?,
             seen: sections::seen(db, project)?,
             opened: sections::opened(db, project)?,
@@ -311,7 +318,7 @@ impl<'a> Shown<'a> {
             notes: super::ask_notes::of_project(db, project)?,
             // A card's refresh (YN-113), on the one entry Home shows of its
             // identity: the live section, else its newest history entry.
-            refreshes: super::refresh::shown(db, project, &name, at)?,
+            refreshes: super::refresh::shown(db, project, &agent_name, at)?,
             at,
         })
     }
@@ -353,6 +360,11 @@ impl<'a> Shown<'a> {
         if !row.live {
             section["historyReason"] = json!(row.history_reason);
             section["currentSource"] = json!(self.current(row)?);
+        }
+        // An answered ask's reply as the user gave it (YN-223): replied, or resolved in History. Never on an index
+        // entry: it comes with the entry read whole.
+        if let Some(snapshot) = self.kept.get(&row.seq).filter(|_| !index).and_then(|kept| answered(row, self.name, kept)) {
+            section["ask"]["replySnapshot"] = snapshot;
         }
         if let Some(found) = self.refreshes.get(&row.identity).filter(|_| refresh) {
             section["refresh"] = found.clone();
@@ -412,7 +424,12 @@ pub(super) fn build_with(store: &Store, history: History) -> Result<Value> {
             }
         }
         let live = sections::live(&db, id)?;
-        let view = Shown::read(&db, &waiting, id, at)?;
+        // The index reads the replies kept for the live sections only: History's come with its entries (YN-223).
+        let kept = match history {
+            History::Full => sections::KeptRows::Every,
+            History::Index => sections::KeptRows::Live,
+        };
+        let view = Shown::read(&db, &waiting, id, &project.name, kept, at)?;
         let mut visible = vec![];
         for row in &live {
             if view.current(row)? {
@@ -467,11 +484,14 @@ pub(super) fn history_entries(store: &Store, project: &str, wanted: &[(i64, i64)
     // Home's history shows no requests or questions: none are read.
     let waiting = Waiting { agents: &agents, by_id: &by_id, pending: HashMap::new(), questions: HashMap::new() };
     let db = store.db.read()?;
-    let shown_project = store.projects()?.iter().any(|p| p.id == project && p.archived_at.is_none());
-    let rows = if shown_project { sections::history_entries(&db, project, wanted)? } else { vec![] };
+    let projects = store.projects()?;
+    let shown_project = projects.iter().find(|p| p.id == project && p.archived_at.is_none());
+    let rows = if shown_project.is_some() { sections::history_entries(&db, project, wanted)? } else { vec![] };
     let mut entries = vec![];
-    if !rows.is_empty() {
-        let view = Shown::read(&db, &waiting, project, at)?;
+    if let Some(shown_project) = shown_project.filter(|_| !rows.is_empty()) {
+        // The replies kept for these entries only (YN-223).
+        let seqs: Vec<i64> = rows.iter().map(|row| row.seq).collect();
+        let view = Shown::read(&db, &waiting, project, &shown_project.name, sections::KeptRows::Rows(&seqs), at)?;
         let mut refs = super::refs::Refs::new(store, &db);
         let mut cards = cards::Cards::new(&db);
         // A card's refresh is on its live section, else on its identity's
@@ -667,6 +687,23 @@ fn form_answers(row: &sections::Row, reply: &FormReply, text: &str) -> Result<Va
         return Err(refused("form_mismatch: the reply's text does not say these answers".into()));
     }
     Ok(json!({"id":reply.form_id,"title":title,"fields":kept}))
+}
+
+/// An answered ask's reply as the user gave it to the version it answers (YN-223): the snapshot Core kept with it; or,
+/// for a form reply from before Core kept one, the answers it kept by id (YN-74, reply_form) read as that very
+/// version's form labels them, only while the ask is still that version and the reply's text says exactly those
+/// answers (form_answers), so nothing is guessed: a note beside them, or any other text, leaves the reply as sent.
+fn answered(row: &sections::Row, project: &str, kept: &sections::KeptReply) -> Option<Value> {
+    if row.kind != "ask" || !matches!(row.ask_state.as_deref(), Some("replied" | "resolved")) {
+        return None;
+    }
+    if let Some(snapshot) = &kept.snapshot {
+        return Some(snapshot.clone());
+    }
+    let form = kept.form.as_ref().filter(|form| row.replied_ask() && form["version"].as_i64() == Some(row.version))?;
+    let reply: FormReply = serde_json::from_value(json!({"formId": form["formId"], "answers": form["answers"]})).ok()?;
+    let answers = form_answers(row, &reply, row.reply_text.as_deref()?).ok()?;
+    Some(snapshot(project, Some(row), None, None, None, Some(answers)))
 }
 
 /// The option of an ask's reply with this id: (id, label).
@@ -1129,7 +1166,10 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         _ => None,
     };
     let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
-    let receipt = if let Some(previous) = ws.stored(move |store| store.receipt(&agent, &client)).await? {
+    let previous = ws.stored(move |store| store.receipt(&agent, &client)).await?;
+    // Whether this send made the message (YN-223), rather than finding it sent before: a retry's mark is placed by
+    // its receipt among the user's other replies, while one made just now is the newest (sections::newest).
+    let (receipt, fresh) = if let Some(previous) = previous {
         // The same reply to the same version, sent before: its receipt.
         let same = previous.origin.as_ref().is_some_and(|sent| {
             sent["kind"] == "home" && sent["projectId"] == project && sent["key"] == key
@@ -1137,7 +1177,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         });
         ensure!(same, "This clientMessageId was already used for another message");
         // The first send's files: a retry carries them again.
-        ws.send_message_from(&input.agent_id, previous.input, Vec::new(), previous.files, None).await?
+        (ws.send_message_from(&input.agent_id, previous.input, Vec::new(), previous.files, None).await?, false)
     } else {
         let Some(row) = &shown else {
             let (code, why) = match &current {
@@ -1181,7 +1221,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             question: None,
             clarification: None,
         };
-        ws.send_message_from(&input.agent_id, message, Vec::new(), input.files.clone(), Some(origin)).await?
+        (ws.send_message_from(&input.agent_id, message, Vec::new(), input.files.clone(), Some(origin)).await?, true)
     };
     // A note is kept with the version it was written on, while that is
     // still the live ask: once, however often it is sent again.
@@ -1219,8 +1259,22 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             (Some(row), Some(form)) if form_answers(row, form, &input.text).is_ok() => Some(json!({"formId": form.form_id, "answers": form.answers})),
             _ => None,
         };
+        // The reply as the user gave it to that version (YN-223): the same
+        // snapshot its receipt keeps, read from the same version of the ask,
+        // so Home's answered ask shows the question, options and answer the
+        // user saw, whatever its owner edits after.
+        let kept = shown.as_ref().map(|row| {
+            let answers = input.form.as_ref().and_then(|form| form_answers(row, form, &input.text).ok());
+            let words = if input.form.is_some() { note } else { extra_text(chosen.as_ref(), &input.text) };
+            snapshot(&name, Some(row), None, chosen.as_ref(), words, answers)
+        });
         let (store, key, id, images, files) = (ws.store.clone(), key.clone(), project.clone(), input.images.clone(), input.files.clone());
-        if crate::db::blocking(move || sections::mark_replied_form(&store, &id, &key, version, &reply, form.as_ref(), &images, &files)).await? {
+        let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
+        let marked = move || sections::mark_replied_form(&store, &id, &key, version, &reply, sections::Marked {
+            form: form.as_ref(), images: &images, files: &files, snapshot: kept.as_ref(),
+            sent: Some(sections::Sent { agent: &agent, client: &client, fresh }),
+        });
+        if crate::db::blocking(marked).await? {
             announce(ws, Some(&project));
         }
     }

@@ -45,14 +45,14 @@ const text = {
     // Long enough to wrap where the card is one column wide, not where it spans its row.
     yes: "Yes", no: "Not tonight", again: "Run it, but stop at 40k steps and keep the checkpoint; I will look at the curve in the morning.",
     plan: "Which tokenizer plan?", planQuestion: "Plan A or plan B for the rebuild?",
-    replied: "Replied · waiting for lead-1", next: "Next: lead-1 acts on your reply", replyAgain: "Reply again", send: "Send",
+    replied: "Waiting for lead-1", replyAgain: "Reply again", send: "Send",
   },
   "zh-Hans": {
     title: "今晚跑 7B 基线吗？", question: "今晚 22:00 之后队列空闲时跑 7B 基线吗？",
     body: ["22:00 之后队列空闲，分片重建今天下午已经完成。", "完整跑一次在四张 GPU 上大约六小时；评测集用上周那套，结果可以对比。", "如果不跑，下一个空档是周四晚上。"],
     yes: "跑", no: "今晚不跑", again: "跑，但到 40k 步就停，保留检查点；我明早看完曲线再决定要不要接着把它跑完。",
     plan: "分词器用哪个方案？", planQuestion: "重建用方案 A 还是方案 B？",
-    replied: "已回复 · 等 lead-1 处理", next: "下一步：lead-1 按你的回复处理", replyAgain: "再次回复", send: "发送",
+    replied: "等 lead-1 跟进", replyAgain: "补充回复", send: "发送",
   },
 };
 let id = 300;
@@ -88,7 +88,11 @@ function fixture(language) {
     const s = sections.find((entry) => entry.key === body.key);
     if (!s?.ask || s.version !== body.askVersion) return;
     const label = s.ask.reply.options?.find((option) => option.id === body.choice)?.label;
-    s.ask = { ...s.ask, state: "replied", repliedAt: new Date().toISOString(), replyText: label && body.text ? `${label}: ${body.text}` : label ?? body.text };
+    // With the reply as the user gave it to that version (YN-223, home.rs `snapshot`), which the answer card draws.
+    const replySnapshot = { format: 1, projectName: "orchard-sim", sectionKind: "ask", title: s.title, question: s.ask.question,
+      options: (s.ask.reply.options ?? []).map(({ id, label }) => ({ id, label })), choice: label ? { id: body.choice, label } : null,
+      text: body.text?.trim() || null, form: null };
+    s.ask = { ...s.ask, state: "replied", repliedAt: new Date().toISOString(), replyText: label && body.text ? `${label}: ${body.text}` : label ?? body.text, replySnapshot };
     state.needsYou = state.needsYou.filter((item) => item.sectionKey !== body.key);
   };
   state.home = () => ({
@@ -221,8 +225,12 @@ async function check(run) {
     return {
       height: Math.round(box.height * 10) / 10, width: Math.round(box.width), blank: Math.round(inner - bottom),
       minHeight: el.style.minHeight, answer: el.classList.contains("is-answer"), open: el.classList.contains("is-open"), size: el.dataset.cardSize ?? null,
-      kind: el.querySelector(".home-kind")?.textContent.trim() ?? null, reply: el.querySelector(".home-answer-reply")?.textContent ?? null,
-      next: el.querySelector(".home-answer-next")?.textContent ?? null, focused: document.activeElement === el, running: el.getAnimations().length,
+      kind: el.querySelector(".home-kind")?.textContent.trim() ?? null,
+      // The answer card's question as answered, then the reply as given (YN-223): the option chosen and the user's words.
+      ask: el.querySelector(":scope > .home-answer .home-answer-ask")?.textContent ?? null,
+      reply: [el.querySelector(":scope > .home-answer .home-reply-choice")?.textContent, el.querySelector(":scope > .home-answer .home-reply-words")?.textContent.trim()]
+        .filter(Boolean).join(" ") || null,
+      focused: document.activeElement === el, running: el.getAnimations().length,
     };
   }, key);
   // Where a card stands on its deck, from the deck's top: whatever is scrolled.
@@ -297,8 +305,8 @@ async function check(run) {
     await shot("after-reply");
     assert.ok(after.answer && after.size === "small" && !after.open, `the answer card: ${JSON.stringify(after)}`);
     assert.equal(after.kind, w.replied);
-    assert.match(after.reply, new RegExp(`${w.yes}$`));
-    assert.equal(after.next, w.next);
+    assert.equal(after.ask, w.question, "the question as answered, on the card's face");
+    assert.equal(after.reply, w.yes, "the option chosen");
     assert.equal(after.minHeight, "", "no height held for the card it was");
     assert.ok(after.blank <= 12, `no blank area: ${after.blank} px`);
     assert.ok(after.height < before.height - 40, `shorter than the card it was: ${before.height} → ${after.height}`);
@@ -346,7 +354,7 @@ async function check(run) {
     await press(card("overnight").locator(".home-card-body button", { hasText: w.send }).first());
     await page.waitForFunction((again) => {
       const el = document.getElementById("home-section-p-orch-overnight");
-      return el && !el.classList.contains("is-open") && el.querySelector(".home-answer-reply")?.textContent.endsWith(again);
+      return el && !el.classList.contains("is-open") && el.querySelector(":scope > .home-answer .home-reply-words")?.textContent.trim() === again;
     }, w.again, { timeout: 5000 });
     await settle("overnight");
     const again = await measure("overnight");

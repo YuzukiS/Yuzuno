@@ -727,23 +727,123 @@ pub(super) fn defer(store: &Store, project: &str, key: &str, until: Option<&str>
 /// no longer the live unresolved ask: a reply to it never marks a newer ask
 /// under the same key (T-9), as when its owner asked again meanwhile.
 pub(super) fn mark_replied(store: &Store, project: &str, key: &str, version: i64, text: &str) -> Result<bool> {
-    mark_replied_form(store, project, key, version, text, None, &[], &[])
+    mark_replied_form(store, project, key, version, text, Marked::default())
 }
 
-/// `mark_replied` with the form answers Home checked (form_answers), kept
-/// with the version they answer (YN-74), and the images the reply carried
-/// (YN-134); a reply without them clears any.
-pub(super) fn mark_replied_form(store: &Store, project: &str, key: &str, version: i64, text: &str, form: Option<&Value>, images: &[String],
-    files: &[crate::input_files::FileRef]) -> Result<bool> {
-    let form = form.map(|form| json!({"version": version, "formId": form["formId"], "answers": form["answers"]}).to_string());
-    let images = (!images.is_empty()).then(|| json!(images).to_string());
-    let files = (!files.is_empty()).then(|| json!(files).to_string());
-    let changed = store.db.write()?.execute(
-        "UPDATE project_brief_sections SET ask_state='replied',replied_at=?3,reply_text=?4,reply_form=?6,reply_images=?7,reply_files=?8
-         WHERE project_id=?1 AND key=?2 AND version=?5 AND live=1 AND kind='ask' AND ask_state IN ('open','replied')",
-        params![project, key, now(), text, version, form, images, files],
+/// What a reply marks on the version it answers, besides its text.
+#[derive(Default)]
+pub(super) struct Marked<'a> {
+    /// The form answers Home checked (form_answers), kept with the version they answer (YN-74).
+    pub form: Option<&'a Value>,
+    /// The images (YN-134) and files (YN-145) the reply carried.
+    pub images: &'a [String],
+    pub files: &'a [crate::input_files::FileRef],
+    /// The reply as the user gave it to that version (YN-223): its receipt's snapshot, which Home's answered ask is
+    /// drawn from.
+    pub snapshot: Option<&'a Value>,
+    /// The delivered message the reply is (YN-223), which places it among the user's other replies to that version.
+    /// None for a mark that names no message (tests), which marks only a version no such reply marked.
+    pub sent: Option<Sent<'a>>,
+}
+
+/// A reply's delivered message (Marked::sent): the Agent it went to, its clientMessageId, and whether this send made
+/// it (`fresh`) rather than finding it sent before (a retry).
+pub(super) struct Sent<'a> {
+    pub agent: &'a str,
+    pub client: &'a str,
+    pub fresh: bool,
+}
+
+/// `mark_replied` with what else the reply kept (Marked); a reply without one of them clears it. A replied version
+/// shows the user's newest delivered reply to it (YN-223), in the order Core accepted their messages (their receipts'
+/// rows, each written under its Agent's send lock as it was accepted): a reply marks it only if the reply it shows
+/// was not accepted after it. So neither a late retry of an earlier reply nor two windows' marks landing in the other
+/// order overwrite the newer answer, and a newer reply whose mark was interrupted marks it when retried. Its text,
+/// form, snapshot, images and files are that one reply's, written together.
+pub(super) fn mark_replied_form(store: &Store, project: &str, key: &str, version: i64, text: &str, marked: Marked) -> Result<bool> {
+    let form = marked.form.map(|form| json!({"version": version, "formId": form["formId"], "answers": form["answers"]}).to_string());
+    let images = (!marked.images.is_empty()).then(|| json!(marked.images).to_string());
+    let files = (!marked.files.is_empty()).then(|| json!(marked.files).to_string());
+    let snapshot = marked.snapshot.map(Value::to_string);
+    let mut writer = store.db.write()?;
+    let tx = writer.transaction()?;
+    type Shown = (i64, String, Option<String>, Option<String>);
+    let row: Option<Shown> = tx.query_row(
+        "SELECT seq,ask_state,reply_agent,reply_client FROM project_brief_sections
+         WHERE project_id=?1 AND key=?2 AND version=?3 AND live=1 AND kind='ask' AND ask_state IN ('open','replied')",
+        params![project, key, version], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    ).optional()?;
+    let Some((seq, state, agent, client)) = row else { return Ok(false) };
+    let shown = agent.zip(client);
+    let takes = state == "open" || match &marked.sent {
+        Some(sent) => newest(&tx, project, key, version, sent, shown.as_ref())?,
+        None => shown.is_none(),
+    };
+    if !takes {
+        return Ok(false);
+    }
+    let (agent, client) = marked.sent.as_ref().map(|sent| (sent.agent, sent.client)).unzip();
+    tx.execute(
+        "UPDATE project_brief_sections SET ask_state='replied',replied_at=?2,reply_text=?3,reply_form=?4,reply_images=?5,reply_files=?6,
+         reply_snapshot=?7,reply_agent=?8,reply_client=?9 WHERE seq=?1",
+        params![seq, now(), text, form, images, files, snapshot, agent, client],
     )?;
-    Ok(changed == 1)
+    tx.commit()?;
+    Ok(true)
+}
+
+/// Whether `sent` was accepted no earlier than the reply a replied version shows (`shown`, by its message), as the
+/// receipts read in the mark's own transaction tell. A version replied before Core kept which message it shows is
+/// placed by its newest other delivered reply among the receipts of the Agent `sent` went to. Where the receipts
+/// place nothing (the shown reply's went with its Agent, or none is found), only a reply this send made marks it:
+/// accepted just now, it is the newest, while a retry can't be placed and the answer shown is kept.
+fn newest(db: &Connection, project: &str, key: &str, version: i64, sent: &Sent, shown: Option<&(String, String)>) -> Result<bool> {
+    let order = |agent: &str, client: &str| -> Result<Option<i64>> {
+        Ok(db.prepare_cached("SELECT rowid FROM agent_receipts WHERE agent_id=?1 AND client_id=?2")?
+            .query_row(params![agent, client], |r| r.get(0)).optional()?)
+    };
+    let Some(mine) = order(sent.agent, sent.client)? else { return Ok(false) };
+    let before = match shown {
+        Some((agent, client)) => order(agent, client)?,
+        None => db.prepare_cached(
+            "SELECT MAX(rowid) FROM agent_receipts WHERE agent_id=?1 AND client_id!=?2
+             AND json_extract(data,'$.origin.kind')='home' AND json_extract(data,'$.origin.projectId')=?3
+             AND json_extract(data,'$.origin.key')=?4 AND json_extract(data,'$.origin.version')=?5
+             AND json_extract(data,'$.origin.intent') IS NULL AND json_extract(data,'$.status') IN ('accepted','queued')",
+        )?.query_row(params![sent.agent, sent.client, project, key, version], |r| r.get(0))?,
+    };
+    Ok(before.map_or(sent.fresh, |before| mine >= before))
+}
+
+/// What Core kept of an answered ask's reply, by its row (YN-223): the reply as the user gave it (`snapshot`), and
+/// the form answers by id (`form`, YN-74) that a reply from before snapshots may still be read by. An ask replied
+/// or resolved, live or in History. A value Core cannot read shows none.
+pub(super) struct KeptReply {
+    pub snapshot: Option<Value>,
+    pub form: Option<Value>,
+}
+
+/// Which rows' kept replies a read takes: every answered ask's, live and in History (Home read whole); the live
+/// ones' (Home with its History as an index, whose entries are read on their own); or these rows' (those entries).
+pub(super) enum KeptRows<'a> {
+    Every,
+    Live,
+    Rows(&'a [i64]),
+}
+
+pub(super) fn kept_replies(db: &Connection, project: &str, which: KeptRows) -> Result<HashMap<i64, KeptReply>> {
+    const ANSWERED: &str = "SELECT seq,reply_snapshot,reply_form FROM project_brief_sections
+         WHERE project_id=?1 AND kind='ask' AND ask_state IN ('replied','resolved') AND (reply_snapshot IS NOT NULL OR reply_form IS NOT NULL)";
+    type Kept = (i64, Option<String>, Option<String>);
+    let row = |r: &rusqlite::Row| -> rusqlite::Result<Kept> { Ok((r.get(0)?, r.get(1)?, r.get(2)?)) };
+    let rows: Vec<Kept> = match which {
+        KeptRows::Every => db.prepare_cached(ANSWERED)?.query_map([project], row)?.collect::<rusqlite::Result<_>>()?,
+        KeptRows::Live => db.prepare_cached(&format!("{ANSWERED} AND live=1"))?.query_map([project], row)?.collect::<rusqlite::Result<_>>()?,
+        KeptRows::Rows(seqs) => db.prepare_cached(&format!("{ANSWERED} AND seq IN (SELECT value FROM json_each(?2))"))?
+            .query_map(params![project, serde_json::to_string(seqs)?], row)?.collect::<rusqlite::Result<_>>()?,
+    };
+    let read = |raw: Option<String>| raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).filter(Value::is_object);
+    Ok(rows.into_iter().map(|(seq, snapshot, form)| (seq, KeptReply { snapshot: read(snapshot), form: read(form) })).collect())
 }
 
 /// `mark_replied` of whatever version is live now: for tests that only set

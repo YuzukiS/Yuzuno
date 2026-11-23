@@ -9,8 +9,9 @@ use tower::ServiceExt;
 
 /// For the Brief as it is now: Home with its history as an index is Home
 /// whole, but for each history entry, which is the whole one without body,
-/// attachments and refs and with `bodyOmitted` and `attachmentCount`; each
-/// entry read alone is the whole one; Needs you alone is Home's.
+/// attachments and refs, nor an answered ask's kept reply (YN-223), and with
+/// `bodyOmitted` and `attachmentCount`; each entry read alone is the whole
+/// one; Needs you alone is Home's.
 pub(in crate::project_brief) fn check(store: &Store) {
     let full = home::build(store).unwrap();
     let index = home::build_with(store, home::History::Index).unwrap();
@@ -28,6 +29,9 @@ pub(in crate::project_brief) fn check(store: &Store) {
             let count = entry["attachments"].as_array().unwrap().len();
             for field in ["body", "attachments", "refs"] {
                 entry.as_object_mut().unwrap().remove(field);
+            }
+            if let Some(ask) = entry.get_mut("ask").and_then(Value::as_object_mut) {
+                ask.remove("replySnapshot");
             }
             entry["bodyOmitted"] = json!(true);
             entry["attachmentCount"] = json!(count);
@@ -196,7 +200,7 @@ async fn each_kind_of_history_entry_is_the_same_in_the_index_and_read_alone() {
     // after a reply that carried images.
     sections::mark_seen(&ws.store, &project, &[("result".into(), 1)]).unwrap();
     accept(&ws, "a", input("h2", version(&ws, &project), vec![op("remove", "gone")])).await;
-    assert!(sections::mark_replied_form(&ws.store, &project, "pick", 1, "Left", None, &["synthetic.png".into()], &[]).unwrap());
+    assert!(sections::mark_replied_form(&ws.store, &project, "pick", 1, "Left", sections::Marked { images: &["synthetic.png".into()], ..Default::default() }).unwrap());
     accept(&ws, "a", input("h3", version(&ws, &project), vec![op("resolve", "pick")])).await;
     let home = home::build(&ws.store).unwrap();
     let reasons: Vec<_> = home["projects"][0]["brief"]["history"].as_array().unwrap().iter().map(|e| e["historyReason"].clone()).collect();
@@ -325,4 +329,34 @@ async fn home_measure() {
     }
     check(&ws.store);
     assert!(ratio <= 0.30, "the index is over 30% of Home whole: {row}");
+}
+
+// YN-223: an answered Ask in History keeps the reply as the user gave it to the version it answered. Home read whole
+// and the entry opened from the index show it alike; the index never carries it, nor reads History's for it.
+#[tokio::test]
+async fn a_resolved_asks_kept_reply_comes_with_its_entry_read_whole_never_with_the_index() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("q1", 0, vec![put("decide", "ask"), put("open", "ask")])).await;
+    let given = json!({"format":1,"projectName":"Code","sectionKind":"ask","title":"About decide","question":"Which way?",
+        "options":[{"id":"left","label":"Left"},{"id":"right","label":"Right"}],"choice":{"id":"left","label":"Left"},"text":"Go","form":null});
+    let live = json!({"format":1,"projectName":"Code","sectionKind":"ask","title":"About open","question":"Which way?",
+        "options":[{"id":"left","label":"Left"},{"id":"right","label":"Right"}],"choice":{"id":"right","label":"Right"},"text":null,"form":null});
+    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Left: Go", sections::Marked { snapshot: Some(&given), ..Default::default() }).unwrap());
+    assert!(sections::mark_replied_form(&ws.store, &project, "open", 1, "Right", sections::Marked { snapshot: Some(&live), ..Default::default() }).unwrap());
+    accept(&ws, "a", input("q2", 1, vec![op("resolve", "decide")])).await;
+    let full = home::build(&ws.store).unwrap();
+    let whole = full["projects"][0]["brief"]["history"].as_array().unwrap().iter().find(|e| e["key"] == "decide").unwrap().clone();
+    assert_eq!((whole["ask"]["state"].clone(), whole["ask"]["replySnapshot"].clone()), (json!("resolved"), given));
+    let index = home::build_with(&ws.store, home::History::Index).unwrap();
+    let indexed = index["projects"][0]["brief"]["history"].as_array().unwrap().iter().find(|e| e["key"] == "decide").unwrap().clone();
+    assert_eq!(indexed["bodyOmitted"], true);
+    assert!(indexed["ask"].get("replySnapshot").is_none(), "never on the index: {indexed}");
+    // A live answered Ask keeps it beside the index, as Home read whole has it.
+    let open = index["projects"][0]["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "open").unwrap().clone();
+    assert_eq!(open["ask"]["replySnapshot"], live);
+    // Opened from the index: the entry read whole, its reply as given included, as Home read whole shows it.
+    let read = home::history_entries(&ws.store, &project, &[entry_of(&index, "decide")]).unwrap();
+    assert_eq!(read["missing"], json!([]));
+    assert_eq!(read["entries"][0], whole, "the entry opened from the index is Home's");
+    check(&ws.store);
 }

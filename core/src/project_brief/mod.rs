@@ -397,6 +397,28 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     if !has_reply_files {
         db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_files TEXT")?;
     }
+    // reply_snapshot: the replied version of an ask as the user answered it
+    // (YN-223), the same format-1 snapshot the reply's conversation receipt
+    // keeps (input_origin HOME_FORMAT): question, options, choice, words and
+    // a form's answers. Home's answered ask is drawn from it; NULL for a
+    // reply from before it was kept. Older Cores ignore it.
+    let has_reply_snapshot: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='reply_snapshot')", [], |r| r.get(0))?;
+    if !has_reply_snapshot {
+        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_snapshot TEXT")?;
+    }
+    // reply_agent, reply_client: the message the replied version shows
+    // (YN-223), by the Agent it went to and its clientMessageId: its receipt
+    // places it among the user's other replies to that version, so only a
+    // reply delivered after it marks the ask again. NULL for a reply from
+    // before they were kept, which those receipts place as far as they can.
+    for column in ["reply_agent", "reply_client"] {
+        let has: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name=?1)", [column], |r| r.get(0))?;
+        if !has {
+            db.execute_batch(&format!("ALTER TABLE project_brief_sections ADD COLUMN {column} TEXT"))?;
+        }
+    }
     let has_lineage: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='lineage')", [], |r| r.get(0))?;
     if !has_lineage {

@@ -231,9 +231,32 @@ test("unfolded: open Asks first, then the task's one card, the answered Asks, jo
   const page = mount({ opened: ["r7", "r10", "r9"] });
   const r7 = page.block(7);
   const parts = [...r7.querySelector(".request-task").children].map((el) => el.dataset.sectionKey ?? el.querySelector("[data-section-key]")?.dataset.sectionKey ?? el.className);
-  assert.deepEqual(parts, ["yn-91", "request-task-answered"], "the one card, the answered Ask: the open Ask is in the first look only");
+  assert.deepEqual(parts, ["yn-91", "request-task-answered-ask"], "the one card, the answered Ask: the open Ask is in the first look only");
   assert.equal(r7.querySelectorAll('[data-section-key="yn-91/pick"]').length, 1, "unfolded, the Ask is not drawn again");
-  assert.equal(page.text(r7.querySelector(".request-task-answered")), "Answered: Casual copy? → Yes");
+  const line = r7.querySelector(".request-task-answered");
+  assert.equal(page.text(line), "Answered: Casual copy? → Yes");
+  // YN-223: the line opens, in place, its answer card: the question, the reply; its owner resolved it, so nothing
+  // more is sent from it; a reply from before Core kept the question with it, said so.
+  assert.equal(line.tagName, "BUTTON");
+  assert.equal(line.getAttribute("aria-expanded"), "false");
+  assert.equal(r7.querySelector('[data-section-key="yn-91/copy"]'), null, "compact until opened");
+  line.click();
+  await tick(40);
+  assert.equal(line.getAttribute("aria-expanded"), "true");
+  const answered = r7.querySelector('[data-section-key="yn-91/copy"]');
+  assert.equal(answered.closest(".request-task-answered-card").id, line.getAttribute("aria-controls"));
+  assert.ok(answered.classList.contains("is-answer"), "its answer card");
+  assert.equal(answered.querySelector(".home-kind").textContent.trim(), "Resolved by Dev Lead");
+  assert.notEqual(answered.querySelector(".home-changed")?.textContent, "New", "answered and resolved: never New");
+  assert.equal(answered.querySelector(".home-answer-ask").textContent, "Casual copy?");
+  assert.equal(answered.querySelector(".home-reply-words").textContent.trim(), "Yes");
+  assert.ok(answered.querySelector(".home-answer-unkept"), "an earlier reply, said so");
+  assert.deepEqual([...answered.querySelectorAll(".home-answer-given footer button")].map((b) => b.textContent.trim()), ["Copy answer", "Details"],
+    "resolved: nothing more is sent from it");
+  assert.equal(answered.querySelector(".home-ask"), null, "no reply controls under it");
+  line.click();
+  await tick(40);
+  assert.equal(r7.querySelector('[data-section-key="yn-91/copy"]'), null, "closed again: the line");
   assert.equal(page.text(r7.querySelector(".request-thread > summary")), "Conversation 3");
   // R-10 joined R-9's task: one line, which shows R-9.
   const joined = page.block(10).querySelector(".request-block-joined");
@@ -449,6 +472,53 @@ test("the Project's cards: a closed group drawing nothing until opened, then the
   assert.deepEqual(page.errors, []);
 });
 
+// YN-223 (R-29's settled design): an answered Ask in the Project's cards reads the question as the user answered it,
+// its note, then the reply as given; a form's answers by field; folded, the question and what was chosen stay. Read
+// only, nothing can be sent from it; in Chinese, its own words.
+test("the Project's cards: an answered Ask as R-29 settled it, a form's answers, folded and read only, in Chinese", async () => {
+  const page = mount({ lang: "zh", readOnly: true, opened: ["project"] });
+  const data = fixtures();
+  const question = "R-26 的七项建议，这一轮你想推进哪些？每项都可以之后再加。";
+  const picks = ["首页历史按需加载（首选）", "精简已释放执行者列表（推荐）", "减少重复刷新，恢复窗口时补齐（推荐）",
+    "定位 Agent 活动期间的 Core CPU 开销", "缓存、压缩静态资源", "补运行诊断，区分接口、线程和桌面状态"];
+  const answered = section("yn-221/ask", "ask", "R-31 · 这轮做哪些运行改进？", 50, {
+    ask: { question, state: "replied", repliedAt: ago(45), replyText: "Answers to “选择开发范围”:\n- 这轮要做哪些？可多选: …",
+      reply: { form: { id: "r31", title: "选择开发范围", fields: [{ id: "picks", type: "multi", label: "这轮要做哪些？可多选", options: [] }] } },
+      replySnapshot: { format: 1, projectName: "yuzuno-next", sectionKind: "ask", title: "R-31 · 这轮做哪些运行改进？", question, options: [],
+        choice: null, text: null, form: { id: "r31", title: "选择开发范围", fields: [{ id: "picks", type: "multi", label: "这轮要做哪些？可多选", answer: picks }] } } },
+  });
+  page.window.renderPage({ requests: data.requests, sections: [...data.sections, answered], readOnly: true });
+  await tick(40);
+  const card = page.document.querySelector('[data-section-key="yn-221/ask"]');
+  assert.ok(card.classList.contains("is-answer"), "its answer card");
+  assert.equal(page.text(card.querySelector(".home-answer-source")), "R-31 · 这轮做哪些运行改进？·当时的问题");
+  assert.equal(card.querySelector(".home-kind").textContent.trim(), "等 Dev Lead 跟进");
+  assert.equal(card.querySelector(".home-answer-ask").textContent, "R-26 的七项建议，这一轮你想推进哪些？");
+  assert.equal(card.querySelector(".home-answer-hint").textContent, "每项都可以之后再加。");
+  assert.equal(card.querySelector(".home-answer-label").textContent, "你的回复");
+  assert.equal(card.querySelector(".home-reply-form-title").textContent, "“选择开发范围”的回答");
+  assert.deepEqual([...card.querySelectorAll("dd li")].map((li) => li.textContent), picks, "each choice of the form, as chosen");
+  // Read only: Copy answer and Details, nothing that sends; a form has no options then.
+  assert.deepEqual([...card.querySelectorAll(".home-answer-given footer button")].map((b) => b.textContent.trim()), ["复制回答", "详情"]);
+  // Folded: the question and the answers stay, the form's title and the actions one unfold away.
+  const fold = card.querySelector(".home-answer-byline .home-fold");
+  assert.equal(fold.getAttribute("aria-controls"), card.querySelector(".home-answer").id);
+  fold.click();
+  await tick(40);
+  assert.ok(card.classList.contains("is-folded"));
+  assert.equal(card.querySelector(".home-answer-ask").textContent, "R-26 的七项建议，这一轮你想推进哪些？", "the question stays");
+  assert.deepEqual([...card.querySelectorAll("dd li")].map((li) => li.textContent), picks, "what was chosen stays");
+  assert.equal(card.querySelector(".home-reply-form-title"), null);
+  assert.equal(card.querySelector(".home-answer-given footer"), null);
+  const unfold = card.querySelector(".home-answer-unfold");
+  assert.equal(unfold.textContent.trim(), "查看完整回复");
+  unfold.click();
+  await tick(40);
+  assert.ok(!card.classList.contains("is-folded"), "unfolded again");
+  assert.ok(card.querySelector(".home-answer-given footer"));
+  assert.deepEqual(page.errors, []);
+});
+
 /** A lead's status for the banner (R-27); `forYou` items name the Checklist of what the user is asked to do. */
 function nowCard({ stale = false, forYou = null, lead = "**core.38 is installed; the new page is on.** The long conversation's view is being fixed." } = {}) {
   const elements = {
@@ -603,5 +673,37 @@ test("ended tasks' cards in Home's history index are read whole where they show,
   // Core no longer keeps them: said so, in place of each.
   await tick(60);
   assert.equal(page.block(12).querySelectorAll('[data-history-body="missing"]').length, 2);
+  assert.deepEqual(page.errors, []);
+});
+
+// YN-223 with YN-221 S2: an Ask answered before this visit and resolved since, kept in Home's history index, is one
+// compact line in its task's row; opened, its card is read whole first, saying so under its title, then drawn.
+test("an answered Ask in Home's history index opens from its line to its card read whole, reading meanwhile", async () => {
+  const page = mount({ opened: ["r7"] });
+  const reads = [];
+  page.window.fetch = async (url) => {
+    reads.push(String(url));
+    return { ok: true, status: 200, json: async () => ({ entries: [], missing: [] }), text: async () => "{}" };
+  };
+  const data = fixtures();
+  const kept = section("yn-91/tone", "ask", "Which tone?", 90, {
+    history: true, historyReason: "resolved", card: bind("YN-91"),
+    ask: { question: "Formal or casual tone?", state: "resolved", repliedAt: ago(85), replyText: "Casual",
+      reply: { options: [{ id: "f", label: "Formal" }, { id: "c", label: "Casual" }] } },
+  });
+  const { body: _b, attachments: _a, refs: _r, ...rest } = kept;
+  const indexed = { ...rest, bodyOmitted: true, attachmentCount: 0 };
+  page.window.renderPage({ requests: data.requests, sections: [...data.sections, indexed], readOnly: false });
+  await tick(60);
+  const line = page.block(7).querySelector('[data-answered="yn-91/tone"] .request-task-answered');
+  assert.equal(page.text(line), "Answered: Formal or casual tone? → Casual", "the index row's question and reply, in one line");
+  assert.deepEqual(reads, [], "nothing read while it is a line");
+  line.click();
+  await tick(60);
+  const reading = page.block(7).querySelector('[data-answered="yn-91/tone"] [data-history-body]');
+  assert.ok(reading, "opened: its card is read whole first");
+  assert.equal(reading.querySelector("strong")?.textContent, "Which tone?");
+  assert.equal(page.block(7).querySelector('[data-answered="yn-91/tone"] .home-section'), null, "no card from the index row");
+  assert.deepEqual(reads, [`/api/projects/p1/brief/history?entries=${kept.id}:2`]);
   assert.deepEqual(page.errors, []);
 });

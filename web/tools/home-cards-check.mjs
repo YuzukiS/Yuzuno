@@ -8,8 +8,10 @@
 //    by Enter, Escape closes it and focus goes back to the picture; a small
 //    card's View image opens it too;
 //  - a card whose author named no summary shows its first paragraph;
-//  - a replied Ask is one line with its reply in short, never New; unfolded,
-//    its reply and Reply again;
+//  - a replied Ask is its answer card (YN-223, R-29's design): the question as
+//    answered, then the reply as given, never New; an earlier reply (no
+//    snapshot) says its question was not kept; Details opens its body, Reply
+//    again its reply's controls;
 //  - the deck in its order (open Asks, current status, reports, Asks put off;
 //    the answered Asks under their heading; status out of date last, closed),
 //    and with no gap before a card: every cell of its grid, and of Out of
@@ -114,7 +116,10 @@ const sections = [
   }), { attachments: [pageFile("ring.html")] }),
   section("tokenizer", "ask", "Keep the old tokenizer?", spec({}, ["q"], { q: md("Old or new tokenizer for the rebuild?") }), {
     updatedAt: at(80),
-    ask: { question: "Keep the old tokenizer until the rebuild?", state: "replied", repliedAt: at(60), replyText: "Keep it until the shard rebuild, then switch.", reply: { freeText: true } },
+    ask: { question: "Keep the old tokenizer until the rebuild?", state: "replied", repliedAt: at(60), replyText: "Keep it until the shard rebuild, then switch.", reply: { freeText: true },
+      // The reply as the user gave it (YN-223): Core keeps it with the version answered. "draft" is an earlier reply, without one.
+      replySnapshot: { format: 1, projectName: "orchard-sim", sectionKind: "ask", title: "Keep the old tokenizer?", question: "Keep the old tokenizer until the rebuild?",
+        options: [], choice: null, text: "Keep it until the shard rebuild, then switch.", form: null } },
   }),
   section("progress", "status", "Current progress", spec({}, ["a"], { a: md("Week 44: the old plan.") }), {
     status: { asOf: at(3 * 24 * 60), validFor: 86400, stale: true },
@@ -143,10 +148,10 @@ const home = () => ({
 });
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
-  en: { viewImage: "View image", replied: "Replied · waiting for lead-1", updated: "Updated", replyAgain: "Reply again", openImage: "Open image loss.png", next: "Next: lead-1 acts on your reply",
+  en: { viewImage: "View image", replied: "Waiting for lead-1", updatedBy: "lead-1 updated it", updated: "Updated", replyAgain: "Reply again", openImage: "Open image loss.png",
     repliedGroup: "Replied, waiting · 2", outOfDate: /^Out of date · 1 status · newest data as of /,
     pageAsk: "ring.html asks to send this to lead-1, as your reply:", pageSend: "Send", pageDontSend: "Don't send", pageSent: "Sent to lead-1." },
-  "zh-Hans": { viewImage: "查看图片", replied: "已回复 · 等 lead-1 处理", updated: "已更新", replyAgain: "再次回复", openImage: "打开图片 loss.png", next: "下一步：lead-1 按你的回复处理",
+  "zh-Hans": { viewImage: "查看图片", replied: "等 lead-1 跟进", updatedBy: "lead-1 已更新", updated: "已更新", replyAgain: "补充回复", openImage: "打开图片 loss.png",
     repliedGroup: "已回复，等处理 · 2", outOfDate: /^已过期 · 1 个状态 · 最新数据 /,
     pageAsk: "ring.html 请求以你的回复发给 lead-1：", pageSend: "发送", pageDontSend: "不发", pageSent: "已发给 lead-1。" },
 };
@@ -483,19 +488,23 @@ async function check(run) {
         { theme: before.theme, paper: before.paper, other: changed.paper, buttons, sendDisabledWhenShown: armed });
     }
 
-    // ---- Answered Asks are answer cards (YN-3, the user's D3): small cards the deck packs, two sharing a row;
-    // whom each waits for, its title, the reply quoted (three lines at most), who acts next or its owner's update.
+    // ---- Answered Asks are answer cards (YN-3, the user's D3): small cards the deck packs, two sharing a row; as
+    // R-29 settled them (YN-223): whom each waits for or its owner's update, the question as answered, then the reply
+    // as given (six lines at most, the rest behind Show all); an earlier reply says its question was not kept.
     const answers = {};
     for (const key of ["tokenizer", "draft"]) {
       answers[key] = await card(key).evaluate((el) => {
-        const quote = el.querySelector(".home-answer-reply");
-        const line = quote ? parseFloat(getComputedStyle(quote).lineHeight) || 20 : 0;
+        const answer = el.querySelector(":scope > .home-answer");
+        const words = answer?.querySelector(".home-reply-words");
+        const line = words ? parseFloat(getComputedStyle(words).lineHeight) || 20 : 0;
         const box = el.getBoundingClientRect();
+        const top = (selector) => answer?.querySelector(selector)?.getBoundingClientRect().top ?? null;
         return { answer: el.classList.contains("is-answer"), size: el.dataset.cardSize ?? null, cols: el.dataset.deckCols ?? null,
           kind: el.querySelector(".home-kind")?.textContent.trim(), changed: el.querySelector(".home-changed")?.textContent.trim() ?? null,
-          title: el.querySelector(".home-answer-title h3")?.textContent ?? null, reply: quote?.textContent ?? null,
-          quoteLines: quote ? Math.round(quote.clientHeight / line) : null,
-          next: el.querySelector(".home-answer-next")?.textContent ?? null, update: el.querySelector(".home-answer-update")?.textContent ?? null,
+          ask: answer?.querySelector(".home-answer-ask")?.textContent ?? null, unkept: !!answer?.querySelector(".home-answer-unkept"),
+          reply: words?.textContent.trim() ?? null, wordLines: words ? Math.round(words.clientHeight / line) : null,
+          questionFirst: top(".home-answer-ask") !== null && top(".home-answer-ask") < top(".home-reply-answer"),
+          update: answer?.querySelector(".home-answer-update")?.textContent ?? null,
           top: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) };
       });
     }
@@ -506,21 +515,25 @@ async function check(run) {
     for (const [n, key] of ["tokenizer", "draft"].entries()) {
       const a = answers[key];
       assert.ok(a.answer && a.size === "small", `${key}: an answer card, small: ${JSON.stringify(a)}`);
-      assert.equal(a.kind, w.replied);
+      assert.equal(a.kind, key === "draft" ? w.updatedBy : w.replied);
       assert.equal(a.cols, sharing[n], `${key}: ${main.columns} columns, filled from the last back (YN-157): ${JSON.stringify(a)}`);
-      assert.ok(a.quoteLines <= 3, `${key}: the reply in three lines at most: ${JSON.stringify(a)}`);
+      assert.ok(a.questionFirst, `${key}: the question before the reply: ${JSON.stringify(a)}`);
+      assert.ok(a.wordLines <= 6, `${key}: the reply in six lines at most: ${JSON.stringify(a)}`);
     }
     if (main.columns >= 2) assert.equal(answers.tokenizer.top, answers.draft.top, "side by side");
     assert.equal(answers.tokenizer.changed, null, "answered, not New");
     assert.equal(answers.draft.changed, w.updated, "changed by its owner after the reply: Updated");
-    assert.match(answers.tokenizer.reply, /Keep it until the shard rebuild, then switch\.$/);
-    assert.equal(answers.tokenizer.next, w.next);
-    assert.ok(answers.draft.update && answers.draft.next === null, "its owner's update in place of who acts next");
+    assert.equal(answers.tokenizer.ask, "Keep the old tokenizer until the rebuild?");
+    assert.equal(answers.tokenizer.reply, "Keep it until the shard rebuild, then switch.");
+    assert.ok(!answers.tokenizer.unkept, "kept with its question");
+    assert.ok(answers.draft.unkept, "an earlier reply: its question not kept, said so");
+    assert.equal(answers.draft.reply, "Yes, once main CI is green.");
+    assert.ok(answers.draft.update, "its owner's update after the reply, apart from it");
     // Opened: the question and details, its row its own; the other takes the row it is left alone on, as far as
     // its twice-its-size cap allows (YN-157); still no gap before a card.
     const tokenizer = card("tokenizer");
-    await tokenizer.locator(".home-answer-details").click();
-    await tokenizer.locator(".home-card-body .home-question").waitFor({ timeout: 10_000 });
+    await tokenizer.locator(":scope > .home-answer .home-answer-details").click();
+    await tokenizer.locator(":scope > .home-card-body .home-section-body").waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => {
       const grid = document.querySelector('[data-home-project="p-orch"] .home-brief');
       const tokenizer = document.querySelector("#home-section-p-orch-tokenizer");
@@ -530,12 +543,12 @@ async function check(run) {
     assert.deepEqual(opened.missing, [], `no hole with an answer card open: ${JSON.stringify(opened)}`);
     await cardShot("tokenizer", "answer-open");
     // Reply again, on the card: the reply field, in the card.
-    await tokenizer.locator(".home-answer-again").click();
+    await tokenizer.locator(":scope > .home-answer .home-answer-again").click();
     await tokenizer.locator(".home-card-body textarea").waitFor({ timeout: 10_000 });
     await cardShot("tokenizer", "answer-again");
-    await tokenizer.locator(".home-answer-details").click();
+    await tokenizer.locator(":scope > .home-answer .home-answer-details").click();
     await tokenizer.locator(":scope > .home-card-body").waitFor({ state: "hidden", timeout: 10_000 });
-    pass("answered Asks are small answer cards sharing a row: the reply quoted, who acts next or the owner's update, Updated only after the owner's change; opened, its own row with no hole; Reply again on the card", answers);
+    pass("answered Asks are small answer cards sharing a row: the question as answered, then the reply; an earlier reply said so; the owner's update apart, Updated only after the owner's change; opened, its own row with no hole; Reply again on the card", answers);
 
     // ---- Enter sends a reply from Home, in Chinese (the user's item): Shift+Enter a new line, nothing while composing.
     if (run.language === "zh-Hans") {
