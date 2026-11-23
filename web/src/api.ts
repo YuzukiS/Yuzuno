@@ -1,3 +1,4 @@
+import { pageVisibility } from "./visibility-log";
 export const isTauri = "__TAURI_INTERNALS__" in window;
 export const isNative =
   isTauri ||
@@ -48,6 +49,9 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       headers: {
         "Content-Type": "application/json",
         "X-Yuzuno-Client": "desktop",
+        // What Core counts each route's requests by (YN-221 S7a, runtime_diag.rs): whether the page was hidden
+        // when it asked. The event stream can't carry it; Core counts it apart.
+        "X-Yuzuno-Visibility": pageVisibility(),
         ...init?.headers,
       },
     });
