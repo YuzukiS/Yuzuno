@@ -763,3 +763,29 @@ test("Home reads one at a time: changes while a read is on its way ask for one m
     page.close();
   }
 });
+
+test("a Home read Core never answers ends at the snapshot deadline, and the read asked for meanwhile goes next (YN-221)", async () => {
+  let first = true;
+  const page = mount(() => {
+    if (first) {
+      first = false;
+      return new Promise(() => {});
+    }
+    return homeData([section("eval", 7, 3)]);
+  });
+  const reads = () => page.requests.filter((r) => r.url === "/api/home");
+  try {
+    page.window.startProject = "p1";
+    page.window.renderHome(null, 1);
+    await until(() => reads().length === 1, "the first read");
+    page.window.renderHome(null, 2);
+    await tick(200);
+    assert.equal(reads().length, 1, "one read at a time");
+    // SNAPSHOT_TIMEOUT_MS (snapshot-request.ts): 10 s.
+    await until(() => reads().length === 2, "the next read after the deadline", 12_000);
+    await until(() => page.document.querySelector(".project-home, .home-layout"), "Home drawn from it");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
