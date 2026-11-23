@@ -11,7 +11,10 @@
 //  - beside R-27's banner (#1104): the Project cards group holds the answered Asks with the lead's status;
 //  - the path the Dev Lead named (YN-223 seq 12138): R-29's Ask answered in its request's first look becomes its
 //    answer card there; reloaded (the request entered a second time), the request's task row has it as one compact
-//    line, which opens in place to the same card, drawn once; and again after leaving for Home and coming back.
+//    line, which opens in place to the same card, drawn once; and again after leaving for Home and coming back;
+//  - Home's history as an index (YN-221, #1115; YN-223 seq 12234): an Ask resolved in History, opened from its
+//    request's line, is read whole first (saying so), then its answer card shows the question, the options then and
+//    the reply as kept; one in the History list shows the same when opened; the index never carries the reply kept.
 // Nothing is sent but reads and that one reply.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/answered-ask-check.mjs
 import assert from "node:assert/strict";
@@ -26,7 +29,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "YN-223", runs: [], posts: [], unexpected: [], errors: [] };
+const report = { task: "YN-223", runs: [], posts: [], unexpected: [], errors: [], homeReads: [], entryReads: [] };
 const HOST = "localhost:47394";
 const now = Date.now();
 const at = (minutes) => new Date(now - minutes * 60_000).toISOString();
@@ -121,6 +124,21 @@ function fixture() {
         replySnapshot: kept("R-34 · 很长的问题", longQuestion, [], { text: "收到。" }) },
     }),
   ];
+  // Answered before, and resolved since: in History, kept with their reply as given.
+  const firstQuestion = "第一轮先看哪种排法？三种都在附图里。";
+  const firstOptions = [{ id: "a", label: "会话同款" }, { id: "b", label: "嵌入请求" }, { id: "c", label: "折叠回执" }];
+  const first = section("yn-220/first", "ask", "R-29 · 第一轮的排法", spec(["a"], { a: md("第一轮的三种排法。") }), {
+    card: bound, version: 4, updatedAt: at(200), history: true, historyReason: "resolved",
+    ask: { question: firstQuestion, state: "resolved", repliedAt: at(210), replyText: "会话同款: 再加上问题本身", reply: { options: firstOptions, freeText: true },
+      replySnapshot: kept("R-29 · 第一轮的排法", firstQuestion, firstOptions, { choice: firstOptions[0], text: "再加上问题本身" }) },
+  });
+  const r26Question = "R-26 的运行改进，先做哪一项？";
+  const r26Options = [{ id: "history", label: "首页历史按需加载" }, { id: "cpu", label: "定位 Core CPU 开销" }];
+  const r26 = section("r26-ask", "ask", "R-26 · 先做哪项运行改进", spec(["a"], { a: md("七项建议的成本对比。") }), {
+    version: 3, updatedAt: at(500), history: true, historyReason: "resolved",
+    ask: { question: r26Question, state: "resolved", repliedAt: at(520), replyText: "首页历史按需加载: 这个最影响日常", reply: { options: r26Options, freeText: true },
+      replySnapshot: kept("R-26 · 先做哪项运行改进", r26Question, r26Options, { choice: r26Options[0], text: "这个最影响日常" }) },
+  });
   const request = {
     id: "req-29", n: 29, text: "重新设计已回复的 Ask 卡", textBlocks: null, images: [], files: [], title: "重新设计已回复的 Ask 卡",
     createdAt: at(300), frontAgentId: "l", messageId: "m29", delivery: "accepted", replies: [], notes: [], routes: [],
@@ -128,16 +146,23 @@ function fixture() {
     state: "doing", progress: { cards: 1, ended: 0 },
     lines: [{ kind: "ask", sectionId: r29.id, key: r29.key, title: r29.title, state: "open", at: at(41), task: task.id, cardSectionId: taskCard.id }],
   };
-  return { sections, requests: [request], r29, line: request.lines[0] };
+  return { sections, history: [first, r26], requests: [request], r29, line: request.lines[0], first, r26, firstQuestion, r26Question, firstOptions, r26Options };
 }
 let state = fixture();
-const home = () => ({
+/** As Core's index row of a History entry (home.rs Shown::section, index): no body, attachments, refs or kept reply. */
+const indexRow = (entry) => {
+  const { body: _body, attachments: _attachments, refs: _refs, ...rest } = structuredClone(entry);
+  if (rest.ask) delete rest.ask.replySnapshot;
+  return { ...rest, bodyOmitted: true, attachmentCount: 0 };
+};
+const home = (index) => ({
   generatedAt: at(0), order: ["p-next"], needsYou: [],
   projects: [{
     project: { id: "p-next", name: "yuzuno-next" },
     agents: { working: 0, idle: 1, waiting: 0, error: 0, offline: 0, total: 1 },
     contentEditors: { version: 1, editorAgentIds: ["l"] },
-    errors: [], pending: [], jobs: [], unseen: 0, missing: [], brief: { version: 20, history: [], sections: state.sections },
+    errors: [], pending: [], jobs: [], unseen: 0, missing: [],
+    brief: { version: 20, history: index ? state.history.map(indexRow) : state.history, sections: state.sections, ...(index ? { historyIndex: true } : {}) },
   }],
 });
 /** As Core takes a reply to an ask (home.rs ask_reply): marked on that version, with the reply as the user gave it. */
@@ -206,7 +231,20 @@ async function check(run) {
       return route.abort();
     }
     if (path === "/api/workspace") return route.fulfill({ json: { workspace: { id: "ws-next" }, agents, projects, runtime: { connected: true }, defaultCwd: "/w" } });
-    if (path === "/api/home") return route.fulfill({ json: home() });
+    if (path === "/api/home") {
+      const index = (request.headers()["x-yuzuno-history"] ?? "") === "index";
+      report.homeReads.push({ run: run.name, index });
+      return route.fulfill({ json: home(index) });
+    }
+    // History's entries read whole (YN-221 S1), a moment later, so that their reading shows.
+    if (method === "GET" && path === "/api/projects/p-next/brief/history") {
+      const wanted = (url.searchParams.get("entries") ?? "").split(",").filter(Boolean).map((pair) => pair.split(":").map(Number));
+      report.entryReads.push({ run: run.name, wanted });
+      const entries = state.history.filter((entry) => wanted.some(([id, version]) => entry.id === id && entry.version === version));
+      const missing = wanted.filter(([id, version]) => !entries.some((entry) => entry.id === id && entry.version === version)).map(([id, version]) => ({ id, version }));
+      await new Promise((done) => setTimeout(done, 700));
+      return route.fulfill({ json: { entries, missing } });
+    }
     if (method === "POST" && path === "/api/projects/p-next/brief/reply") {
       const body = JSON.parse(request.postData() || "{}");
       report.posts.push({ run: run.name, method, path, body: { key: body.key, choice: body.choice, text: body.text, askVersion: body.askVersion } });
@@ -326,7 +364,7 @@ async function check(run) {
       assert.equal(await page.locator('.home-section[data-section-key="yn-220/ask"]').count(), 0, `${tag}: not in the first look any more`);
       const more = block().locator(".request-block-more");
       if ((await more.getAttribute("aria-expanded")) !== "true") await more.click();
-      const line = block().locator(".request-task-answered");
+      const line = block().locator('[data-answered="yn-220/ask"] .request-task-answered');
       await line.waitFor({ timeout: 10_000 });
       assert.equal(await line.getAttribute("aria-expanded"), "false", `${tag}: compact at first`);
       assert.match(await line.innerText(), /参照会话的回复样式/);
@@ -353,6 +391,55 @@ async function check(run) {
     await page.goto(projectPage);
     await secondEntry("request-back-again");
     pass("after leaving for Home and coming back, the same line and the same card");
+
+    // 2b. Home reads its history as an index (#1115): no entry carries the reply kept with it.
+    assert.ok(report.homeReads.some((read) => read.run === run.name && read.index), "Home read its history as an index");
+    // An Ask resolved in History, from its request's line: read whole first, saying so; then its card, as answered.
+    const firstLine = block().locator('[data-answered="yn-220/first"] .request-task-answered');
+    await firstLine.focus();
+    await page.keyboard.press("Enter");
+    const reading = block().locator('[data-answered="yn-220/first"] [data-history-body]');
+    await reading.waitFor({ timeout: 5000 });
+    const readingText = (await reading.innerText()).trim();
+    await shot("history-request-reading", block().locator('[data-answered="yn-220/first"]'));
+    await page.waitForFunction(() => document.querySelector('[data-answered="yn-220/first"] .home-section[data-section-key="yn-220/first"]'), null, { timeout: 10_000 });
+    const first = await read("yn-220/first");
+    assert.equal(first.ask, "第一轮先看哪种排法？");
+    assert.equal(first.hint, "三种都在附图里。");
+    assert.equal(first.choice, "会话同款");
+    assert.equal(first.words, "再加上问题本身");
+    assert.equal(first.kind, zh ? "已由 Dev Lead 解决" : "Resolved by Dev Lead");
+    assert.deepEqual(first.actions, [words.copy, words.options, words.details], "resolved: nothing more is sent from it");
+    await inCard("yn-220/first", ".home-answer .home-answer-options-toggle").click();
+    await settled();
+    const firstOptions = await inCard("yn-220/first", ".home-answer .home-answer-options li").evaluateAll((els) => els.map((li) => [li.querySelector("span").textContent, !!li.getAttribute("aria-current")]));
+    assert.deepEqual(firstOptions, state.firstOptions.map((option) => [option.label, option.id === "a"]));
+    assert.ok(report.entryReads.some((read) => read.run === run.name && read.wanted.some(([id]) => id === state.first.id)), "its entry read whole");
+    await nothingCut();
+    await shot("history-request", block().locator('[data-answered="yn-220/first"]'));
+    pass("an Ask resolved in History opens from its request's line: read whole first (saying so), then the question, the options then and the reply as kept",
+      { readingText, first, firstOptions });
+    // The same from the History list (Done, History 30 days): the question, the reply and the options then.
+    const done = page.locator('details[data-group="done"]');
+    if (!(await done.evaluate((el) => el.open))) await done.locator(":scope > summary").click();
+    const list = done.locator(".home-history");
+    if (!(await list.evaluate((el) => el.open))) await list.locator(":scope > summary").click();
+    const entry = list.locator("li details").filter({ hasText: "R-26 · 先做哪项运行改进" });
+    await entry.locator(":scope > summary").click();
+    await entry.locator(".home-history-answer").waitFor({ timeout: 10_000 });
+    const listed = await entry.evaluate((el) => ({
+      question: el.querySelector(".home-question")?.textContent ?? null,
+      choice: el.querySelector(".home-history-answer .home-reply-choice")?.textContent ?? null,
+      words: el.querySelector(".home-history-answer .home-reply-words")?.textContent.trim() ?? null,
+      options: [...el.querySelectorAll(".home-answer-options li")].map((li) => [li.querySelector("span").textContent, !!li.getAttribute("aria-current")]),
+      asSent: !!el.querySelector(".home-history-reply"),
+    }));
+    assert.deepEqual(listed, { question: state.r26Question, choice: "首页历史按需加载", words: "这个最影响日常",
+      options: state.r26Options.map((option) => [option.label, option.id === "history"]), asSent: false });
+    await nothingCut();
+    await entry.scrollIntoViewIfNeeded();
+    await shot("history-list", entry);
+    pass("in the History list, an answered Ask opened shows the question, the reply as kept and the options then", listed);
 
     // 3. The Project's own answered Asks, in the Project cards group beside R-27's banner.
     const group = page.locator("details[data-project-block]");

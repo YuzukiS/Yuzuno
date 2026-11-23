@@ -936,6 +936,8 @@ test("YN-3 a replied ask is an answer card, as R-29 settled it (YN-223): the que
     assert.equal(region.querySelector(".home-history-answer .home-reply-choice").textContent, "EU");
     assert.equal(region.querySelector(".home-history-answer .home-reply-words").textContent.trim(), "before Friday");
     assert.equal(region.querySelector(".home-history-reply"), null, "not the text as sent besides");
+    assert.deepEqual([...region.querySelectorAll(".home-answer-options li")].map((li) => [li.querySelector("span").textContent, li.getAttribute("aria-current")]),
+      [["EU", "true"], ["US", null]], "the options as the user saw them, the chosen one marked");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

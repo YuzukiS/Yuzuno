@@ -674,3 +674,35 @@ test("ended tasks' cards in Home's history index are read whole where they show,
   assert.equal(page.block(12).querySelectorAll('[data-history-body="missing"]').length, 2);
   assert.deepEqual(page.errors, []);
 });
+
+// YN-223 with YN-221 S2: an Ask answered before this visit and resolved since, kept in Home's history index, is one
+// compact line in its task's row; opened, its card is read whole first, saying so under its title, then drawn.
+test("an answered Ask in Home's history index opens from its line to its card read whole, reading meanwhile", async () => {
+  const page = mount({ opened: ["r7"] });
+  const reads = [];
+  page.window.fetch = async (url) => {
+    reads.push(String(url));
+    return { ok: true, status: 200, json: async () => ({ entries: [], missing: [] }), text: async () => "{}" };
+  };
+  const data = fixtures();
+  const kept = section("yn-91/tone", "ask", "Which tone?", 90, {
+    history: true, historyReason: "resolved", card: bind("YN-91"),
+    ask: { question: "Formal or casual tone?", state: "resolved", repliedAt: ago(85), replyText: "Casual",
+      reply: { options: [{ id: "f", label: "Formal" }, { id: "c", label: "Casual" }] } },
+  });
+  const { body: _b, attachments: _a, refs: _r, ...rest } = kept;
+  const indexed = { ...rest, bodyOmitted: true, attachmentCount: 0 };
+  page.window.renderPage({ requests: data.requests, sections: [...data.sections, indexed], readOnly: false });
+  await tick(60);
+  const line = page.block(7).querySelector('[data-answered="yn-91/tone"] .request-task-answered');
+  assert.equal(page.text(line), "Answered: Formal or casual tone? → Casual", "the index row's question and reply, in one line");
+  assert.deepEqual(reads, [], "nothing read while it is a line");
+  line.click();
+  await tick(60);
+  const reading = page.block(7).querySelector('[data-answered="yn-91/tone"] [data-history-body]');
+  assert.ok(reading, "opened: its card is read whole first");
+  assert.equal(reading.querySelector("strong")?.textContent, "Which tone?");
+  assert.equal(page.block(7).querySelector('[data-answered="yn-91/tone"] .home-section'), null, "no card from the index row");
+  assert.deepEqual(reads, [`/api/projects/p1/brief/history?entries=${kept.id}:2`]);
+  assert.deepEqual(page.errors, []);
+});
