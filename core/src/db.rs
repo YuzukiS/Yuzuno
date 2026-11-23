@@ -253,10 +253,12 @@ pub async fn blocking<T: Send + 'static>(job: impl FnOnce() -> Result<T> + Send 
             IN_JOB.set(false);
         }
     }
+    // Its CPU under the asking future's label (runtime_diag.rs, YN-221 S7b).
+    let label = crate::runtime_diag::current_label();
     let job = move || {
         IN_JOB.set(true);
         let _in_job = InJob;
-        job()
+        crate::runtime_diag::store_job(label, job)
     };
     match tokio::task::spawn_blocking(job).await {
         Ok(result) => result,

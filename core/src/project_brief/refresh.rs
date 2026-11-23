@@ -943,7 +943,7 @@ impl Workspace {
             return;
         }
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc brief-refresh", async move {
             loop {
                 let Some(ws) = weak.upgrade() else { break };
                 match tick(&ws, &Sender::Core, Utc::now()).await {

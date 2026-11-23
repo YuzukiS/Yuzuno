@@ -322,7 +322,7 @@ impl Workspace {
             return;
         }
         let (weak, wakeup) = (Arc::downgrade(self), self.executor_archiving.wakeup.clone());
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc archive-passes", async move {
             loop {
                 tokio::select! {
                     _ = wakeup.notified() => {},

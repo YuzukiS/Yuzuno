@@ -399,7 +399,7 @@ impl Workspace {
         if self.web_push.started.set(()).is_err() {
             return;
         }
-        tokio::spawn(watch(Arc::downgrade(self)));
+        crate::runtime_diag::spawn("svc web-push", watch(Arc::downgrade(self)));
     }
 }
 

@@ -446,7 +446,7 @@ impl Workspace {
             return;
         }
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc backup-schedule", async move {
             loop {
                 let Some(ws) = weak.upgrade() else { break };
                 let looked = tokio::task::spawn_blocking({

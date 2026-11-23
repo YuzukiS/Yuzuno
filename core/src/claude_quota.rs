@@ -353,7 +353,7 @@ impl Workspace {
     /// left sending: its message receipt says whether it went.
     pub fn start_claude_quota_resume(self: &Arc<Self>) {
         let ws = self.clone();
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc claude-quota", async move {
             let pending = match ws.stored(|store| store.quota_resumes_in("'waiting','sending'")).await {
                 Ok(pending) => pending,
                 Err(error) => return eprintln!("Claude automatic continue: {error:#}"),
