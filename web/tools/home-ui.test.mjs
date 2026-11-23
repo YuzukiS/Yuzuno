@@ -3966,7 +3966,7 @@ test("a Project's page in Chinese, and #/home?w&p opening it directly (YN-86)", 
     const titles = [...zh.doc.querySelectorAll(".request-group-title")].map((title) => title.textContent);
     assert.match(titles[0], /^等你/);
     assert.match(zh.doc.querySelector(".project-ask .home-from").textContent, /^项目 · 来自 /);
-    assert.equal(zh.doc.querySelector("[data-project-block] > summary").textContent, "项目卡 2不属于任何请求");
+    assert.equal(zh.doc.querySelector("[data-project-block] > summary").textContent, "项目卡 2新不属于任何请求", "Review notes not read yet");
     zh.doc.querySelector('.project-home [aria-label="刷新 Home"]').click();
     assert.deepEqual(zh.errors, []);
   } finally {

@@ -5,7 +5,7 @@ import { MessageContent } from "../MessageContent";
 import { Tip, TipText } from "../Tip";
 import { useTimeDisplay } from "../time-preferences";
 import type { Agent } from "../types";
-import { requestDomId } from "./brief-layout";
+import { changedSinceSeen, requestDomId } from "./brief-layout";
 import { openTask } from "./CardResponsible";
 import { CardAgents } from "./card-responsible";
 import { DeckSizes } from "./card-sizes";
@@ -645,6 +645,8 @@ export function ProjectCards({
 }) {
   const t = blockText(useLanguage());
   const answered = block.asks.filter((ask) => !common.upFront(ask));
+  // New while closed, as the Project's block said it (#1102 R1): only for what the group holds, not an Ask up front.
+  const unread = [...answered, ...block.sections].some(changedSinceSeen);
   if (count === 0) return null;
   return (
     <details
@@ -658,6 +660,7 @@ export function ProjectCards({
     >
       <summary className="request-group-title">
         {t.projectCards} <span>{count}</span>
+        {unread && <span className="home-chip is-new">{t.newMark}</span>}
         <small className="request-group-note">{t.projectNote}</small>
       </summary>
       {open && <ProjectDeck sections={[...answered, ...block.sections]} common={common} />}

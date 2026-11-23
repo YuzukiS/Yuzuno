@@ -158,9 +158,9 @@ const findSection = (projectId, key) =>
   ?? state.home.projects.find((panel) => panel.project.id === projectId)?.brief.history.find((section) => section.key === key);
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
-  en: { needs: /^Needs you/, newMark: "New", inProgress: "In progress", projectCards: /^Project cards 4\s*Not part of a request$/,
+  en: { needs: /^Needs you/, newMark: "New", inProgress: "In progress", projectCards: /^Project cards 4\s*New\s*Not part of a request$/,
     now: { label: "Now", cards: "Project cards 4", todo: "3for you · Try the settings page", more: "1 more · on the status page" } },
-  "zh-Hans": { needs: /^等你/, newMark: "新", inProgress: "进行中", projectCards: /^项目卡 4\s*不属于任何请求$/,
+  "zh-Hans": { needs: /^等你/, newMark: "新", inProgress: "进行中", projectCards: /^项目卡 4\s*新\s*不属于任何请求$/,
     now: { label: "近况", cards: "项目卡 4", todo: "3项待你 · Try the settings page", more: "另 1 项 · 在状态页" } },
 };
 

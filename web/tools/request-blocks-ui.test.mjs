@@ -187,7 +187,7 @@ test("the same in Chinese", () => {
   assert.equal(page.text(page.block(7).querySelector(".request-block-more")), "1 个任务 · 对话 3 条");
   const group = page.document.querySelector("[data-project-block] > summary");
   assert.equal(page.text(group.querySelector(".request-group-note")), "不属于任何请求");
-  assert.equal(page.text(group), "项目卡 1不属于任何请求");
+  assert.equal(page.text(group), "项目卡 1新不属于任何请求", "its card not read yet: 新");
 });
 
 test("an action says which request it is for; a deliverable opens its version", () => {
@@ -299,7 +299,7 @@ test("every open Ask is in the first look once: two of one task, one of a shared
   assert.deepEqual(own.map((el) => el.dataset.projectAsk), ["pick"]);
   assert.equal(page.text(own[0].querySelector(".home-from")), "Project · From Dev Lead");
   assert.deepEqual([...own[0].querySelectorAll("[data-section-key]")].map((el) => el.dataset.sectionKey), ["pick"], "answerable there");
-  assert.equal(page.text(page.document.querySelector("[data-project-block] > summary")), "Project cards 1Not part of a request", "its other card in the group");
+  assert.equal(page.text(page.document.querySelector("[data-project-block] > summary")), "Project cards 1NewNot part of a request", "its other card in the group");
   assert.equal(page.document.querySelectorAll('[data-section-key="yn-91/pick"], [data-section-key="yn-93/scope"], [data-section-key="pick"]').length, 3);
 
   // Core's next read: R-7's first Ask answered. It stays where it was for the visit, its answer in its place.
@@ -400,7 +400,8 @@ test("the Project's cards: a closed group drawing nothing until opened, then the
   const group = () => page.document.querySelector("details[data-project-block]");
   assert.equal(group().open, false);
   assert.equal(group().dataset.group, "project");
-  assert.equal(page.text(group().querySelector("summary")), "Project cards 2Not part of a request", "a card and an answered Ask");
+  assert.equal(page.text(group().querySelector("summary")), "Project cards 2NewNot part of a request", "a card and an answered Ask, one not read");
+  assert.ok(group().querySelector("summary .home-chip.is-new"), "New while closed (#1102 R1)");
   assert.equal(group().querySelector(".project-block-cards, [data-section-key]"), null, "nothing drawn while closed");
   assert.equal(page.document.querySelectorAll(".project-ask").length, 0, "an Ask answered before this visit is not up front");
   group().querySelector("summary").click();
