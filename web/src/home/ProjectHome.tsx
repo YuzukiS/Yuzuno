@@ -207,10 +207,10 @@ export function ProjectHome({
   const openBlock = (key: string) => choose(key, true);
   const toggleBlock = (key: string) => choose(key, !isOpen(key));
   const editorIds = panel?.contentEditors?.editorAgentIds ?? null;
-  // Where the project stands (R-27): the card the page leads with, and what the Project cards group holds, that card
-  // among them.
+  // Where the project stands (R-27): the card the page leads with, and what the Project cards group holds beside it;
+  // nothing there but that card, no group: the banner is the card's one place, with its own actions (ProjectNow).
   const line = useMemo(() => (projectBlock ? projectLine(projectBlock.sections, editorIds) : null), [projectBlock, editorIds]);
-  const cardsCount = projectCardsCount(projectBlock, projectAsks.filter((ask) => !upFront(ask)).length);
+  const cardsCount = projectCardsCount(projectBlock, projectAsks.filter((ask) => !upFront(ask)).length, line);
   const executors = needsYou.filter((item) => item.kind === "executor");
   const pending = panel?.pending ?? [];
   // What needs the user (§3.4): the blocks in Needs you, the approvals, the executors' matters and the Project's
@@ -300,6 +300,8 @@ export function ProjectHome({
    * in its block's first look (W5): the jump lands on it and opens nothing.
    */
   function showSection(key: string) {
+    // The banner's card with no group to hold it is the banner: the caller lands there by its id (R-27 §3.8).
+    if (line?.key === key && cardsCount === 0) return false;
     const block = blockOfSection(key, blocks, projectBlock);
     if (!block) return false;
     if (view !== "requests") setView("requests");
@@ -514,7 +516,7 @@ export function ProjectHome({
           {!readOnly && <RefreshHome busy={refreshing} onRefresh={onRefresh} />}
         </span>
       </header>
-      {line && <ProjectNow projectId={id} section={line} more={cardsCount} onMore={showProjectCards} />}
+      {line && <ProjectNow section={line} more={cardsCount} onMore={showProjectCards} common={common} />}
       <HomeJumps
         asks={asks.length}
         report={latest ? { title: latest.title, projectName: panel.project.name } : null}

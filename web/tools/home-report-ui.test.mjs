@@ -97,11 +97,17 @@ const section = (key, id, version, extra = {}) => ({ id, key, kind: "report", ti
   updatedAt: "2026-11-02T10:05:00Z", updatedTurnId: null, body: reportBody(), attachments: [], refs: {}, seen: null, history: false, ...extra });
 const ask = section("paging", 10, 2, { kind: "ask", title: "Rows per page?", body: { root: "b", elements: { b: { type: "BriefBody", props: {}, children: [] } } },
   ask: { question: "How many rows per page?", reply: { options: [{ id: "fifty", label: "50" }], freeText: true }, state: "open" } });
+// R-27: a lead's standing status, read and older than any report here, is the card the project's page leads with (its
+// banner), so each test's own card is one of the Project cards, drawn as a card.
+const steady = { id: 90, key: "steady", kind: "status", title: "Standing note", version: 1, owner, updatedAt: "2026-11-01T09:00:00Z",
+  updatedTurnId: null, body: { root: "s", elements: { s: { type: "BriefBody", props: {}, children: ["t"] }, t: { type: "Markdown", props: { text: "All steady." } } } },
+  attachments: [], refs: {}, seen: { version: 1, at: "2026-11-01T10:00:00Z" }, history: false,
+  status: { asOf: "2026-11-01T09:00:00Z", validFor: 31_536_000, stale: false } };
 const homeData = (sections, history = []) => ({
   generatedAt: "2026-11-02T10:30:00Z", order: ["p1"], needsYou: [],
   projects: [{ project: { id: "p1", name: "atlas-notes" }, agents: { working: 0, idle: 0, waiting: 0, error: 0, offline: 0, total: 0 },
     // Something unseen, so the panel is open (a quiet one starts folded).
-    errors: [], pending: [], jobs: [], unseen: 1, missing: [], brief: { version: 3, sections, history } }],
+    errors: [], pending: [], jobs: [], unseen: 1, missing: [], brief: { version: 3, sections: [...sections, steady], history } }],
 });
 const machine = { at: "2026-11-02T10:30:00Z", cpu: { cores: 4, totalPct: 0, jobsPct: 0, agentsPct: 0, otherPct: 0 },
   memory: { totalMiB: 4096, usedMiB: 0, availableMiB: 4096, jobsMiB: 0, agentsMiB: 0 }, gpus: null, jobs: [] };

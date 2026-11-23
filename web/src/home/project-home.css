@@ -472,3 +472,27 @@
     content: none;
   }
 }
+/* The card's own actions when the banner is its one place (R-27, the lead's call on YN-218): as its card's head has
+   them (summary-card.css .home-summary-actions), and its reply across the banner's width under the rest. */
+.now-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.now-card-actions .icon-button {
+  color: var(--text-secondary);
+}
+.now-hero-reply {
+  grid-column: 1 / -1;
+  min-width: 0;
+  cursor: auto;
+}
+.now-hero-reply .home-card-reply {
+  margin: 4px 0 0;
+}
+@media (pointer: coarse) {
+  .now-card-actions .icon-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

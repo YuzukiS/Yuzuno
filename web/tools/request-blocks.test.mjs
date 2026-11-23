@@ -412,16 +412,16 @@ test("what the user is asked to do: only the Checklist the author names forYou, 
   assert.equal(forYouTodo(section("x", "status", "No body", 1, 1, lead)), null);
 });
 
-// R-27 §3.6: the group holds every card of the Project's own, the banner's among them even alone (its Pin, Reply and
-// Seen stay on the page), and its Asks answered before this visit.
-test("the Project cards group's count: every card of its own, the banner's too, and its answered Asks", () => {
+// R-27 §3.6: the group holds the Project's cards, the banner's among them, and its Asks answered before this visit;
+// with only the banner's card, no group: the banner is that card's one place (the lead's call, seq 12072).
+test("the Project cards group's count: its cards and answered Asks, none when only the banner's card is there", () => {
   ids = 2100;
   const dev = section("development", "status", "开发状态", 1, 5, lead, { status: status(5) });
   const notes = section("notes", "report", "Notes", 1, 9, lead);
   const block = (sections) => ({ kind: "project", key: "project", sections, asks: [], unread: false, last: 0 });
-  assert.equal(projectCardsCount(block([dev, notes]), 0), 2);
-  assert.equal(projectCardsCount(block([dev]), 0), 1, "the banner's card alone is still a card");
-  assert.equal(projectCardsCount(block([dev]), 1), 2, "and an answered Ask");
-  assert.equal(projectCardsCount(block([]), 0), 0, "nothing: no group");
-  assert.equal(projectCardsCount(null, 0), 0);
+  assert.equal(projectCardsCount(block([dev, notes]), 0, dev), 2, "both: the banner's card is in the group too");
+  assert.equal(projectCardsCount(block([dev]), 0, dev), 0, "only the banner's: no group");
+  assert.equal(projectCardsCount(block([dev]), 1, dev), 2, "and an answered Ask: a group of both");
+  assert.equal(projectCardsCount(block([dev]), 0, null), 1, "no banner: every card is the group's");
+  assert.equal(projectCardsCount(null, 0, null), 0);
 });

@@ -11,7 +11,8 @@
 //    visit), and Done, closed at first, with the 30-day history inside; what
 //    belongs to no request (R-27): its Ask on its own in Needs you, its cards
 //    in the Project cards group (open on a page with no request), each card
-//    once, the group opened and closed from the keyboard;
+//    once, the group opened and closed from the keyboard; a project of one
+//    card shows it once, as its banner, with the card's Reply and More;
 //  - an unread report opened from its card comes back with New gone and the
 //    card in the same place and the same group;
 //  - on a phone (390), the whole of Home from the address and a project's
@@ -629,6 +630,31 @@ async function check(run) {
     const status = await cardMarked("status");
     await shot("project-status-marked");
     pass("the status card, from its glance, opens the page at that card, marked (R-23)", status);
+    // R-27, the lead's call on YN-218: a project with one card and no request shows it once, as its banner, with the
+    // card's own Reply and More actions; the keyboard opens its reply there.
+    await page.evaluate(() => { location.hash = "#/home?w=ws-project&p=p-site"; });
+    const site = page.locator('[data-project-home="p-site"]');
+    await site.locator(".now-hero").waitFor({ timeout: 15_000 });
+    const alone = await page.evaluate(() => {
+      const site = document.querySelector('[data-project-home="p-site"]');
+      const hero = site.querySelector(".now-hero");
+      const shown = (el) => !!el && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+      return {
+        copies: site.querySelectorAll('[data-section-key="about"]').length, isBanner: hero.dataset.sectionKey === "about" && hero.classList.contains("is-alone"),
+        id: hero.id, group: !!site.querySelector("details.project-cards"), reply: shown(hero.querySelector(".now-card-actions .home-reply-open")),
+        more: shown(hero.querySelector(".now-card-actions .home-summary-more > span > button, .now-card-actions .home-summary-more button")),
+        cards: !!hero.querySelector(".now-actions .talk-link"), top: Math.round(hero.getBoundingClientRect().top), bottom: Math.round(hero.getBoundingClientRect().bottom), screen: innerHeight,
+      };
+    });
+    assert.deepEqual([alone.copies, alone.isBanner, alone.id, alone.group, alone.reply, alone.more, alone.cards], [1, true, "home-section-p-site-about", false, true, true, false], JSON.stringify(alone));
+    assert.ok(alone.bottom <= alone.screen, `the banner whole in the first screen: ${JSON.stringify(alone)}`);
+    await noOverflow(".project-home-head, .now-hero, .now-hero-main, .request-blocks");
+    await site.locator(".now-card-actions .home-reply-open").focus();
+    await page.keyboard.press("Enter");
+    await site.locator(".now-hero-reply .home-card-reply").waitFor({ timeout: 5_000 });
+    await noOverflow(".now-hero, .now-hero-reply");
+    await shot("project-alone");
+    pass("one card and no request: the banner alone is the card, with its Reply and More; the keyboard opens its reply", alone);
   } finally {
     await context.close();
   }

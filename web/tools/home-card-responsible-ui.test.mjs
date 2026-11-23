@@ -63,7 +63,7 @@ const body = (text) => ({ root: "body", elements: {
   body: { type: "BriefBody", props: {}, children: ["text"] },
   text: { type: "Markdown", props: { text } },
 } });
-const ids = { spec: 11, question: 12, plain: 13, late: 14, design: 15, old: 16, loose: 17 };
+const ids = { spec: 11, question: 12, plain: 13, late: 14, design: 15, old: 16, loose: 17, steady: 18 };
 const section = (key, kind, title, version, by, extra = {}) => ({ id: ids[key], key, kind, title, version, owner: by,
   updatedAt: ago(20), updatedTurnId: null, body: body(`${title}: what it says.`), attachments: [], refs: {}, seen: null,
   history: false, ...extra });
@@ -109,6 +109,8 @@ function homeData(answered = false, loose = false) {
             card: { task: buildTask, responsible: builder } }),
           // No task: as before.
           section("plain", "report", "Plain notes", 1, mori, read(1)),
+          // R-27: a lead's status of no task, read: the card the page leads with (its banner); "plain" is a Project card.
+          section("steady", "status", "Standing note", 1, mori, { ...read(1), status: { asOf: ago(20), validFor: 31_536_000, stale: false } }),
           // `loose`: an Ask of no task, the Project's own; answered with the rest.
           ...(loose ? [section("loose", "ask", "Which colour?", 1, mori, { ask: { question: "Blue or green?", reply: { freeText: true },
             ...(answered ? { state: "replied", repliedAt: ago(1), replyText: "Blue" } : { state: "open" }) } })] : []),

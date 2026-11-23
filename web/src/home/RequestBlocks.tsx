@@ -626,7 +626,7 @@ export function ProjectAsks({ block, common }: { block: ProjectBlock; common: Bl
  * The Project's cards that belong to no request (R-27 §3.6): a group of their own after In progress, closed until the
  * user, a jump or a page with no request opens it; opened, the Project's deck at its authors' sizes, its Asks answered
  * before this visit among them as their answer cards (YN-3, the user's D3: Reply again, the owner's update in place).
- * Not drawn while closed, nor with nothing to hold.
+ * Not drawn while closed, nor with nothing to hold but the card the banner shows (ProjectNow is then its one place).
  */
 export function ProjectCards({
   block,

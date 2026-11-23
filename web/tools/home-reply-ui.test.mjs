@@ -611,12 +611,12 @@ test("on Home, the section answered from the team is shown: in Needs you, unfold
   shown(page).querySelector(".home-fold").click();
   await tick(40);
   assert.ok(shown(page).querySelector(".home-card-body").hidden, "folded by the user");
-  // The Project's cards, open on a page with no request: closed by the user.
-  if (group(page).hasAttribute("data-open")) group(page).querySelector("summary").click();
-  await until(() => !group(page).hasAttribute("data-open"), "the Project's cards closed by the user");
+  // The Project's one other card is the banner alone (R-27): no Project cards group, nothing to open for the Ask.
+  assert.equal(group(page), null);
+  assert.equal(page.document.querySelector(".now-hero")?.dataset.sectionKey, "other");
   page.window.renderHome({ origin: askReply, back, n: 2 });
   await until(() => shown(page) && !shown(page).querySelector(".home-card-body").hidden, "shown again");
-  assert.ok(!group(page).hasAttribute("data-open"), "the group stays as the user closed it: the Ask is in Needs you");
+  assert.equal(group(page), null, "nothing opened for it: the Ask is in Needs you");
   await tick(40);
   assert.equal(page.document.activeElement, shown(page));
   assert.ok(note(page).closest('[data-section-key="export-paging"]'));

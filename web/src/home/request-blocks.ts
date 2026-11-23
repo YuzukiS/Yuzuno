@@ -482,10 +482,13 @@ export function forYouTodo(section: Section): ForYou | null {
 }
 
 /**
- * What the Project cards group holds (R-27 §3.6): every card of the Project's own, the banner's among them, and its
- * Asks answered before this visit (`answered`). The banner's card stays a card there even alone, so its Pin, Reply,
- * Seen and data time stay on the page (YN-218 S2: the lead's call, not design §6's banner-only card).
+ * What the Project cards group holds (R-27 §3.6): the Project's cards, the banner's among them, and its Asks answered
+ * before this visit (`answered`); 0 when it would hold nothing but the banner's card, which is then the banner alone,
+ * with that card's own Reply, Seen and Pin (§6; the lead's call on YN-218, seq 12072).
  */
-export function projectCardsCount(block: ProjectBlock | null, answered: number) {
-  return block ? block.sections.length + answered : 0;
+export function projectCardsCount(block: ProjectBlock | null, answered: number, lead: Section | null) {
+  if (!block) return 0;
+  const count = block.sections.length + answered;
+  const others = count - (lead && block.sections.some((section) => section.key === lead.key) ? 1 : 0);
+  return others > 0 ? count : 0;
 }

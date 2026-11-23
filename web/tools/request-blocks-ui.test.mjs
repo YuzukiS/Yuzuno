@@ -34,8 +34,11 @@ import {ProjectNow} from ${JSON.stringify(path.join(root, "src/home/ProjectNow.t
 import {ReportOpen} from ${JSON.stringify(path.join(root, "src/home/report/report-open.ts"))};
 const root=createRoot(document.getElementById('root'));
 const nowRoot=createRoot(document.getElementById('now'));
-window.renderNow=(props)=>flushSync(()=>nowRoot.render(<ReportOpen.Provider value={(projectId, section, from) => window.calls.push({open: section.key, projectId, from: from.className})}>
-  <ProjectNow projectId="p1" onMore={() => window.calls.push({more: true})} {...props}/></ReportOpen.Provider>));
+window.renderNow=({readOnly, note, ...props})=>flushSync(()=>nowRoot.render(<CardAgents.Provider value={new Map(window.agents.map((a)=>[a.id,a]))}>
+  <ReportOpen.Provider value={(projectId, section, from) => window.calls.push({open: section.key, projectId, from: from.className})}>
+  <ProjectNow onMore={() => window.calls.push({more: true})} common={{projectId: 'p1', workspaceId: 'ws', agents: window.agents, readOnly: !!readOnly,
+    onSeen: async (marks) => { window.calls.push({seen: marks}); }, onChanged: () => {}, onReport: () => {}, upFront: () => false,
+    notice: (s) => (note && s.key === note ? <p className="home-reply-arrival">A reply landed here</p> : undefined)}} {...props}/></ReportOpen.Provider></CardAgents.Provider>));
 window.calls=[];
 function Page({requests, sections, readOnly}) {
   const {blocks, project} = pageBlocks(requests, sections);
@@ -48,7 +51,7 @@ function Page({requests, sections, readOnly}) {
   return <div>{blocks.map((block) => <RequestBlockView key={block.key} block={block} open={open.has(block.key)} onToggle={() => toggle(block.key)}
     onAction={(action, n, key) => window.calls.push({action, n, key: key ?? null})} onShowBlock={(n) => window.calls.push({show: n})} common={common}/>)}
     {project && <div className="needs"><ProjectAsks block={project} common={common}/></div>}
-    {project && <ProjectCards block={project} count={projectCardsCount(project, project.asks.filter((ask) => !upFront(ask)).length)}
+    {project && <ProjectCards block={project} count={projectCardsCount(project, project.asks.filter((ask) => !upFront(ask)).length, null)}
       open={open.has('project')} onToggle={(on) => choose('project', on)} common={common}/>}</div>;
 }
 window.renderPage=(props)=>flushSync(()=>root.render(<CardAgents.Provider value={new Map(window.agents.map((a)=>[a.id,a]))}><Page {...props}/></CardAgents.Provider>));`,
@@ -450,8 +453,9 @@ test("the banner: the conclusion as its heading, who and when, the Project cards
   assert.equal(page.text(now.querySelector(".now-hero-text")), "The long conversation's view is being fixed.");
   assert.deepEqual([...now.querySelectorAll(".now-meta-part")].map(page.text), ["Development state", "Dev Lead", "15 min ago"], "its title, who wrote it, when");
   assert.equal(now.querySelector(".now-hero-aside"), null, "no forYou named: the conclusion alone, never the lead's own list");
-  assert.equal(now.id, "", "the card itself is in the group, by its id: the banner names it, never stands in for it");
+  assert.equal(now.id, "", "the card itself is in the group, by its id");
   assert.equal(now.dataset.sectionKey, undefined);
+  assert.equal(now.querySelector(".now-card-actions"), null, "its actions are the card's, in the group");
   const [more, open] = now.querySelectorAll(".now-actions button");
   assert.equal(page.text(more), "Project cards 3");
   assert.equal(page.text(open), "Open status");
@@ -515,4 +519,35 @@ test("the banner in Chinese", () => {
   assert.deepEqual([...now.querySelectorAll(".now-actions button")].map(page.text), ["项目卡 2", "打开状态"]);
   page.window.renderNow({ section: nowCard({ stale: true }), more: 0 });
   assert.equal(page.text(now.querySelector(".now-hero-label")), "已过有效期");
+});
+
+// The lead's call on YN-218 (seq 12072): with no other card, the banner is the card's one place: its id, a reply's
+// note, a status's "Data as of", and the card's own Reply, Seen and More actions; none of them on a read-only Home.
+test("alone, the banner is the card's one place: its id, the note, Data as of, Reply, Seen and More; read only, none", async () => {
+  const page = mount();
+  page.window.renderNow({ section: nowCard({ stale: true }), more: 0, note: "development" });
+  const now = page.document.querySelector("#now .now-hero");
+  assert.equal(now.id, "home-section-p1-development");
+  assert.equal(now.dataset.sectionKey, "development");
+  assert.ok(now.classList.contains("is-alone"));
+  assert.equal(page.text(now.querySelector(".home-reply-arrival")), "A reply landed here", "a reply's Open on Home lands here");
+  assert.match(page.text(now.querySelector(".now-meta")), /Data as of .*older than its .* validity/, "as its card says it");
+  assert.equal(now.querySelector(".now-actions .talk-link"), null, "no Project cards to go to");
+  const reply = now.querySelector(".home-reply-open");
+  assert.equal(reply.getAttribute("aria-label"), "Reply to “Development state”");
+  reply.click();
+  await tick();
+  assert.ok(now.querySelector(".now-hero-reply .home-card-reply"), "the card's own reply, under the banner");
+  now.querySelector(".now-hero-reply .home-card-reply").click();
+  now.querySelector(".home-seen").click();
+  await tick();
+  assert.deepEqual(page.calls(), [{ seen: [{ key: "development", version: 2 }] }], "Seen marks this version; a click in the reply opens nothing");
+  assert.ok(now.querySelector(".home-summary-more"), "More actions, as its card has them");
+  // Read only: nothing that writes.
+  const quiet = mount();
+  quiet.window.renderNow({ section: nowCard(), more: 0, readOnly: true });
+  const ro = quiet.document.querySelector("#now .now-hero");
+  assert.equal(ro.querySelector(".home-reply-open, .home-seen, .home-summary-more"), null);
+  assert.ok(ro.querySelector(".home-report-open"), "its page still opens");
+  assert.deepEqual([...page.errors, ...quiet.errors], []);
 });
