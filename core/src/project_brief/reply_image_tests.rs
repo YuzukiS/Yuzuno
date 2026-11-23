@@ -142,7 +142,7 @@ async fn an_answered_ask_shows_its_replys_images_until_its_owner_asks_again() {
     let (_dir, ws, project) = lab();
     accept(&ws, "a", input("q1", 0, vec![put("decide", "ask")])).await;
     let images = vec![attached(&ws, &project, 1), attached(&ws, &project, 2)];
-    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Left", None, &images, &[]).unwrap());
+    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Left", None, &images, &[], None).unwrap());
     let ask = |ws: &Workspace| section(&brief(ws, "a"), "decide")["ask"].clone();
     assert_eq!((ask(&ws)["state"].clone(), ask(&ws)["replyImages"].clone()), (json!("replied"), json!(images)));
     let kept: Option<String> = ws.store.db.read().unwrap().query_row(
@@ -151,7 +151,7 @@ async fn an_answered_ask_shows_its_replys_images_until_its_owner_asks_again() {
     // A reply without images clears any, as one without a form clears its answers.
     assert!(sections::mark_replied(&ws.store, &project, "decide", 1, "Right").unwrap());
     assert!(ask(&ws).get("replyImages").is_none(), "{}", ask(&ws));
-    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Left", None, &images, &[]).unwrap());
+    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Left", None, &images, &[], None).unwrap());
     // The owner's next version is a new question: open, with no reply's images.
     accept(&ws, "a", input("q2", version(&ws, &project), vec![put("decide", "ask")])).await;
     let next = ask(&ws);
