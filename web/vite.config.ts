@@ -5,6 +5,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { bundledFiles, bundledPackages, noticesText } from "./tools/third-party-notices.mjs";
 import { DIGEST_FILE, sourceDigest } from "./tools/source-digest.mjs";
+import { precompress as precompressAssets } from "./tools/precompress.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -107,8 +108,19 @@ const sourceStamp: Plugin = {
   },
 };
 
+// /assets files as Brotli too (YN-221 S6), which Core sends to a browser that
+// accepts br (core/src/updates/assets.rs); see tools/precompress.mjs.
+const precompress: Plugin = {
+  name: "yuzuno-precompress",
+  apply: "build",
+  writeBundle(options) {
+    const assets = join(options.dir ?? join(here, "dist"), "assets");
+    if (existsSync(assets)) precompressAssets(assets);
+  },
+};
+
 export default defineConfig({
-  plugins: [react(), licenses, homeScreen, sourceStamp],
+  plugins: [react(), licenses, homeScreen, sourceStamp, precompress],
   server: {
     port: 5173,
     strictPort: true,

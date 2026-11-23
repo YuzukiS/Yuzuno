@@ -2,7 +2,7 @@ use crate::{client_view, workspace::Workspace, model::{AgentSettings, MessageInp
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::{header, HeaderMap, Method, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{sse::Event, IntoResponse, Response, Sse},
     routing::{get, patch, post},
@@ -478,7 +478,9 @@ async fn local_browser_boundary(
 }
 
 /// Every response may not be sniffed, framed or stored; only a previewed
-/// page (T-5), as its handler marks it, is framed by its own policy instead.
+/// page (T-5), as its handler marks it, is framed by its own policy instead,
+/// and only a /assets file the asset service found (updates/assets.rs
+/// `StaticCache`, YN-221 S6) may be kept, for as long as it says.
 fn harden(mut response: Response) -> Response {
     response
         .headers_mut()
@@ -488,9 +490,12 @@ fn harden(mut response: Response) -> Response {
             .headers_mut()
             .insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
     }
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    let cache = response
+        .extensions()
+        .get::<crate::updates::assets::StaticCache>()
+        .map(|kept| kept.0.clone())
+        .unwrap_or_else(|| HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(header::CACHE_CONTROL, cache);
     response
 }
 
