@@ -66,6 +66,8 @@ export class DetailSync {
   currentRead = 0;
   readOf = new WeakMap<AgentDetail, number>();
   refetchTimer: ReturnType<typeof setTimeout> | undefined;
+  /** A read asked for while the page was hidden, not made yet (YN-221). */
+  owedHidden = false;
   flushTimer: ReturnType<typeof setTimeout> | undefined;
   retryTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -87,7 +89,7 @@ export class DetailSync {
     for (const timer of [this.refetchTimer, this.flushTimer, this.retryTimer])
       clearTimeout(timer);
     this.refetchTimer = this.flushTimer = this.retryTimer = undefined;
-    this.running = this.queued = this.failed = this.retryOnline = false;
+    this.running = this.queued = this.failed = this.retryOnline = this.owedHidden = false;
     this.recent = [];
     this.queue = [];
     this.current = null;
@@ -122,6 +124,12 @@ export class DetailSync {
    */
   refetch({ now = false } = {}) {
     if (!this.agentId) return;
+    // While the page is hidden only streamed changes apply (YN-221): a
+    // read is owed, and made once the page is shown again (`resume`).
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      this.owedHidden = true;
+      return;
+    }
     if (this.failed && !now) {
       this.scheduleRetry();
       return;
@@ -138,6 +146,15 @@ export class DetailSync {
       this.refetchTimer = undefined;
       void this.run();
     }, this.options.refetchDelayMs);
+  }
+
+  /** The page is shown again: the read owed while it was hidden, once, on
+   * the refetch cadence, so that a read asked for now as the page is shown
+   * (the shell's own, after a reset) is the same read. */
+  resume() {
+    if (!this.owedHidden || (typeof document !== "undefined" && document.visibilityState === "hidden")) return;
+    this.owedHidden = false;
+    this.refetch();
   }
 
   /**
