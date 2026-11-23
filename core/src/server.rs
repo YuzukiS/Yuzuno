@@ -628,11 +628,13 @@ struct WorkspaceQuery {
     listing: Option<String>,
 }
 
-/// The Workspace: its Agents, runtime, Projects. `?listing=slim` (YN-221
-/// S3): released executors as slim rows (workspace_listing.rs); without it,
-/// as it always was.
-async fn workspace(State(ws): State<Arc<Workspace>>, Query(query): Query<WorkspaceQuery>) -> ApiResult<Response> {
-    let slim = match query.listing.as_deref() {
+/// The Workspace: its Agents, runtime, Projects. `?listing=slim`, or the
+/// header `X-Yuzuno-Listing: slim` as a conversation's window is asked for
+/// (YN-221 S3): released executors as slim rows (workspace_listing.rs);
+/// without either, as it always was.
+async fn workspace(State(ws): State<Arc<Workspace>>, Query(query): Query<WorkspaceQuery>, headers: HeaderMap) -> ApiResult<Response> {
+    let asked = query.listing.or_else(|| headers.get("x-yuzuno-listing").map(|v| v.to_str().unwrap_or("").to_owned()));
+    let slim = match asked.as_deref() {
         None => false,
         Some(crate::workspace_listing::SLIM) => true,
         Some(_) => {
