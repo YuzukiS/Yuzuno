@@ -3,18 +3,27 @@ import type { Section } from "./types";
 
 /** Closing quotes and brackets that may follow a question mark inside its sentence. */
 const CLOSERS = "」』）)\"”’";
+const closers = `[${CLOSERS}]*`;
+/** A mark that ends a question: a full-width ？, or a ? before a space or a line break (so a link's query stays whole). */
+const ENDS = new RegExp(`(?:？|\\?(?=${closers}\\s))${closers}`, "g");
 
 /**
- * A question as R-29's answer card reads it (YN-223, the design the user settled): its first sentence, through the
- * first question mark that ends one, as the heading, and what follows as the note under it, both whole. A full-width
- * ？ always ends a sentence; a ? only before a space or a line break, so a link's query or a version like "v2?x" stays
- * whole. No such mark, or nothing after it: the whole question is the heading.
+ * A question as R-29's answer card reads it (YN-223, the design the user settled): the question whole, word for word.
+ * Only where it is plainly one question and a note after it, its one question mark, a note following it and no link
+ * in it, is the question set as the heading and the note under it, both exactly as written; otherwise (several
+ * questions, no question mark, nothing after it, a link) the whole is the heading.
  */
 export function questionParts(question: string): { head: string; note: string } {
   const text = question.trim();
-  const closers = `[${CLOSERS.replace(/[\]\\]/g, "\\$&")}]*`;
-  const match = new RegExp(`^([\\s\\S]*?(?:？|\\?(?=${closers}\\s))${closers})\\s*([\\s\\S]+)$`).exec(text);
-  return match ? { head: match[1], note: match[2].trim() } : { head: text, note: "" };
+  const whole = { head: text, note: "" };
+  if (/[a-z][a-z0-9+.-]*:\/\//i.test(text)) return whole;
+  const ends = [...text.matchAll(ENDS)];
+  // A ? anywhere else is a question mark too: one more is a second question.
+  const marks = (text.match(/[？?]/g) ?? []).length;
+  if (ends.length !== 1 || marks !== 1) return whole;
+  const at = ends[0].index! + ends[0][0].length;
+  const note = text.slice(at).trim();
+  return note ? { head: text.slice(0, at), note } : whole;
 }
 
 /**

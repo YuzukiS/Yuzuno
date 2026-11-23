@@ -1,5 +1,5 @@
-import { useContext, useRef, type ReactNode } from "react";
-import { ChevronDown, CircleCheck, CircleDot, Hourglass, LoaderCircle, MessageSquare, PackageCheck, Reply, Send, TriangleAlert } from "lucide-react";
+import { useContext, useId, useRef, useState, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, CircleCheck, CircleDot, Hourglass, LoaderCircle, MessageSquare, PackageCheck, Reply, Send, TriangleAlert } from "lucide-react";
 import { strings, useLanguage } from "../i18n";
 import { MessageContent } from "../MessageContent";
 import { Tip, TipText } from "../Tip";
@@ -19,6 +19,7 @@ import { DeliverableLine, type OpenDeliveredReport } from "./DeliverableLine";
 import { talkText } from "./talk-text";
 import { authorOf, openAsk, type BlockAction, type BlockFact, type BlockGroup, type ProjectBlock, type RequestBlock, type TaskRow, type Who } from "./request-blocks";
 import { SectionCard } from "./SectionCard";
+import { withoutFormIds } from "./AskReply";
 import { SummaryCard } from "./SummaryCard";
 import type { Section } from "./types";
 import "./project-talk.css";
@@ -292,6 +293,44 @@ export function useAsksUpFront(asks: readonly Section[]) {
   };
 }
 
+/**
+ * An Ask of the task answered before this visit (YN-223): one compact line, the question and the reply; opened, by
+ * pointer or keyboard, R-29's answer card in its place, so the question, the answer and the user's words can be read
+ * whole when the user comes back to the request. Its card is the answer card whatever it waits for: read only when
+ * Home is, and once its owner resolved it (History), when nothing more can be sent from it. One the block's first
+ * look shows is never drawn here (useAsksUpFront).
+ */
+function AnsweredAsk({ section, common }: { section: Section; common: BlockCommon }) {
+  const t = blockText(useLanguage());
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <div className="request-task-answered-ask">
+      <button type="button" className="request-task-answered" aria-expanded={open} aria-controls={id} onClick={() => setOpen((was) => !was)}>
+        <ChevronRight size={12} className="chev" aria-hidden="true" />
+        <MessageSquare size={12} aria-hidden="true" />
+        {/* A form's answers without the line of IDs Core reads them by (YN-213). */}
+        <span>{t.answeredAsk(section.ask?.question || section.title, withoutFormIds(section.ask?.replyText ?? "").trim())}</span>
+      </button>
+      {open && (
+        <div id={id} className="request-task-answered-card">
+          <SectionCard
+            section={section}
+            answer
+            projectId={common.projectId}
+            workspaceId={common.workspaceId}
+            agents={common.agents}
+            readOnly={common.readOnly || section.history || section.ask?.state === "resolved"}
+            onSeen={common.onSeen}
+            onChanged={common.onChanged}
+            notice={common.notice?.(section)}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** An Ask as Home draws it, answerable where it stands (W5: the same card the block used to unfold to). */
 function AskCard({ section, common }: { section: Section; common: BlockCommon }) {
   return (
@@ -548,12 +587,7 @@ function TaskRowView({ row, common }: { row: TaskRow; common: BlockCommon }) {
           {openIt}
         </p>
       )}
-      {asks.answered.map((ask) => (
-        <p key={ask.key} className="request-task-answered">
-          <MessageSquare size={12} aria-hidden="true" />
-          <span>{t.answeredAsk(ask.ask?.question || ask.title, ask.ask?.replyText ?? "")}</span>
-        </p>
-      ))}
+      {asks.answered.map((ask) => <AnsweredAsk key={ask.key} section={ask} common={common} />)}
     </section>
   );
 }

@@ -887,7 +887,7 @@ test("YN-3 a replied ask is an answer card, as R-29 settled it (YN-223): the que
     assert.equal(deploy.querySelector(".home-answer-source").textContent, "Deploy now?·QuestionUpdated");
     assert.equal(deploy.querySelector(".home-answer-ask").textContent, "Deploy to production?");
     assert.match(deploy.querySelector(".home-answer-unkept").textContent, /no copy of the question with this earlier reply/);
-    assert.equal(deploy.querySelector(".home-answer-given .home-reply-words").textContent, "Yes, deploy");
+    assert.equal(deploy.querySelector(".home-answer-given .home-reply-words").textContent.trim(), "Yes, deploy");
     assert.equal(deploy.querySelector(".home-reply-choice"), null, "nothing read back from the text as chosen");
     assert.equal(deploy.querySelector(".home-answer-options-toggle"), null, "no options then without the snapshot");
     const update = deploy.querySelector(".home-answer-update");
@@ -970,7 +970,7 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     assert.equal(release().style.minHeight, "", "no height held for the card it was");
     assert.equal(release().querySelector(".home-kind").textContent.trim(), "Waiting for Mori");
     assert.equal(release().querySelector(".home-answer-ask").textContent, "Ship the release today?", "the question it answered");
-    assert.equal(release().querySelector(".home-answer-given .home-reply-words").textContent, "Ship it after the docs fix");
+    assert.equal(release().querySelector(".home-answer-given .home-reply-words").textContent.trim(), "Ship it after the docs fix");
     assert.ok(p.button("Reply again", release()), "Reply again on its face");
     assert.equal(release().querySelector(".home-answer-details").textContent.trim(), "Details");
     assert.ok(p.doc.activeElement === release(), "focus, gone with the reply's controls, is on the card");
@@ -998,7 +998,7 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     assert.ok(release().classList.contains("is-open"));
     await type(p, release().querySelector(".home-card-body .home-text-reply [data-composer-input]"), "Ship it tomorrow instead");
     p.button("Send", release().querySelector(".home-card-body")).click();
-    await waitFor(() => !release().classList.contains("is-open") && release().querySelector(".home-reply-words")?.textContent === "Ship it tomorrow instead",
+    await waitFor(() => !release().classList.contains("is-open") && release().querySelector(".home-reply-words")?.textContent.trim() === "Ship it tomorrow instead",
       "Reply again: closed back to the answer card, the new reply on it");
     assert.ok(release().querySelector(":scope > .home-card-body").hidden);
     assert.equal(p.posts(/\/brief\/reply$/).at(-1).body.askVersion, 4, "the version on screen answered");
@@ -1017,7 +1017,7 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     await openProject(p, "p-app");
     await waitFor(() => seed()?.classList.contains("is-answer"), "an answer card at the next visit");
     assert.ok(["release", "budget", "scope"].every((key) => card(p, "p-app", key).classList.contains("is-answer")));
-    assert.equal(seed().querySelector(".home-reply-words").textContent, "Seed 7");
+    assert.equal(seed().querySelector(".home-reply-words").textContent.trim(), "Seed 7");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

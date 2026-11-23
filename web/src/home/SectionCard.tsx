@@ -219,6 +219,7 @@ export const SectionCard = memo(function SectionCard({
   onSeen,
   onChanged,
   notice,
+  answer = false,
 }: {
   section: Section;
   projectId: string;
@@ -231,6 +232,8 @@ export const SectionCard = memo(function SectionCard({
   onChanged: () => void;
   /** A note above the card's head: where a reply's "Open on Home" landed (T-9). */
   notice?: ReactNode;
+  /** An answered Ask drawn as its answer card wherever it is, as a request's line opened to it (YN-223), resolved too. */
+  answer?: boolean;
 }) {
   const time = useTimeDisplay();
   const language = useLanguage();
@@ -249,7 +252,9 @@ export const SectionCard = memo(function SectionCard({
   // the next visit (card-sizes.ts).
   const replied = section.ask?.state === "replied";
   const sizes = useContext(DeckSizes);
-  const short = sizes ? sizes.short(projectId, section.key, section.version, replied) : replied;
+  const short = (answer && !!section.ask && section.ask.state !== "open") || (sizes ? sizes.short(projectId, section.key, section.version, replied) : replied);
+  // Its owner resolved it: nothing more is sent from its card (YN-223).
+  const resolved = section.ask?.state === "resolved";
   const [rowOpen, setRowOpen] = useState(false);
   // Each step is the answer card's Reply again (AskReply).
   const [againRequest, setAgainRequest] = useState(0);
@@ -387,7 +392,6 @@ export const SectionCard = memo(function SectionCard({
       setBusy(false);
     }
   }
-  // The title, and whether it changed for the user or nobody keeps it up to date.
   // Whether it changed for the user, or nobody keeps it up to date.
   const badges = (
     <>
@@ -415,6 +419,7 @@ export const SectionCard = memo(function SectionCard({
       )}
     </>
   );
+  // The title, and those marks.
   const heading = (
     <>
       <h3 id={`${sectionDomId(projectId, section.key)}-title`}>{section.title}</h3>
@@ -475,7 +480,7 @@ export const SectionCard = memo(function SectionCard({
           </span>
           <span className="home-section-meta home-answer-state">
             <span className="home-kind kind-ask is-replied">
-              {updatedSinceReply ? t.updatedBy(section.owner.name) : t.waitingFor(section.owner.name)}
+              {resolved ? t.resolvedBy(section.owner.name) : updatedSinceReply ? t.updatedBy(section.owner.name) : t.waitingFor(section.owner.name)}
             </span>
             {/* The reply's time; once its owner changed it since, that change's. */}
             {section.ask?.repliedAt && !updatedSinceReply ? (
@@ -560,7 +565,7 @@ export const SectionCard = memo(function SectionCard({
                   <ChevronRight size={14} className="chev" aria-hidden="true" />
                   {t.answerDetails}
                 </button>
-                {!readOnly && (
+                {!readOnly && !resolved && (
                   <button
                     type="button"
                     className="home-reply-action home-answer-again"
@@ -600,7 +605,7 @@ export const SectionCard = memo(function SectionCard({
           <div className="home-section-body">
             <SectionBody section={section} projectId={projectId} changes={blocks} />
           </div>
-          <div className="home-ask">
+          {!resolved && <div className="home-ask">
             <AskReply
               key={section.key}
               section={section}
@@ -614,7 +619,7 @@ export const SectionCard = memo(function SectionCard({
               onSent={onChanged}
               onReplied={repliedHere}
             />
-          </div>
+          </div>}
         </div>
         {error && (
           <p className="inline-error" role="alert">

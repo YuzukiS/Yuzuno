@@ -231,9 +231,31 @@ test("unfolded: open Asks first, then the task's one card, the answered Asks, jo
   const page = mount({ opened: ["r7", "r10", "r9"] });
   const r7 = page.block(7);
   const parts = [...r7.querySelector(".request-task").children].map((el) => el.dataset.sectionKey ?? el.querySelector("[data-section-key]")?.dataset.sectionKey ?? el.className);
-  assert.deepEqual(parts, ["yn-91", "request-task-answered"], "the one card, the answered Ask: the open Ask is in the first look only");
+  assert.deepEqual(parts, ["yn-91", "request-task-answered-ask"], "the one card, the answered Ask: the open Ask is in the first look only");
   assert.equal(r7.querySelectorAll('[data-section-key="yn-91/pick"]').length, 1, "unfolded, the Ask is not drawn again");
-  assert.equal(page.text(r7.querySelector(".request-task-answered")), "Answered: Casual copy? → Yes");
+  const line = r7.querySelector(".request-task-answered");
+  assert.equal(page.text(line), "Answered: Casual copy? → Yes");
+  // YN-223: the line opens, in place, its answer card: the question, the reply; its owner resolved it, so nothing
+  // more is sent from it; a reply from before Core kept the question with it, said so.
+  assert.equal(line.tagName, "BUTTON");
+  assert.equal(line.getAttribute("aria-expanded"), "false");
+  assert.equal(r7.querySelector('[data-section-key="yn-91/copy"]'), null, "compact until opened");
+  line.click();
+  await tick(40);
+  assert.equal(line.getAttribute("aria-expanded"), "true");
+  const answered = r7.querySelector('[data-section-key="yn-91/copy"]');
+  assert.equal(answered.closest(".request-task-answered-card").id, line.getAttribute("aria-controls"));
+  assert.ok(answered.classList.contains("is-answer"), "its answer card");
+  assert.equal(answered.querySelector(".home-kind").textContent.trim(), "Resolved by Dev Lead");
+  assert.equal(answered.querySelector(".home-answer-ask").textContent, "Casual copy?");
+  assert.equal(answered.querySelector(".home-reply-words").textContent.trim(), "Yes");
+  assert.ok(answered.querySelector(".home-answer-unkept"), "an earlier reply, said so");
+  assert.deepEqual([...answered.querySelectorAll(".home-answer-given footer button")].map((b) => b.textContent.trim()), ["Copy answer", "Details"],
+    "resolved: nothing more is sent from it");
+  assert.equal(answered.querySelector(".home-ask"), null, "no reply controls under it");
+  line.click();
+  await tick(40);
+  assert.equal(r7.querySelector('[data-section-key="yn-91/copy"]'), null, "closed again: the line");
   assert.equal(page.text(r7.querySelector(".request-thread > summary")), "Conversation 3");
   // R-10 joined R-9's task: one line, which shows R-9.
   const joined = page.block(10).querySelector(".request-block-joined");
