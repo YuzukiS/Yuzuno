@@ -27,8 +27,7 @@ async fn a_released_executors_ask_is_its_dispatchers_to_answer_and_resolve() {
     // Delivered to a runtime, the reply marks the Ask replied (the lab check
     // shows that with one); here no runtime runs, so it is marked as other
     // tests mark it.
-    assert!(sections::mark_replied_form(&ws.store, &project, "question", 1, "Left",
-        sections::Marked { client: Some("r1"), ..Default::default() }).unwrap(), "marked as that reply, the newest sent to it (YN-223)");
+    assert!(sections::mark_replied_live(&ws.store, &project, "question", "Left").unwrap());
     accept(&ws, "a", input("resolve", version(&ws, &project), vec![op("resolve", "question")])).await;
     assert!(sections::find(&ws.store.db.read().unwrap(), &project, "question", None).unwrap().is_none_or(|row| !row.live),
         "the dispatcher resolved it");

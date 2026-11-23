@@ -1167,7 +1167,9 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
     };
     let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
     let previous = ws.stored(move |store| store.receipt(&agent, &client)).await?;
-    let receipt = if let Some(previous) = previous {
+    // Whether this send made the message (YN-223), rather than finding it sent before: a retry's mark is placed by
+    // its receipt among the user's other replies, while one made just now is the newest (sections::newest).
+    let (receipt, fresh) = if let Some(previous) = previous {
         // The same reply to the same version, sent before: its receipt.
         let same = previous.origin.as_ref().is_some_and(|sent| {
             sent["kind"] == "home" && sent["projectId"] == project && sent["key"] == key
@@ -1175,7 +1177,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         });
         ensure!(same, "This clientMessageId was already used for another message");
         // The first send's files: a retry carries them again.
-        ws.send_message_from(&input.agent_id, previous.input, Vec::new(), previous.files, None).await?
+        (ws.send_message_from(&input.agent_id, previous.input, Vec::new(), previous.files, None).await?, false)
     } else {
         let Some(row) = &shown else {
             let (code, why) = match &current {
@@ -1219,14 +1221,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             question: None,
             clarification: None,
         };
-        let receipt = ws.send_message_from(&input.agent_id, message, Vec::new(), input.files.clone(), Some(origin)).await?;
-        // The newest reply sent to that version, delivered or not (YN-223): only it marks the ask from now on, when it
-        // or its retry is delivered. A note answers nothing and is not one.
-        if !noting {
-            let (store, id, key, client) = (ws.store.clone(), project.clone(), key.clone(), input.client_message_id.clone());
-            crate::db::blocking(move || sections::reply_sent(&store, &id, &key, version, &client)).await?;
-        }
-        receipt
+        (ws.send_message_from(&input.agent_id, message, Vec::new(), input.files.clone(), Some(origin)).await?, true)
     };
     // A note is kept with the version it was written on, while that is
     // still the live ask: once, however often it is sent again.
@@ -1274,9 +1269,10 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             snapshot(&name, Some(row), None, chosen.as_ref(), words, answers)
         });
         let (store, key, id, images, files) = (ws.store.clone(), key.clone(), project.clone(), input.images.clone(), input.files.clone());
-        let client = input.client_message_id.clone();
+        let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
         let marked = move || sections::mark_replied_form(&store, &id, &key, version, &reply, sections::Marked {
-            form: form.as_ref(), images: &images, files: &files, snapshot: kept.as_ref(), client: Some(&client),
+            form: form.as_ref(), images: &images, files: &files, snapshot: kept.as_ref(),
+            sent: Some(sections::Sent { agent: &agent, client: &client, fresh }),
         });
         if crate::db::blocking(marked).await? {
             announce(ws, Some(&project));

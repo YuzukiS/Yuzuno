@@ -43,12 +43,6 @@ fn delivered_before(ws: &Workspace, project: &str, input: &home::ReplyInput, tex
         input: crate::model::MessageInput { client_message_id: input.client_message_id.clone(), text, text_blocks: None,
             images: input.images.clone(), expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     ws.store.update_meta(&input.agent_id, "message/requested", &json!({}), move |m| m.message_receipts.push(sent)).unwrap();
-    // A reply's first send records it as the newest reply sent to that version (YN-223); a note is no reply.
-    if input.intent != home::ReplyIntent::Note {
-        if let (Some(key), Some(version)) = (input.key.as_deref(), input.ask_version) {
-            sections::reply_sent(&ws.store, project, key, version, &input.client_message_id).unwrap();
-        }
-    }
 }
 
 /// The ask under `key` as Home shows it.

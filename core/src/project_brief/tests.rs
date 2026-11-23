@@ -1806,8 +1806,6 @@ async fn a_form_reply_takes_a_long_pasted_answer_whole() {
         input: crate::model::MessageInput { client_message_id: "f2".into(), text: home::compose_ask(&workspace, "Code", &project, &row, None, &text),
             text_blocks: None, images: vec![], expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(sent)).unwrap();
-    // Its first send recorded it as the newest reply sent to that version (YN-223).
-    sections::reply_sent(&ws.store, &project, "after", 1, "f2").unwrap();
     home::reply(&ws, project.clone(), round_reply(&workspace, &text, &review, "f2")).await.unwrap();
     let raw: String = ws.store.db.read().unwrap().query_row(
         "SELECT reply_form FROM project_brief_sections WHERE project_id=?1 AND key='after' AND live=1", [&project], |r| r.get(0)).unwrap();
@@ -2178,6 +2176,8 @@ mod reply_image_tests;
 mod reply_file_tests;
 #[path = "ask_note_tests.rs"]
 mod ask_note_tests;
+#[path = "reply_order_tests.rs"]
+mod reply_order_tests;
 
 /// The user's Overview layout: a summary across the top, then two columns.
 fn overview() -> Value {
@@ -2350,8 +2350,7 @@ async fn home_shows_a_replied_asks_reply_as_the_user_gave_it_to_that_version() {
     let answered = shown(&ws);
     assert_eq!((answered["ask"]["state"].clone(), answered["ask"]["replyText"].clone()), (json!("replied"), json!("Left: Go")));
     assert_eq!(answered["ask"]["replySnapshot"], given);
-    // A reply sent before Core marked it, its first send not delivered, then delivered by its retry: the newest reply
-    // sent, so its retry marks it (review 62a6e4eb).
+    // A reply Core accepted after it, whose mark never ran: its retry marks it (review 62a6e4eb).
     let accepted = |client: &str, choice: &str, label: &str, text: &str| crate::model::MessageReceipt { binding: None, files: vec![], file_paths: vec![],
         skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         origin: Some(json!({"kind":"home","projectId":project,"key":"decide","version":1,"workspaceId":workspace,
@@ -2362,7 +2361,6 @@ async fn home_shows_a_replied_asks_reply_as_the_user_gave_it_to_that_version() {
     let again = |client: &str, choice: &str, text: &str| home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: text.into(),
         client_message_id: client.into(), choice: Some(choice.into()), version: None, title: None, ask_version: Some(1),
         workspace_id: Some(workspace.clone()), form: None, images: vec![], files: vec![], intent: Default::default(), note: None };
-    sections::reply_sent(&ws.store, &project, "decide", 1, "m2").unwrap();
     let m2 = accepted("m2", "right", "Right", "Delivered on its retry");
     ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(m2)).unwrap();
     home::reply(&ws, project.clone(), again("m2", "right", "Delivered on its retry")).await.unwrap();
@@ -2373,9 +2371,10 @@ async fn home_shows_a_replied_asks_reply_as_the_user_gave_it_to_that_version() {
     // The user replies again; a late retry of an earlier reply then never overwrites that newer one.
     let later = snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way?","options":two_ways(),
         "choice":{"id":"right","label":"Right"},"text":"On second thought"}));
-    sections::reply_sent(&ws.store, &project, "decide", 1, "m3").unwrap();
-    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Right: On second thought",
-        sections::Marked { snapshot: Some(&later), client: Some("m3"), ..Default::default() }).unwrap());
+    let m3 = accepted("m3", "right", "Right", "On second thought");
+    ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(m3)).unwrap();
+    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Right: On second thought", sections::Marked {
+        snapshot: Some(&later), sent: Some(sections::Sent { agent: "b", client: "m3", fresh: true }), ..Default::default() }).unwrap());
     for (retry, choice, text) in [(reply(), "left", "Go"), (again("m2", "right", "Delivered on its retry"), "right", "Delivered on its retry")] {
         let answered = home::reply(&ws, project.clone(), retry).await.unwrap();
         assert_eq!(answered.status, "accepted", "the retry of {choice}: {text} answers with its first send's receipt");
