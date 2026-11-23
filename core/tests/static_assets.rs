@@ -22,6 +22,7 @@ fn built(root: &std::path::Path) {
     std::fs::write(root.join("index.html"), "<!doctype html>page").unwrap();
     std::fs::write(root.join("assets/index-BtvMAyW4.js"), "console.log('plain');").unwrap();
     std::fs::write(root.join("assets/index-BtvMAyW4.js.br"), b"\x0bcompressed").unwrap();
+    std::fs::write(root.join("immutable-assets.json"), r#"{"schema":1,"files":["index-BtvMAyW4.js"]}"#).unwrap();
 }
 
 async fn get(app: &Router, path: &str, headers: &[(&str, &str)]) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {

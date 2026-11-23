@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { brotliDecompressSync } from "node:zlib";
-import { MIN_BYTES, precompress } from "./precompress.mjs";
+import { IMMUTABLE_LIST, MIN_BYTES, precompress, writeImmutableList } from "./precompress.mjs";
 
 function assets() {
   const dir = mkdtempSync(join(tmpdir(), "yn221-br-"));
@@ -38,6 +38,17 @@ test("scripts, styles and SVG of 1 KiB or more get a Brotli copy that decodes to
     // Too small, a font or image, and text that does not get smaller: none.
     const copies = readdirSync(dir).filter((n) => n.endsWith(".br")).sort();
     assert.deepEqual(copies, ["icon-AbCdEfGh.svg.br", "index-BmJSJ4yL.css.br", "index-BtvMAyW4.js.br"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the list of fingerprinted files names only what the build emitted into /assets, sorted", () => {
+  const dir = mkdtempSync(join(tmpdir(), "yn221-list-"));
+  try {
+    const files = writeImmutableList(dir, ["index.html", "assets/index-BtvMAyW4.js", "licenses/LICENSE", "assets/index-BmJSJ4yL.css", "assets/index-BtvMAyW4.js"]);
+    assert.deepEqual(files, ["index-BmJSJ4yL.css", "index-BtvMAyW4.js"]);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, IMMUTABLE_LIST), "utf8")), { schema: 1, files });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -1,8 +1,8 @@
 //! Old tabs may lazily import a hashed chunk after the service changes version.
 //! Retained bundles provide those immutable /assets files until the user reloads.
 //!
-//! What a browser may keep (YN-221 S6): a /assets file whose name carries
-//! Vite's content hash a year, unchanged (`immutable`, RFC 8246); another
+//! What a browser may keep (YN-221 S6): a /assets file its build lists as
+//! fingerprinted (IMMUTABLE_LIST) a year, unchanged (`immutable`, RFC 8246); another
 //! /assets file only after asking again (`no-cache`); everything else,
 //! index.html, the page for any other path, a missing asset and every API
 //! answer, nothing (`server::harden`'s `no-store`). A /assets file the build
@@ -30,29 +30,44 @@ const HASHED: &str = "public, max-age=31536000, immutable";
 /// Kept, but asked again before each use.
 const UNHASHED: &str = "no-cache";
 
-/// A name Vite gave a file it emitted: its stem ends with `-` and a content
-/// hash of at least 8 of [A-Za-z0-9_-] (Rollup's `[hash]`, 8 by default).
-/// Vite puts only such files in /assets; a hash is never reused for
-/// other content, so the file under that name never changes.
-fn hashed(name: &str) -> bool {
-    let Some((stem, extension)) = name.rsplit_once('.') else { return false };
-    if extension.is_empty() {
-        return false;
+/// The list of the build's fingerprinted files (`web/vite.config.ts`
+/// `yuzuno-precompress`): `immutable-assets.json` at the root of a built UI,
+/// `{"schema":1,"files":[…]}`, the names of the files Vite emitted into
+/// /assets under its `[name]-[hash]` naming. Only a file it names is kept a
+/// year; a file the list does not name (one with a fixed name, a `.br` asked
+/// for by its own name, any file of a build from before the list) is asked
+/// again (`no-cache`).
+pub const IMMUTABLE_LIST: &str = "immutable-assets.json";
+
+/// Whether the built UI at `root` lists `name` as fingerprinted. The list is
+/// read again when its file changes (a new bundle in the same folder).
+fn fingerprinted(root: &std::path::Path, name: &str) -> bool {
+    type Lists = std::sync::Mutex<std::collections::HashMap<PathBuf, (Option<std::time::SystemTime>, std::collections::HashSet<String>)>>;
+    static LISTS: std::sync::OnceLock<Lists> = std::sync::OnceLock::new();
+    let path = root.join(IMMUTABLE_LIST);
+    let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let mut lists = LISTS.get_or_init(Default::default).lock().unwrap();
+    let fresh = lists.get(&path).is_some_and(|(seen, _)| *seen == modified);
+    if !fresh {
+        let files = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .filter(|list| list["schema"] == 1)
+            .and_then(|list| list["files"].as_array().map(|files| files.iter().filter_map(|f| f.as_str().map(str::to_owned)).collect()))
+            .unwrap_or_default();
+        lists.insert(path.clone(), (modified, files));
     }
-    stem.match_indices('-').any(|(at, _)| {
-        let hash = &stem[at + 1..];
-        hash.len() >= 8 && hash.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    })
+    lists[&path].1.contains(name)
 }
 
-/// A /assets file as found: kept for a year when hashed, else asked again;
-/// a miss or an error keeps harden's no-store.
-fn cached(name: &str, mut response: Response) -> Response {
+/// A /assets file as found: kept for a year when its build lists it as
+/// fingerprinted, else asked again; a miss or an error keeps harden's no-store.
+fn cached(root: &std::path::Path, name: &str, mut response: Response) -> Response {
     let status = response.status();
     if !(status == StatusCode::OK || status == StatusCode::PARTIAL_CONTENT || status == StatusCode::NOT_MODIFIED) {
         return response;
     }
-    let policy = if hashed(name) { HASHED } else { UNHASHED };
+    let policy = if fingerprinted(root, name) { HASHED } else { UNHASHED };
     response.extensions_mut().insert(StaticCache(HeaderValue::from_static(policy)));
     // The same URL may be answered br or not (precompressed_br).
     if !response.headers().contains_key(header::VARY) {
@@ -63,8 +78,8 @@ fn cached(name: &str, mut response: Response) -> Response {
 
 /// A /assets file from `dir`, as the build wrote it or compressed.
 async fn asset(dir: PathBuf, name: &str, request: Request) -> Response {
-    let response = ServeDir::new(dir).precompressed_br().oneshot(request).await.unwrap().map(Body::new).into_response();
-    cached(name, response)
+    let response = ServeDir::new(&dir).precompressed_br().oneshot(request).await.unwrap().map(Body::new).into_response();
+    cached(&dir, name, response)
 }
 
 pub async fn serve(
@@ -172,6 +187,9 @@ mod tests {
         std::fs::write(root.join("assets/index-BtvMAyW4.js.br"), b"\x0bcompressed").unwrap();
         std::fs::write(root.join("assets/index-B-tv_y12.css"), "body{}").unwrap();
         std::fs::write(root.join("assets/notes.txt"), "no hash").unwrap();
+        // A fixed name that looks fingerprinted, not in the build's list.
+        std::fs::write(root.join("assets/third-party-notices.js"), "notices").unwrap();
+        std::fs::write(root.join(IMMUTABLE_LIST), r#"{"schema":1,"files":["index-BtvMAyW4.js","index-B-tv_y12.css"]}"#).unwrap();
     }
 
     async fn ask(root: &std::path::Path, retained: Option<PathBuf>, method: &str, path: &str, encoding: Option<&str>) -> Response {
@@ -188,16 +206,6 @@ mod tests {
 
     async fn bytes(response: Response) -> Vec<u8> {
         axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap().to_vec()
-    }
-
-    #[test]
-    fn vite_names_are_hashed_and_others_are_not() {
-        for name in ["index-BtvMAyW4.js", "index-B-tv_y12.css", "NotoSansSC-AbCdEfGh.woff2", "Home-12345678.js"] {
-            assert!(hashed(name), "{name}");
-        }
-        for name in ["notes.txt", "index-short.js", "index-BtvMAyW4", "index-BtvMAyW4.", "BtvMAyW4ABC.js", "index-BtvMAy!4.js"] {
-            assert!(!hashed(name), "{name}");
-        }
     }
 
     #[tokio::test]
@@ -248,6 +256,13 @@ mod tests {
         }
         let response = ask(root.path(), None, "GET", "/assets/notes.txt", None).await;
         assert_eq!((response.status(), kept(&response)), (StatusCode::OK, Some(UNHASHED)));
+        // A whole GET of a fixed name its build does not list: asked again, never kept a year.
+        let response = ask(root.path(), None, "GET", "/assets/third-party-notices.js", Some("br")).await;
+        assert_eq!((response.status(), kept(&response)), (StatusCode::OK, Some(UNHASHED)));
+        assert_eq!(bytes(response).await, b"notices");
+        // A .br asked for by its own name is not the chunk: asked again.
+        let response = ask(root.path(), None, "GET", "/assets/index-BtvMAyW4.js.br", None).await;
+        assert_eq!((response.status(), kept(&response)), (StatusCode::OK, Some(UNHASHED)));
     }
 
     #[tokio::test]
@@ -258,10 +273,16 @@ mod tests {
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("Old-AbCdEfGh.js"), "old chunk").unwrap();
         std::fs::write(old.join("Old-AbCdEfGh.js.br"), "old compressed").unwrap();
+        std::fs::write(old.join("Unlisted-AbCdEfGh.js"), "older build").unwrap();
+        std::fs::write(layout.path().join("releases/core.37/web").join(IMMUTABLE_LIST), r#"{"schema":1,"files":["Old-AbCdEfGh.js"]}"#).unwrap();
         let response = ask(root.path(), Some(layout.path().into()), "GET", "/assets/Old-AbCdEfGh.js", Some("br")).await;
         assert_eq!((response.status(), kept(&response)), (StatusCode::OK, Some(HASHED)));
         assert_eq!(response.headers()[header::CONTENT_ENCODING], "br");
         assert_eq!(bytes(response).await, b"old compressed");
+        // Its own release's list decides; one it doesn't name is still read, asked again.
+        let response = ask(root.path(), Some(layout.path().into()), "GET", "/assets/Unlisted-AbCdEfGh.js", None).await;
+        assert_eq!((response.status(), kept(&response)), (StatusCode::OK, Some(UNHASHED)));
+        assert_eq!(bytes(response).await, b"older build");
         let response = ask(root.path(), Some(layout.path().into()), "GET", "/assets/Gone-AbCdEfGh.js", None).await;
         assert_eq!((response.status(), kept(&response)), (StatusCode::NOT_FOUND, None));
     }

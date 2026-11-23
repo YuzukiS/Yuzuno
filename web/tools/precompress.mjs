@@ -37,3 +37,17 @@ export function precompress(dir) {
   }
   return written;
 }
+
+/** The name Core reads to know which /assets files are fingerprinted
+ * (core/src/updates/assets.rs IMMUTABLE_LIST). */
+export const IMMUTABLE_LIST = "immutable-assets.json";
+
+/** Writes, at the built UI's root, the files the build emitted into
+ * /assets under Vite's `[name]-[hash]` naming (`emitted`: the bundle's file
+ * names), sorted: only these may be kept a year. A file in /assets the list
+ * does not name, such as one copied there with a fixed name, is asked again. */
+export function writeImmutableList(root, emitted) {
+  const files = [...new Set(emitted.filter((f) => f.startsWith("assets/")).map((f) => f.slice("assets/".length)))].sort();
+  writeFileSync(join(root, IMMUTABLE_LIST), `${JSON.stringify({ schema: 1, files })}\n`);
+  return files;
+}
