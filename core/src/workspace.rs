@@ -728,7 +728,9 @@ impl Workspace {
         let agent_id = id.to_owned();
         let generation = connection.generation;
         let event_barrier = Arc::downgrade(&events);
-        tokio::spawn(async move {
+        // Its CPU, and the store job each message it handles asks for, under
+        // a label of its own (YN-221 S7c; YN-197 measured them unattributed).
+        crate::runtime_diag::spawn("agent codex-recv", async move {
             while let Some(message) = rx.recv().await {
                 let native = crate::backlog::is_native(&message);
                 if event_barrier.upgrade().is_some_and(|barrier| barrier.acknowledge(&message)) { continue; }
@@ -3506,6 +3508,10 @@ mod reconnect_reads_tests;
 #[cfg(all(test, unix))]
 #[path = "reconnect_exit_tests.rs"]
 mod reconnect_exit_tests;
+
+#[cfg(all(test, unix))]
+#[path = "codex_recv_label_tests.rs"]
+mod codex_recv_label_tests;
 
 #[cfg(all(test, unix))]
 #[path = "reconnect_contract_tests.rs"]
