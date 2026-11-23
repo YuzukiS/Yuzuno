@@ -123,6 +123,14 @@ async fn home_refuses_an_unknown_history_form_and_the_phone_entry_serves_the_new
     let app = router().with_state(ws.clone());
     let (status, read) = get(&app, "/api/home?history=bogus").await;
     assert_eq!((status, read["code"].clone()), (400, json!("invalid_input")));
+    // The header asks for the same index, at Home's own address.
+    let by_header = |value: &str| Request::builder().uri("/api/home").header("x-yuzuno-history", value).body(Body::empty()).unwrap();
+    let response = app.clone().oneshot(by_header("index")).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let indexed: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 64 << 20).await.unwrap()).unwrap();
+    let (_, by_query) = get(&app, "/api/home?history=index").await;
+    assert_eq!((indexed["projects"].clone(), indexed["needsYou"].clone()), (by_query["projects"].clone(), by_query["needsYou"].clone()));
+    assert_eq!(app.clone().oneshot(by_header("whole")).await.unwrap().status(), 400);
     let (status, whole) = get(&app, "/api/home").await;
     assert_eq!(status, 200);
     assert!(whole["projects"][0]["brief"].get("historyIndex").is_none(), "without the parameter Home is as it was");

@@ -57,10 +57,12 @@ struct HomeQuery {
     history: Option<String>,
 }
 
-/// Home whole, or with its history as an index (`?history=index`, YN-221
-/// S1); without the parameter it is what every page has read.
-async fn view(State(ws): State<Arc<Workspace>>, Query(query): Query<HomeQuery>) -> ApiResult<Response> {
-    let history = match query.history.as_deref() {
+/// Home whole, or with its history as an index (`?history=index`, or the
+/// header `X-Yuzuno-History: index` as a conversation's window is asked
+/// for, YN-221 S1); without either it is what every page has read.
+async fn view(State(ws): State<Arc<Workspace>>, Query(query): Query<HomeQuery>, headers: axum::http::HeaderMap) -> ApiResult<Response> {
+    let asked = query.history.or_else(|| headers.get("x-yuzuno-history").map(|v| v.to_str().unwrap_or("").to_owned()));
+    let history = match asked.as_deref() {
         None => home::History::Full,
         Some("index") => home::History::Index,
         Some(_) => return Ok(invalid("history is index, or not given")),
