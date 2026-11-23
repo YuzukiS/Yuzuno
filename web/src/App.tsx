@@ -1094,6 +1094,9 @@ export function App() {
         }
         case "workspace.changed":
           if (event.mergeQueue) mergeQueueRefresh.atMostEvery(1_000);
+          // Core's pass over due merge-queue entries: only the views that
+          // show the queue read again, not everything (YN-221).
+          if (event.onlyMergeQueue) return;
           // A conversation that shows mail delivery gets its own notice.
           if (event.scope === "collaboration") {
             boardRefresh.now();
