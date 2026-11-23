@@ -221,6 +221,11 @@ impl Drop for Counted {
 //
 // A label names the work a future does: `http <METHOD> <route>`, `svc <name>`
 // for a background service's own task, `sse` for the event stream's polls.
+// A service may label its steps too, nested in its own: the Jobs tick's
+// `svc jobs evidence`, `svc jobs runs` and `svc jobs admission` (jobs/mod.rs
+// `tick`), and `svc jobs` is then only what none of them took. A Core from
+// before those (core.39 and earlier) counts all of the Jobs tick under
+// `svc jobs`: compare such a report's `svc jobs` with the four together.
 // Each poll of a labelled future is timed with this thread's CPU clock
 // (CLOCK_THREAD_CPUTIME_ID), only within that poll: time a task spends
 // waiting between polls is never counted, and a poll runs on one thread from
