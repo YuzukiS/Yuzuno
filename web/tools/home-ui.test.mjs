@@ -121,7 +121,7 @@ const machineLoad = () => ({
 });
 
 // open: a Project's page to show once Home has read, where that project's cards are (YN-86).
-async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], activity = {}, workspaceAgents = agents, research = null, before = null, url = "http://127.0.0.1:4317/", pressHome = true, open = null } = {}) {
+async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, requestsRead = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], activity = {}, workspaceAgents = agents, research = null, before = null, url = "http://127.0.0.1:4317/", pressHome = true, open = null } = {}) {
   // holdWorkspace: /api/workspace answers only on releaseWorkspace(), so Home opens first.
   let releaseWorkspace = () => {};
   const workspaceRead = holdWorkspace ? new Promise((resolve) => (releaseWorkspace = resolve)) : null;
@@ -192,10 +192,13 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
     if (/\/api\/requests\/[^/]+\/respond$/.test(url)) return respond({ ok: true });
     // Talking to a project (YN-86 §4.2): b is its front desk; what is said is kept as request R-1.
     if (/\/api\/projects\/[^/]+\/front-desk$/.test(url)) return respond({ version: 1, agentId: "b", effectiveAgentId: "b" });
-    if (/\/api\/projects\/[^/]+\/requests$/.test(url))
+    if (/\/api\/projects\/[^/]+\/requests$/.test(url)) {
+      // requestsRead(url): a promise it returns holds a read of a Project's requests until it settles.
+      if (request.method !== "POST") await requestsRead?.(url);
       return respond(request.method === "POST"
         ? { request: { n: 1 }, receipt: { input: request.body, status: "accepted", turnId: "t11", error: null } }
         : { requests: [], hasMore: false });
+    }
     if (url.endsWith("/api/collaboration/github_repositories"))
       return respond({ repositories: request.body?.projectId === "p-app" ? linked : [], links: [] });
     if (url.endsWith("/api/projects/p-app/repo-activity"))
@@ -1598,7 +1601,9 @@ test("a report or status pins to the widget column: the same section, its source
   // Earlier content of a member who may no longer edit: shown under Team details, never pinned.
   home.projects[0].brief.teamSections = [section("old-notes", "report", "Old notes", 1, owner("b", "Hana"), { id: 150 })];
   const notes = () => home.projects[0].brief.sections.find((s) => s.key === "notes");
-  const p = await mount({ home });
+  // While set, App's requests are not read yet (below: its page drawn before its card).
+  let unread = null;
+  const p = await mount({ home, requestsRead: (url) => (url.includes("/api/projects/p-app/") ? unread?.promise : undefined) });
   try {
     let column = p.doc.querySelector(".home-widget-column");
     const pinned = () => column?.querySelector(".home-pinned");
@@ -1657,10 +1662,18 @@ test("a report or status pins to the widget column: the same section, its source
     await refresh(() => /Round 2 notes/.test(pinned()?.textContent || ""), "the new version shows");
     assert.equal(pinned().querySelector(".home-pinned-head h2").textContent, "Notes, round 2");
     assert.equal(JSON.stringify(layout()), saved, "an update leaves the layout as it was");
-    // Back to the source: its Project's page opens at it, highlighted (YN-86 §2.4).
+    // Back to the source: its Project's page opens at it, highlighted (YN-86 §2.4). Its requests are read slowly here,
+    // as on a busy runner (main CI after PR 1103): the page is there before its card is, or before the card is
+    // highlighted, and waiting for the highlight waits through that instead of reading a card not drawn yet.
+    unread = Promise.withResolvers();
+    const reads = p.calls.length;
     p.button("Open in App", pinned()).click();
     await waitFor(() => p.doc.querySelector('[data-project-home="p-app"]'), "the Project's page opens from the pin");
-    await waitFor(() => card(p, "p-app", "notes").hasAttribute("data-home-highlight"), "the source is highlighted");
+    assert.ok(p.calls.slice(reads).some((c) => c.method === "GET" && c.url.endsWith("/api/projects/p-app/requests")), "its requests are being read");
+    assert.ok(!card(p, "p-app", "notes")?.hasAttribute("data-home-highlight"), "its requests unread, the source is not highlighted yet");
+    setTimeout(() => unread.resolve(), 200);
+    await waitFor(() => card(p, "p-app", "notes")?.hasAttribute("data-home-highlight"), "the source is highlighted");
+    unread = null;
     assert.equal(p.w.location.hash, "#/home?w=ws-home&p=p-app", "the page is in the address");
     // Back to the whole of Home for the rest of the test; the pin stays as it was.
     p.w.history.back();
