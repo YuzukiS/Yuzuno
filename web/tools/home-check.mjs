@@ -487,7 +487,11 @@ async function serve(route) {
       // Marked as Core marks it (project_brief/home.rs): a chosen option by its label, any text after it.
       const label = body.choice && s?.ask?.reply?.options?.find((o) => o.id === body.choice)?.label;
       const replyText = label ? (body.text.trim() ? `${label}: ${body.text}` : label) : body.text;
-      if (s?.ask) s.ask = { ...s.ask, state: "replied", repliedAt: new Date().toISOString(), replyText };
+      // And the reply as the user gave it to that version (YN-223, home.rs `snapshot`), which its answer card draws.
+      const replySnapshot = s?.ask && { format: 1, projectName: match[1], sectionKind: "ask", title: s.title, question: s.ask.question,
+        options: (s.ask.reply.options ?? []).map(({ id, label }) => ({ id, label })), choice: label ? { id: body.choice, label } : null,
+        text: body.text.trim() || null, form: null };
+      if (s?.ask) s.ask = { ...s.ask, state: "replied", repliedAt: new Date().toISOString(), replyText, replySnapshot };
       return route.fulfill({ json: { input: { text: body.text, clientMessageId: body.clientMessageId }, status: "accepted", turnId: `${body.agentId}-t2`, error: null } });
     }
     if ((match = /^\/api\/projects\/(p[12])\/brief\/defer$/.exec(path))) {
@@ -1298,21 +1302,23 @@ try {
     return { body: write.body, marks };
   });
 
-  await step("4 an option posts its id as choice (with the ask's version and Workspace, T-9) and the ask then becomes its answer card: Replied · waiting, the reply, what is next; Defer on an open ask posts {key, until}; free text posts the text", async () => {
+  await step("4 an option posts its id as choice (with the ask's version and Workspace, T-9) and the ask then becomes its answer card (YN-223, R-29's design): whom it waits for, the question answered, then the option or the words; Defer on an open ask posts {key, until}; free text posts the text", async () => {
     const release = card("p1", "release");
     await release.getByRole("button", { name: "Ship today", exact: true }).click();
     const option = await until("the option reply", () => writesTo(/\/brief\/reply$/)[0]);
     assert.equal(option.path, "/api/projects/p1/brief/reply");
     assert.deepEqual({ ...option.body, clientMessageId: typeof option.body.clientMessageId }, { key: "release", agentId: "kumo", text: "", choice: "ship", clientMessageId: "string", askVersion: 2, workspaceId: "ws" });
-    // Answered, it is Kumo's to act on (T-132): at once its answer card (YN-21, b7079262), which says
-    // whom it waits for, the reply as Core marked it and what is next; no Defer; the question folded away.
+    // Answered, it is Kumo's to act on (T-132): at once its answer card (YN-21, b7079262), which says whom it waits
+    // for, then the question as answered and the reply as given (YN-223); no Defer; the Ask's body folded away.
     const answer = (el) => ({
       kind: el.querySelector(".home-kind")?.textContent.trim() ?? null,
-      reply: el.querySelector(".home-answer-reply")?.textContent.trim() ?? null,
-      next: el.querySelector(".home-answer-next")?.textContent.trim() ?? null,
+      ask: el.querySelector(":scope > .home-answer .home-answer-ask")?.textContent ?? null,
+      choice: el.querySelector(":scope > .home-answer .home-reply-choice")?.textContent ?? null,
+      words: el.querySelector(":scope > .home-answer .home-reply-words")?.textContent.trim() ?? null,
     });
-    await until("the answer card with its reply", async () => /\bis-answer\b/.test(await release.getAttribute("class")) && (await release.evaluate(answer)).reply !== null);
-    assert.deepEqual(await release.evaluate(answer), { kind: "Replied · waiting for Kumo", reply: "YouShip today", next: "Next: Kumo acts on your reply" });
+    await until("the answer card with its reply", async () => /\bis-answer\b/.test(await release.getAttribute("class")) && (await release.evaluate(answer)).choice !== null);
+    assert.deepEqual(await release.evaluate(answer),
+      { kind: "Waiting for Kumo", ask: "Ship today with the two strings fixed, or wait for the menu change?", choice: "Ship today", words: null });
     assert.equal(await release.getByRole("button", { name: "Defer", exact: true }).count(), 0);
     assert.equal(await release.locator(".home-answer-details").getAttribute("aria-expanded"), "false");
     assert.equal(await release.locator(".home-question").isVisible(), false);
@@ -1331,7 +1337,8 @@ try {
     const text = await until("the text reply", () => writesTo(/\/brief\/reply$/)[1]);
     assert.deepEqual({ ...text.body, clientMessageId: typeof text.body.clientMessageId }, { key: "naming", agentId: "mori", text: "Call it brief_write.", clientMessageId: "string", askVersion: 1, workspaceId: "ws" });
     assert.notEqual(text.body.clientMessageId, option.body.clientMessageId);
-    await until("its answer card with the text", async () => (await naming.evaluate(answer)).reply === "YouCall it brief_write.");
+    await until("its answer card with the text", async () => (await naming.evaluate(answer)).words === "Call it brief_write.");
+    assert.equal((await naming.evaluate(answer)).ask, "Which name should the tool use?");
     assert.match(await naming.getAttribute("class"), /\bis-answer\b/);
     await until("the deferral note to go once replied", async () => (await naming.getByText(/Deferred until/).count()) === 0);
     assert.equal(await naming.getByRole("button", { name: "Defer", exact: true }).count(), 0);
