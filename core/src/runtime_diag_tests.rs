@@ -164,3 +164,137 @@ async fn count_cost() {
         std::fs::write(path, format!("{row}\n")).unwrap();
     }
 }
+
+/// About `ms` of this thread's CPU.
+fn busy(ms: u64) {
+    let start = thread_cpu_ns().unwrap();
+    while thread_cpu_ns().unwrap() - start < ms * 1_000_000 {
+        std::hint::black_box(0u64);
+    }
+}
+
+fn cpu_of(label: &str) -> (u64, u64, u64, u64) {
+    let labels = label_cpu().lock().unwrap();
+    labels.get(label).map_or((0, 0, 0, 0), |c| (c.async_ns, c.polls, c.store_ns, c.store_jobs))
+}
+
+#[tokio::test]
+async fn a_labelled_poll_inside_another_counts_its_own_cpu_and_the_outer_only_the_rest() {
+    scope("test outer", async {
+        busy(20);
+        scope("test inner", async { busy(20) }).await;
+    })
+    .await;
+    let (outer, outer_polls, _, _) = cpu_of("test outer");
+    let (inner, inner_polls, _, _) = cpu_of("test inner");
+    assert!((outer_polls, inner_polls) == (1, 1), "{outer_polls} {inner_polls}");
+    // Each about 20 ms; the outer not 40 ms (counted twice).
+    assert!((18_000_000..30_000_000).contains(&inner), "inner {inner}");
+    assert!((18_000_000..30_000_000).contains(&outer), "outer {outer}");
+}
+
+#[tokio::test]
+async fn time_between_polls_is_not_counted() {
+    scope("test waiting", async {
+        busy(5);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        busy(5);
+    })
+    .await;
+    let (spent, polls, _, _) = cpu_of("test waiting");
+    assert!(polls >= 2, "{polls}");
+    assert!((9_000_000..60_000_000).contains(&spent), "the 200 ms asleep is not CPU: {spent}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn store_work_counts_under_the_label_that_asked_for_it_or_as_unlabeled() {
+    let before = cpu_of(UNLABELED);
+    scope("test store", async {
+        crate::db::blocking(|| {
+            busy(20);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    })
+    .await;
+    crate::db::blocking(|| Ok(())).await.unwrap();
+    let (_, _, store, jobs) = cpu_of("test store");
+    assert_eq!(jobs, 1);
+    assert!((18_000_000..30_000_000).contains(&store), "on its blocking thread: {store}");
+    assert!(cpu_of(UNLABELED).3 > before.3, "a job with no label is counted as unlabeled");
+}
+
+#[tokio::test]
+async fn a_handler_is_timed_under_its_route_and_the_report_says_what_is_left() {
+    let (dir, ws) = lab();
+    let app = crate::server::router(ws.clone(), dir.path().join("assets"));
+    read(&app, "/api/health", &LOCAL_HEADERS).await;
+    let (_, body) = read(&app, "/api/diagnostics/runtime", &LOCAL_HEADERS).await;
+    let report: Value = serde_json::from_slice(&body).unwrap();
+    let cpu = &report["cpu"];
+    assert_eq!(cpu["enabled"], true, "{cpu}");
+    let health = cpu["labels"].as_array().unwrap().iter().find(|l| l["label"] == "http GET /api/health").unwrap_or_else(|| panic!("{cpu}"));
+    assert!(health["polls"].as_u64().unwrap() >= 1);
+    let (total, labelled) = (report["process"]["cpuNs"].as_u64().unwrap(), cpu["labelledNs"].as_u64().unwrap());
+    assert_eq!(cpu["unattributedNs"].as_u64().unwrap(), total.saturating_sub(labelled));
+    assert!(matches!(cpu["threadRoles"].as_str(), Some("named" | "unknown")));
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn a_runtime_names_its_blocking_threads_and_its_workers_by_role() {
+    fn comm() -> String {
+        std::fs::read_to_string("/proc/thread-self/comm").unwrap().trim().to_owned()
+    }
+    let runtime = name_threads(tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all()).build().unwrap();
+    let (blocking, worker) = runtime.block_on(async {
+        let blocking = tokio::task::spawn_blocking(comm).await.unwrap();
+        // On a worker after it parked at least once.
+        let worker = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            comm()
+        })
+        .await
+        .unwrap();
+        (blocking, worker)
+    });
+    assert_eq!(blocking, BLOCKING_THREAD);
+    assert_eq!(worker, ASYNC_THREAD);
+    assert!(ROLES_NAMED.load(Ordering::Relaxed));
+}
+
+/// YN-221 S7b: what timing labelled polls costs, on 10,000 requests of a
+/// small JSON answer counted without and with CPU labels (`scope`), in 5
+/// alternating rounds; ns per request, the median round. Run explicitly:
+/// `cargo test --release --lib runtime_diag::tests::label_cost -- --ignored --nocapture`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "YN-221 S7b measurement of the CPU labels' cost per request; run explicitly"]
+async fn label_cost() {
+    const REQUESTS: u32 = 10_000;
+    let handler = || async { axum::Json(json!({"ok":true,"product":"yuzuno"})) };
+    let plain = Router::new().route("/api/health", get(handler));
+    let labelled = Router::new().route("/api/health", get(move || scope("bench label", handler())));
+    async fn round(app: &Router) -> f64 {
+        let started = Instant::now();
+        for _ in 0..REQUESTS {
+            let response = app.clone().oneshot(request("/api/health", &[])).await.unwrap();
+            to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        }
+        started.elapsed().as_nanos() as f64 / f64::from(REQUESTS)
+    }
+    round(&plain).await;
+    round(&labelled).await;
+    let (mut without, mut with) = (vec![], vec![]);
+    for _ in 0..5 {
+        without.push(round(&plain).await);
+        with.push(round(&labelled).await);
+    }
+    let median = |v: &mut Vec<f64>| { v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[2] };
+    let (without, with) = (median(&mut without), median(&mut with));
+    let row = json!({"requests":REQUESTS,"rounds":5,"nsPerRequestWithout":without,"nsPerRequestWith":with,"extraNs":with - without});
+    println!("{row}");
+    if let Ok(path) = std::env::var("YN221_S7B_MEASURE_OUT") {
+        std::fs::write(path, format!("{row}\n")).unwrap();
+    }
+}

@@ -40,6 +40,7 @@ qrcodegen = "1.8"
 # signs its VAPID token.
 http-body = "1"
 http-body-util = "0.1"
+pin-project-lite = "0.2"
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "tls12"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "http1", "tokio"] }
 ring = "0.17"

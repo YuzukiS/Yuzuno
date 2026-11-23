@@ -277,7 +277,7 @@ impl Workspace {
     pub(crate) fn start_stream_ticker(self: &Arc<Self>) {
         if self.stream_ticker.set(()).is_err() { return; }
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc stream-ticker", async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
@@ -1608,7 +1608,7 @@ impl Workspace {
     /// backoff; UI activity is not their lifecycle owner.
     pub fn start_remote_recovery(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc remote-recovery", async move {
             let mut retry: HashMap<String, (std::time::Instant, u32)> = HashMap::new();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;

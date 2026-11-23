@@ -20,7 +20,7 @@ impl Workspace {
             return;
         }
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc delivery", async move {
             loop {
                 let Some(ws) = weak.upgrade() else { break };
                 if let Err(error) = tick(&ws).await {
