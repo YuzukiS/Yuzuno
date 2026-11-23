@@ -80,24 +80,24 @@ async fn a_body_dropped_before_its_end_is_counted_apart_from_one_sent_whole() {
 
 #[tokio::test]
 async fn published_messages_count_by_kind_and_streams_by_what_they_opened_and_sent() {
-    let (_dir, ws) = lab();
-    ws.changes.send(json!({"mergeQueue":true}));
-    ws.changes.send(json!({"collaboration":true}));
-    ws.changes.send(json!({"agentId":"a"}));
-    ws.changes.publish(&json!({"type":"something.new"}));
-    let counts = ws.changes.counts();
+    let events = Arc::new(crate::events::Events::new());
+    events.send(json!({"mergeQueue":true}));
+    events.send(json!({"collaboration":true}));
+    events.send(json!({"agentId":"a"}));
+    events.publish(&json!({"type":"something.new"}));
+    let counts = events.counts();
     let kinds: Vec<(String, u64)> = counts["published"].as_array().unwrap().iter()
         .map(|k| (k["kind"].as_str().unwrap().to_owned(), k["count"].as_u64().unwrap())).collect();
     assert_eq!(kinds, vec![("agent.changed".into(), 1), ("workspace.changed:collaboration".into(), 1),
         ("workspace.changed:workspace".into(), 1), ("other".into(), 1)]);
     assert!(counts["published"][0]["bytes"].as_u64().unwrap() > 0);
-    let mut stream = Box::pin(ws.changes.stream(None));
+    let mut stream = Box::pin(events.stream(None));
     stream.next().await.unwrap().unwrap();
-    let counts = ws.changes.counts();
+    let counts = events.counts();
     assert_eq!(counts["streams"], json!({"opened":1,"open":1,"frames":1}));
     assert_eq!(counts["subscribers"], 1);
     drop(stream);
-    assert_eq!(ws.changes.counts()["streams"]["open"], 0);
+    assert_eq!(events.counts()["streams"]["open"], 0);
 }
 
 #[tokio::test]
