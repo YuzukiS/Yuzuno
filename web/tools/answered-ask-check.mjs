@@ -159,6 +159,9 @@ const runs = [
   { name: "zh-390", viewport: { width: 390, height: 844 }, phone: true, language: "zh-Hans" },
   { name: "zh-320", viewport: { width: 320, height: 700 }, phone: true, language: "zh-Hans" },
   { name: "en-1440", viewport: { width: 1440, height: 1000 }, phone: false, language: "en" },
+  // The settled design's own theme (question-first.html: dark, yuzu), to set the two side by side.
+  { name: "zh-dark-1440", viewport: { width: 1440, height: 1000 }, phone: false, language: "zh-Hans", appearance: { theme: "dark", palette: "yuzu" } },
+  { name: "zh-dark-390", viewport: { width: 390, height: 844 }, phone: true, language: "zh-Hans", appearance: { theme: "dark", palette: "yuzu" } },
 ];
 try {
   for (const run of runs) await check(run);
@@ -190,11 +193,12 @@ async function check(run) {
     ...(run.phone ? { isMobile: true, hasTouch: true } : {}),
   });
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: `http://${HOST}` });
-  await context.addInitScript((language) => {
+  await context.addInitScript(({ language, appearance }) => {
     if (window !== window.top) return;
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
-  }, run.language);
+    if (appearance) localStorage.setItem("yuzuno.appearance", JSON.stringify(appearance));
+  }, { language: run.language, appearance: run.appearance ?? null });
   await context.route("**/*", async (route) => {
     const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
     if (url.host !== HOST) {

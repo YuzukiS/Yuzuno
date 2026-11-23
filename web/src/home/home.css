@@ -1823,15 +1823,23 @@ fieldset.home-ask-options {
   font-size: calc(10px + var(--font-adjust, 3px));
   line-height: 1.5;
 }
+/* Whose card, on one line as the design's "R-29 · 当时的问题": its title gives way first, whole in its tip. */
 .home-answer-source {
   display: inline-flex;
-  flex: 1 1 12em;
-  flex-wrap: wrap;
+  flex: 1 1 10em;
   align-items: baseline;
   gap: 0 0.4em;
   min-width: 0;
   font-weight: 500;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+}
+.home-answer-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-answer-source > :not(.home-answer-name) {
+  flex: none;
 }
 .home-answer-state {
   display: inline-flex;
@@ -1989,9 +1997,13 @@ fieldset.home-ask-options {
 .app.phone .home-section.is-answer {
   padding: 12px 13px 6px;
 }
+.app.phone .home-answer-given footer {
+  gap: 0 2px;
+}
 .app.phone .home-answer-given .home-reply-action {
   min-height: 44px;
-  padding: 0 4px;
+  padding: 0 3px;
+  gap: 0.25em;
 }
 .app.phone .home-answer-given footer > .home-reply-action:first-child {
   margin-left: 0;
