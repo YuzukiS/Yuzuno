@@ -199,6 +199,7 @@ async fn home_filters_sources_without_seen_and_keeps_asks_approvals_and_totals()
     assert_eq!(panel["brief"]["teamSections"], json!([]));
     let worker = panel["brief"]["history"].as_array().unwrap().iter().find(|s| s["key"] == "worker").unwrap();
     assert_eq!((worker["historyReason"].clone(), worker["seen"].clone()), (json!("lead-left"), Value::Null));
+    super::history_index_tests::check(&ws.store);
     assert_eq!(panel["unseen"], 3);
     assert_eq!(panel["missing"].as_array().unwrap().len(), 1);
     assert_eq!(panel["missing"][0]["agentId"], "a");
@@ -222,6 +223,7 @@ async fn home_filters_sources_without_seen_and_keeps_asks_approvals_and_totals()
     for key in ["lead", "worker"] {
         assert!(left.contains(&(json!(key), json!("lead-left"))), "{key}: {left:?}");
     }
+    super::history_index_tests::check(&ws.store);
 }
 
 #[test]
