@@ -213,6 +213,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/agents/{id}/codex/fork",post(fork_session))
         .route("/api/agents",post(create))
         .route("/api/agents/{id}",get(detail).patch(rename_agent).delete(delete_agent))
+        .route("/api/agents/{id}/listing",get(agent_listing))
         .route("/api/agents/{id}/items/{item_id}/payload",get(item_payload))
         .route("/api/agents/{id}/items/{item_id}/original",get(item_original))
         .route("/api/agents/{id}/turns/{turn_id}/original",get(turn_original))
@@ -635,17 +636,54 @@ async fn backlog(State(ws): State<Arc<Workspace>>) -> Json<Value> {
     Json(ws.backlog())
 }
 
-async fn workspace(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
+#[derive(Deserialize)]
+struct WorkspaceQuery {
+    listing: Option<String>,
+}
+
+/// The Workspace: its Agents, runtime, Projects. `?listing=slim`, or the
+/// header `X-Yuzuno-Listing: slim` as a conversation's window is asked for
+/// (YN-221 S3): released executors as slim rows (workspace_listing.rs);
+/// without either, as it always was.
+async fn workspace(State(ws): State<Arc<Workspace>>, Query(query): Query<WorkspaceQuery>, headers: HeaderMap) -> ApiResult<Response> {
+    // Each form is checked on its own: either alone asks for the slim list,
+    // both may say it together, and any other value of either is refused.
+    let header = headers.get("x-yuzuno-listing").map(|v| v.to_str().unwrap_or(""));
+    let asked = [query.listing.as_deref(), header];
+    if asked.iter().flatten().any(|value| *value != crate::workspace_listing::SLIM) {
+        return Ok((StatusCode::BAD_REQUEST, Json(json!({"error":"listing is slim, or not given","code":"invalid_input"}))).into_response());
+    }
+    let slim = asked.iter().any(Option::is_some);
     let (runtime, default_cwd) = (ws.runtime.lock().await.clone(), ws.default_cwd.clone());
     // The dsh this Core would start (YN-119 S2a): {available, version, label}.
     let dsh = crate::dsh_agent::status(&ws.data_dir).await;
-    stored_json(&ws, move |store| Ok(
-        json!({"agents":store.agents()?,"runtime":runtime,"defaultCwd":default_cwd,
+    stored_json(&ws, move |store| {
+        let agents = store.agents()?;
+        let agents = if slim {
+            agents.into_iter().map(|agent| Ok(crate::workspace_listing::slim(serde_json::to_value(agent)?))).collect::<anyhow::Result<Vec<_>>>()?
+        } else {
+            agents.into_iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?
+        };
+        let mut answer = json!({"agents":agents,"runtime":runtime,"defaultCwd":default_cwd,
             "opencode":{"enabled":crate::opencode_agent::enabled(),"version":crate::opencode::VERIFIED},
             "dsh":dsh,
             "workspace":{"id":store.workspace_id()?},"projects":store.projects()?,
-            "projectUsage":store.project_usage()?}),
-    )).await
+            "projectUsage":store.project_usage()?});
+        if slim {
+            answer["listing"] = json!(crate::workspace_listing::SLIM);
+        }
+        Ok(answer)
+    }).await
+}
+
+/// One Agent's row as the full `/api/workspace` lists it (YN-221 S3): what
+/// a page that read the slim list needs once it opens a released executor.
+async fn agent_listing(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Response> {
+    let found = ws.stored(move |store| store.agent_listed(&id)).await?;
+    Ok(match found {
+        Some(agent) => Json(agent).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({"error":"No Agent with that ID","code":"agent_not_found"}))).into_response(),
+    })
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
