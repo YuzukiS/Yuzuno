@@ -200,7 +200,7 @@ async fn each_kind_of_history_entry_is_the_same_in_the_index_and_read_alone() {
     // after a reply that carried images.
     sections::mark_seen(&ws.store, &project, &[("result".into(), 1)]).unwrap();
     accept(&ws, "a", input("h2", version(&ws, &project), vec![op("remove", "gone")])).await;
-    assert!(sections::mark_replied_form(&ws.store, &project, "pick", 1, "Left", None, &["synthetic.png".into()], &[]).unwrap());
+    assert!(sections::mark_replied_form(&ws.store, &project, "pick", 1, "Left", sections::Marked { images: &["synthetic.png".into()], ..Default::default() }).unwrap());
     accept(&ws, "a", input("h3", version(&ws, &project), vec![op("resolve", "pick")])).await;
     let home = home::build(&ws.store).unwrap();
     let reasons: Vec<_> = home["projects"][0]["brief"]["history"].as_array().unwrap().iter().map(|e| e["historyReason"].clone()).collect();
