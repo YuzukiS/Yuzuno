@@ -247,6 +247,7 @@ test("unfolded: open Asks first, then the task's one card, the answered Asks, jo
   assert.equal(answered.closest(".request-task-answered-card").id, line.getAttribute("aria-controls"));
   assert.ok(answered.classList.contains("is-answer"), "its answer card");
   assert.equal(answered.querySelector(".home-kind").textContent.trim(), "Resolved by Dev Lead");
+  assert.notEqual(answered.querySelector(".home-changed")?.textContent, "New", "answered and resolved: never New");
   assert.equal(answered.querySelector(".home-answer-ask").textContent, "Casual copy?");
   assert.equal(answered.querySelector(".home-reply-words").textContent.trim(), "Yes");
   assert.ok(answered.querySelector(".home-answer-unkept"), "an earlier reply, said so");

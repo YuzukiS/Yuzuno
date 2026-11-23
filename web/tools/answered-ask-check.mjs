@@ -409,6 +409,8 @@ async function check(run) {
     assert.equal(first.choice, "会话同款");
     assert.equal(first.words, "再加上问题本身");
     assert.equal(first.kind, zh ? "已由 Dev Lead 解决" : "Resolved by Dev Lead");
+    assert.notEqual(await card("yn-220/first").evaluate((el) => el.querySelector(".home-changed")?.textContent ?? null), zh ? "新" : "New",
+      "answered and resolved: never New");
     assert.deepEqual(first.actions, [words.copy, words.options, words.details], "resolved: nothing more is sent from it");
     await inCard("yn-220/first", ".home-answer .home-answer-options-toggle").click();
     await settled();

@@ -395,11 +395,11 @@ export const SectionCard = memo(function SectionCard({
   // Whether it changed for the user, or nobody keeps it up to date.
   const badges = (
     <>
-      {/* Answered, it is never new to the user: only its owner's change since (YN-3). */}
+      {/* Answered, it is never new to the user: only its owner's change since (YN-3), resolving it too (YN-223). */}
       {changed && (
         <Tip content={<TipText body={t.changedTitle} />}>
           <span className="home-changed">
-            {readBefore(section) || replied ? t.updated : t.new}
+            {readBefore(section) || replied || resolved ? t.updated : t.new}
           </span>
         </Tip>
       )}
