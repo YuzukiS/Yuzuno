@@ -104,6 +104,13 @@ export const homeText = strings({
   history: "History (30 days)",
   historyKind: { ask: "ask", report: "report", status: "status" } as Record<Kind, string>,
   yourReply: "Your reply: ",
+  // A history entry read whole where it is shown (YN-221 S2).
+  historyBody: {
+    reading: "Reading this entry…",
+    failed: "This entry could not be read.",
+    retry: "Try again",
+    missing: "History no longer keeps this entry.",
+  },
   newCount: (count: number) => `${count} new`,
   needCount: (count: number) => `${count} ${count === 1 ? "needs" : "need"} you`,
   move: (project: string) => `Move ${project}`,
@@ -526,6 +533,12 @@ export const homeText = strings({
   history: "历史（30 天）",
   historyKind: { ask: "Ask", report: "报告", status: "状态" },
   yourReply: "你的回复：",
+  historyBody: {
+    reading: "正在读取这一条…",
+    failed: "这一条读取失败。",
+    retry: "再试一次",
+    missing: "历史已不再保留这一条。",
+  },
   newCount: (count) => `${count} 条新内容`,
   needCount: (count) => `${count} 项需要你`,
   move: (project) => `移动 ${project}`,

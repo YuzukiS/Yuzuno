@@ -5,6 +5,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { bundledFiles, bundledPackages, noticesText } from "./tools/third-party-notices.mjs";
 import { DIGEST_FILE, sourceDigest } from "./tools/source-digest.mjs";
+import { precompress as precompressAssets, writeImmutableList } from "./tools/precompress.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -107,8 +108,27 @@ const sourceStamp: Plugin = {
   },
 };
 
+// /assets files as Brotli too (YN-221 S6), which Core sends to a browser that
+// accepts br (core/src/updates/assets.rs); see tools/precompress.mjs.
+// And the list of the files it emitted there with Vite's hashed names
+// (immutable-assets.json), the only ones Core lets a browser keep a year.
+let emitted: string[] = [];
+const precompress: Plugin = {
+  name: "yuzuno-precompress",
+  apply: "build",
+  generateBundle(_, bundle) {
+    emitted = Object.keys(bundle);
+  },
+  writeBundle(options) {
+    const root = options.dir ?? join(here, "dist");
+    const assets = join(root, "assets");
+    if (existsSync(assets)) precompressAssets(assets);
+    writeImmutableList(root, emitted);
+  },
+};
+
 export default defineConfig({
-  plugins: [react(), licenses, homeScreen, sourceStamp],
+  plugins: [react(), licenses, homeScreen, sourceStamp, precompress],
   server: {
     port: 5173,
     strictPort: true,

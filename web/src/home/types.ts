@@ -145,6 +145,13 @@ export type Section = {
   /** A report that refreshes itself (YN-113 R2, R3): Core's schedule for it, on the one entry Home shows of its
    * identity. Absent from older Cores and for every card without one. */
   refresh?: SectionRefresh;
+  /** A history entry in Home's history index (YN-221 S1): shown without its body, attachments and refs, which are
+   * read by its id and version where it is shown (history-bodies.ts). Absent from older Cores, which send it whole. */
+  bodyOmitted?: true;
+  /** With bodyOmitted: how many attachments it has. */
+  attachmentCount?: number;
+  /** Set here, never by Core: History no longer keeps this entry, read whole after Home's read listed it. */
+  bodyMissing?: true;
 };
 
 /** Why something did not happen, in Core's words for both languages (YN-113 §3.5). */
@@ -273,7 +280,14 @@ export type ProjectPanel = {
   errors: { agentId: string; agentName: string; message: string; at: string }[];
   pending: (PendingRequest & { agentName: string })[];
   jobs: HomeJob[];
-  brief: { version: number; sections: Section[]; teamSections?: Section[]; history: Section[] };
+  brief: {
+    version: number;
+    sections: Section[];
+    teamSections?: Section[];
+    history: Section[];
+    /** Its history is an index (YN-221 S1): each entry with bodyOmitted. Absent from older Cores. */
+    historyIndex?: true;
+  };
   /** Live sections changed since the user last read them: marked seen, or a
    * report opened whole (YN-86). */
   unseen: number;

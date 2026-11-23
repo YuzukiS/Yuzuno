@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
-import { ChevronRight, CircleAlert, Github, History, MessageSquareReply, Workflow } from "lucide-react";
+import { Check, ChevronRight, CircleAlert, Github, History, MessageSquareReply, Workflow } from "lucide-react";
 import { openJobs } from "../Jobs";
 import type { Agent } from "../types";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
@@ -11,12 +11,13 @@ import { homeText } from "./home-text";
 import type { HomeTarget } from "./home-navigation";
 import { RepoActivity } from "./RepoActivity";
 import { SectionBody } from "./SectionBody";
+import { HistoryBodyState } from "./HistoryBodyState";
 import type { BriefOutcome, ProjectPanel, Section } from "./types";
 import "./home-editors.css";
 import { Tip, TipText } from "../Tip";
 import { ReplyAnswer } from "../home-reply/HomeReply";
 import { withoutFormIds } from "./AskReply";
-import { answerShown } from "./answer-card";
+import { answerShown, optionsThen } from "./answer-card";
 
 /*
  * A Project's facts, as its panel and its page on Home show them (YN-86
@@ -211,6 +212,20 @@ function HistoryAnswer({ ask }: { ask: NonNullable<Section["ask"]> }) {
       {shown.snapshot ? (
         <div className="home-reply home-answer-given home-history-answer" role="group" aria-label={t.yourAnswer}>
           <ReplyAnswer snapshot={shown.snapshot} />
+          {/* The options as the user saw them, the chosen one marked, as its answer card's Options then shows them. */}
+          {optionsThen(shown.snapshot).length > 0 && (
+            <section className="home-answer-options" aria-label={t.optionsThenLabel}>
+              <ul>
+                {optionsThen(shown.snapshot).map((option) => (
+                  <li key={option.id} aria-current={option.chosen || undefined}>
+                    {option.chosen && <Check size={14} aria-hidden="true" />}
+                    <span>{option.label}</span>
+                    {option.chosen && <small>{t.chosenOption}</small>}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </div>
       ) : (
         text && <p className="home-history-reply">{t.yourReply}{text}</p>
@@ -266,9 +281,14 @@ export function History30({
                 {open.has(id) && (
                   <>
                     {/* A resolved ask keeps its question and the user's answer: as the user gave it to that question
-                        when Core kept it (YN-223), else the reply as sent, without a form's line of IDs. */}
-                    {section.ask && <HistoryAnswer ask={section.ask} />}
-                    <SectionBody section={section} projectId={projectId} />
+                        when Core kept it (YN-223), else the reply as sent, without a form's line of IDs. In Home's history
+                        index both come with the entry read whole, as it is opened (YN-221 S2). */}
+                    {section.ask && !section.bodyOmitted && <HistoryAnswer ask={section.ask} />}
+                    {section.bodyOmitted ? (
+                      <HistoryBodyState projectId={projectId} section={section} />
+                    ) : (
+                      <SectionBody section={section} projectId={projectId} />
+                    )}
                     {reply?.referable.includes(section) && (
                       <HistoryReply section={section} projectId={projectId} workspaceId={reply.workspaceId} agents={reply.agents} />
                     )}

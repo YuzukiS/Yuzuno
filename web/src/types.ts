@@ -92,6 +92,10 @@ export interface Agent {
   releasedBy?: string | null;
   /** An executor's lifecycle (T-36 S3): its state, task and dispatcher. */
   executor?: import("./executor-lifecycle").ExecutorLifecycle | null;
+  /** A released executor's row in a slim list (YN-221 S3): only what the
+   * Agent list, search, Home's cards and the board read of it. Its full row
+   * is read when it is opened (workspace-listing.ts). */
+  listing?: "slim";
 }
 export interface Project {
   id: string;
@@ -111,6 +115,8 @@ export interface ProjectUsage {
 }
 export interface Workspace {
   workspace?: { id: string };
+  /** A slim list (`?listing=slim`, YN-221 S3); an older Core sends every row whole. */
+  listing?: "slim";
   projects?: Project[];
   projectUsage?: Record<string, ProjectUsage>;
   agents: Agent[];

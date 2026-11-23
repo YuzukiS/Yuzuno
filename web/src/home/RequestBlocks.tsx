@@ -20,6 +20,7 @@ import { talkText } from "./talk-text";
 import { authorOf, openAsk, type BlockAction, type BlockFact, type BlockGroup, type ProjectBlock, type RequestBlock, type TaskRow, type Who } from "./request-blocks";
 import { SectionCard } from "./SectionCard";
 import { withoutFormIds } from "./AskReply";
+import { HistoryBodyState } from "./HistoryBodyState";
 import { SummaryCard } from "./SummaryCard";
 import type { Section } from "./types";
 import "./project-talk.css";
@@ -305,7 +306,7 @@ function AnsweredAsk({ section, common }: { section: Section; common: BlockCommo
   const [open, setOpen] = useState(false);
   const id = useId();
   return (
-    <div className="request-task-answered-ask">
+    <div className="request-task-answered-ask" data-answered={section.key}>
       <button type="button" className="request-task-answered" aria-expanded={open} aria-controls={id} onClick={() => setOpen((was) => !was)}>
         <ChevronRight size={12} className="chev" aria-hidden="true" />
         <MessageSquare size={12} aria-hidden="true" />
@@ -314,17 +315,22 @@ function AnsweredAsk({ section, common }: { section: Section; common: BlockCommo
       </button>
       {open && (
         <div id={id} className="request-task-answered-card">
-          <SectionCard
-            section={section}
-            answer
-            projectId={common.projectId}
-            workspaceId={common.workspaceId}
-            agents={common.agents}
-            readOnly={common.readOnly || section.history || section.ask?.state === "resolved"}
-            onSeen={common.onSeen}
-            onChanged={common.onChanged}
-            notice={common.notice?.(section)}
-          />
+          {/* In Home's history index, its card is read whole as it is opened (YN-221 S2): until then, that it is read. */}
+          {section.bodyOmitted ? (
+            <HistoryBodyState projectId={common.projectId} section={section} title />
+          ) : (
+            <SectionCard
+              section={section}
+              answer
+              projectId={common.projectId}
+              workspaceId={common.workspaceId}
+              agents={common.agents}
+              readOnly={common.readOnly || section.history || section.ask?.state === "resolved"}
+              onSeen={common.onSeen}
+              onChanged={common.onChanged}
+              notice={common.notice?.(section)}
+            />
+          )}
         </div>
       )}
     </div>
@@ -333,6 +339,7 @@ function AnsweredAsk({ section, common }: { section: Section; common: BlockCommo
 
 /** An Ask as Home draws it, answerable where it stands (W5: the same card the block used to unfold to). */
 function AskCard({ section, common }: { section: Section; common: BlockCommon }) {
+  if (section.bodyOmitted) return <HistoryBodyState projectId={common.projectId} section={section} title />;
   return (
     <SectionCard
       section={section}
@@ -526,8 +533,12 @@ function TaskRowView({ row, common }: { row: TaskRow; common: BlockCommon }) {
       {tt.openTask}
     </button>
   );
+  // A card in Home's history index (an ended task's, an earlier one, an answered Ask) is read whole as it is shown
+  // (YN-221 S2); the cards shown together are read together.
   const card = (section: Section) =>
-    section.kind === "ask" ? (
+    section.bodyOmitted ? (
+      <HistoryBodyState key={section.key} projectId={common.projectId} section={section} title />
+    ) : section.kind === "ask" ? (
       <SectionCard
         key={section.key}
         section={section}
