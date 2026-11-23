@@ -19,6 +19,7 @@ import { DeliverableLine, type OpenDeliveredReport } from "./DeliverableLine";
 import { talkText } from "./talk-text";
 import { authorOf, openAsk, type BlockAction, type BlockFact, type BlockGroup, type ProjectBlock, type RequestBlock, type TaskRow, type Who } from "./request-blocks";
 import { SectionCard } from "./SectionCard";
+import { HistoryBodyState } from "./HistoryBodyState";
 import { SummaryCard } from "./SummaryCard";
 import type { Section } from "./types";
 import "./project-talk.css";
@@ -294,6 +295,7 @@ export function useAsksUpFront(asks: readonly Section[]) {
 
 /** An Ask as Home draws it, answerable where it stands (W5: the same card the block used to unfold to). */
 function AskCard({ section, common }: { section: Section; common: BlockCommon }) {
+  if (section.bodyOmitted) return <HistoryBodyState projectId={common.projectId} section={section} title />;
   return (
     <SectionCard
       section={section}
@@ -487,8 +489,12 @@ function TaskRowView({ row, common }: { row: TaskRow; common: BlockCommon }) {
       {tt.openTask}
     </button>
   );
+  // A card in Home's history index (an ended task's, an earlier one, an answered Ask) is read whole as it is shown
+  // (YN-221 S2); the cards shown together are read together.
   const card = (section: Section) =>
-    section.kind === "ask" ? (
+    section.bodyOmitted ? (
+      <HistoryBodyState key={section.key} projectId={common.projectId} section={section} title />
+    ) : section.kind === "ask" ? (
       <SectionCard
         key={section.key}
         section={section}

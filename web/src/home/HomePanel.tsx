@@ -11,6 +11,7 @@ import { homeText } from "./home-text";
 import type { HomeTarget } from "./home-navigation";
 import { RepoActivity } from "./RepoActivity";
 import { SectionBody } from "./SectionBody";
+import { HistoryBodyState } from "./HistoryBodyState";
 import type { BriefOutcome, ProjectPanel, Section } from "./types";
 import "./home-editors.css";
 import { Tip, TipText } from "../Tip";
@@ -246,7 +247,12 @@ export function History30({
                     {/* A resolved ask keeps its question and the user's answer. */}
                     {section.ask && <p className="home-question">{section.ask.question}</p>}
                     {section.ask?.replyText && <p className="home-history-reply">{t.yourReply}{section.ask.replyText}</p>}
-                    <SectionBody section={section} projectId={projectId} />
+                    {/* In Home's history index, read whole as it is opened (YN-221 S2). */}
+                    {section.bodyOmitted ? (
+                      <HistoryBodyState projectId={projectId} section={section} />
+                    ) : (
+                      <SectionBody section={section} projectId={projectId} />
+                    )}
                     {reply?.referable.includes(section) && (
                       <HistoryReply section={section} projectId={projectId} workspaceId={reply.workspaceId} agents={reply.agents} />
                     )}

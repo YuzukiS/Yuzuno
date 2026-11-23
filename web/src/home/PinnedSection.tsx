@@ -6,6 +6,7 @@ import type { Agent } from "../types";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { absolute, duration, relative } from "./format";
 import { SectionBody } from "./SectionBody";
+import { HistoryBodyState } from "./HistoryBodyState";
 import { pinWidgetId, type Pin, type PinSource } from "./widget-layout";
 import { FoldButton, useCardFold } from "./card-fold";
 import { homeText } from "./home-text";
@@ -108,7 +109,12 @@ export function PinnedSection({
             </p>
           )}
           <div className="home-pinned-body">
-            <SectionBody section={source.section} projectId={pin.projectId} />
+            {/* A report marked seen, kept in Home's history index, is read whole here (YN-221 S2). */}
+            {source.section.bodyOmitted ? (
+              <HistoryBodyState projectId={pin.projectId} section={source.section} />
+            ) : (
+              <SectionBody section={source.section} projectId={pin.projectId} />
+            )}
           </div>
           <footer className="home-pinned-foot">
             <button type="button" className="quiet-button" onClick={onOpen}>

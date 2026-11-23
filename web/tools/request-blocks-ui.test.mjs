@@ -577,3 +577,31 @@ test("alone, the banner is the card's one place: its id, the note, Data as of, R
   assert.ok(ro.querySelector(".home-report-open"), "its page still opens");
   assert.deepEqual([...page.errors, ...quiet.errors], []);
 });
+
+// YN-221 S2: an ended task's card kept in Home's history index (S1) has no body until it is read; where a request's
+// block shows it, it says it is reading, under its title, and the cards drawn together are read in one request.
+test("ended tasks' cards in Home's history index are read whole where they show, together in one request", async () => {
+  const page = mount({ opened: ["r12"] });
+  const reads = [];
+  page.window.fetch = async (url) => {
+    reads.push(String(url));
+    return { ok: true, status: 200, json: async () => ({ entries: [], missing: [] }), text: async () => "{}" };
+  };
+  const data = fixtures();
+  const index = (s) => {
+    const { body: _b, attachments: _a, refs: _r, ...rest } = s;
+    return { ...rest, bodyOmitted: true, attachmentCount: 0 };
+  };
+  const shipped = index(section("yn-94", "report", "Export shipped", 50, { history: true, historyReason: "archived", card: bind("YN-94", "done", null) }));
+  const finished = index(section("yn-95", "status", "Import finished", 60, { history: true, historyReason: "archived", card: bind("YN-95", "done", null) }));
+  const ended = request(12, 70, "ended", [{ ...routed(shipped, "YN-94", "done", null), live: false }, { ...routed(finished, "YN-95", "done", null), live: false }]);
+  page.window.renderPage({ requests: [...data.requests, ended], sections: [...data.sections, shipped, finished], readOnly: false });
+  await tick(60);
+  const states = [...page.block(12).querySelectorAll("[data-history-body]")];
+  assert.deepEqual(states.map((el) => el.querySelector("strong")?.textContent), ["Export shipped", "Import finished"]);
+  assert.deepEqual(reads, [`/api/projects/p1/brief/history?entries=${shipped.id}:2,${finished.id}:2`], "one read for both");
+  // Core no longer keeps them: said so, in place of each.
+  await tick(60);
+  assert.equal(page.block(12).querySelectorAll('[data-history-body="missing"]').length, 2);
+  assert.deepEqual(page.errors, []);
+});
