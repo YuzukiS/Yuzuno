@@ -205,6 +205,13 @@ jobs:
           rustc --edition 2021 --test desktop/src/badge_rules.rs -o "$RUNNER_TEMP/desktop-badge"
           "$RUNNER_TEMP/desktop-badge"
 
+      # Likewise the window's state since the app opened, for Copy
+      # diagnostics (YN-221 S8).
+      - name: Desktop window state rules
+        run: |
+          rustc --edition 2021 --test desktop/src/window_state_rules.rs -o "$RUNNER_TEMP/desktop-window-state"
+          "$RUNNER_TEMP/desktop-window-state"
+
       # Likewise what a kept file dragged out of the window may fetch from
       # Core and what its copy is called (YN-170).
       - name: Desktop file drag rules
