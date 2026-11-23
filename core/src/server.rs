@@ -75,9 +75,9 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         // port and on the phone entry (YN-79).
         .merge(settings_routes())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
-        .with_state(ws)
+        .with_state(ws.clone())
         .merge(mcp);
-    finish(router, updates)
+    finish(router, updates, (ws.http_counts.clone(), crate::runtime_diag::LOCAL))
 }
 
 /// Core's entry for a phone through Tailscale Serve (T-170), on a loopback
@@ -95,8 +95,8 @@ pub fn remote_router(ws: Arc<Workspace>, assets: PathBuf, updates: Option<Arc<cr
         .merge(crate::previews::phone_router())
         .layer(middleware::from_fn(crate::previews::reserved))
         .layer(middleware::from_fn_with_state(Arc::new(entry), remote_browser_boundary))
-        .with_state(ws);
-    finish(router, updates)
+        .with_state(ws.clone());
+    finish(router, updates, (ws.http_counts.clone(), crate::runtime_diag::PHONE))
 }
 
 /// The settings a phone changes as the computer does (YN-79, the user's
@@ -122,11 +122,16 @@ fn settings_routes() -> Router<Arc<Workspace>> {
         .layer(middleware::from_fn(crate::routing_keys::routes::no_agent_credential))
 }
 
-fn finish(router: Router, updates: Option<Arc<crate::updates::controller::Controller>>) -> Router {
+/// Every route of an entry: update admission, then its count under the
+/// entry, route template and method (runtime_diag.rs), inside a task of
+/// its own (`run_to_completion`).
+fn finish(router: Router, updates: Option<Arc<crate::updates::controller::Controller>>,
+    counts: (Arc<crate::runtime_diag::Http>, &'static str)) -> Router {
     if let Some(updates) = updates {
         router.layer(middleware::from_fn_with_state(updates.admission.clone(), update_admission))
             .layer(Extension(updates))
     } else { router }
+    .layer(middleware::from_fn_with_state(counts, crate::runtime_diag::count))
     .layer(middleware::from_fn(run_to_completion))
 }
 
@@ -208,6 +213,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/agents/{id}/codex/fork",post(fork_session))
         .route("/api/agents",post(create))
         .route("/api/agents/{id}",get(detail).patch(rename_agent).delete(delete_agent))
+        .route("/api/agents/{id}/listing",get(agent_listing))
         .route("/api/agents/{id}/items/{item_id}/payload",get(item_payload))
         .route("/api/agents/{id}/items/{item_id}/original",get(item_original))
         .route("/api/agents/{id}/turns/{turn_id}/original",get(turn_original))
@@ -235,6 +241,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/requests/{id}/respond",post(respond))
         .route("/api/models",get(models))
         .route("/api/diagnostics/memory",get(memory_diagnostics))
+        .route("/api/diagnostics/runtime",get(runtime_diagnostics))
         .route("/api/diagnostics/memory/history",get(memory_history))
         .route("/api/events",get(events))
         .route("/api/collaboration/{operation}",post(collaboration))
@@ -294,6 +301,13 @@ async fn memory_diagnostics(State(ws): State<Arc<Workspace>>, updates: Option<Ex
         crate::heap::diagnostics(&ws.store, &ws.admission, own_permit, ws.stream_ticker_started())
     }).await?;
     Ok(Json(report))
+}
+
+/// What this process served and sent since it started (YN-221 S7a), read
+/// only when asked; see runtime_diag.rs. Off the async workers: it reads
+/// /proc.
+async fn runtime_diagnostics(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {
+    Ok(Json(tokio::task::spawn_blocking(move || crate::runtime_diag::report(&ws)).await?))
 }
 
 /// What /api/health says this is: `product` names it.
@@ -622,17 +636,54 @@ async fn backlog(State(ws): State<Arc<Workspace>>) -> Json<Value> {
     Json(ws.backlog())
 }
 
-async fn workspace(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
+#[derive(Deserialize)]
+struct WorkspaceQuery {
+    listing: Option<String>,
+}
+
+/// The Workspace: its Agents, runtime, Projects. `?listing=slim`, or the
+/// header `X-Yuzuno-Listing: slim` as a conversation's window is asked for
+/// (YN-221 S3): released executors as slim rows (workspace_listing.rs);
+/// without either, as it always was.
+async fn workspace(State(ws): State<Arc<Workspace>>, Query(query): Query<WorkspaceQuery>, headers: HeaderMap) -> ApiResult<Response> {
+    // Each form is checked on its own: either alone asks for the slim list,
+    // both may say it together, and any other value of either is refused.
+    let header = headers.get("x-yuzuno-listing").map(|v| v.to_str().unwrap_or(""));
+    let asked = [query.listing.as_deref(), header];
+    if asked.iter().flatten().any(|value| *value != crate::workspace_listing::SLIM) {
+        return Ok((StatusCode::BAD_REQUEST, Json(json!({"error":"listing is slim, or not given","code":"invalid_input"}))).into_response());
+    }
+    let slim = asked.iter().any(Option::is_some);
     let (runtime, default_cwd) = (ws.runtime.lock().await.clone(), ws.default_cwd.clone());
     // The dsh this Core would start (YN-119 S2a): {available, version, label}.
     let dsh = crate::dsh_agent::status(&ws.data_dir).await;
-    stored_json(&ws, move |store| Ok(
-        json!({"agents":store.agents()?,"runtime":runtime,"defaultCwd":default_cwd,
+    stored_json(&ws, move |store| {
+        let agents = store.agents()?;
+        let agents = if slim {
+            agents.into_iter().map(|agent| Ok(crate::workspace_listing::slim(serde_json::to_value(agent)?))).collect::<anyhow::Result<Vec<_>>>()?
+        } else {
+            agents.into_iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?
+        };
+        let mut answer = json!({"agents":agents,"runtime":runtime,"defaultCwd":default_cwd,
             "opencode":{"enabled":crate::opencode_agent::enabled(),"version":crate::opencode::VERIFIED},
             "dsh":dsh,
             "workspace":{"id":store.workspace_id()?},"projects":store.projects()?,
-            "projectUsage":store.project_usage()?}),
-    )).await
+            "projectUsage":store.project_usage()?});
+        if slim {
+            answer["listing"] = json!(crate::workspace_listing::SLIM);
+        }
+        Ok(answer)
+    }).await
+}
+
+/// One Agent's row as the full `/api/workspace` lists it (YN-221 S3): what
+/// a page that read the slim list needs once it opens a released executor.
+async fn agent_listing(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Response> {
+    let found = ws.stored(move |store| store.agent_listed(&id)).await?;
+    Ok(match found {
+        Some(agent) => Json(agent).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({"error":"No Agent with that ID","code":"agent_not_found"}))).into_response(),
+    })
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1593,7 +1644,8 @@ async fn events(
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
     let last = headers.get("last-event-id").and_then(|v| v.to_str().ok()).map(str::to_owned)
         .or(query.last_event_id);
-    Sse::new(ws.changes.stream(last.as_deref()))
+    // Its polls, which hyper makes outside any handler, under `sse` (YN-221 S7b).
+    Sse::new(crate::runtime_diag::measured_stream("sse", ws.changes.stream(last.as_deref())))
 }
 async fn catchup(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
     stored_json(&ws, |store| store.catchup()).await

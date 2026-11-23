@@ -167,12 +167,69 @@ pub(super) fn bound_to(db: &Connection, task: &str) -> Result<Vec<Row>> {
 /// are read by the card's identity (`of_identity`). Nor a task's card's
 /// earlier versions (`revised`, YN-212 C2), which its card lists (`revisions`).
 pub(super) fn history(db: &Connection, project: &str) -> Result<Vec<Row>> {
+    read(db, &format!("{HISTORY} ORDER BY history_at DESC, seq DESC"), params![project, history_cutoff()])
+}
+
+/// Home's history condition (`history`), for the queries that read the same
+/// entries another way.
+const HISTORY: &str = "project_id=?1 AND live=0 AND history_at>=?2 AND COALESCE(history_reason,'') NOT IN ('refreshed','revised')";
+
+/// A history entry's data without its body and attachments, with how many
+/// attachments it has (`attachmentCount`) (YN-221 S1): SQLite takes them out,
+/// so no body is read into Core.
+const HISTORY_INDEX_COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,\
+json_set(json_remove(data,'$.body','$.attachments'),'$.attachmentCount',COALESCE(json_array_length(data,'$.attachments'),0)),\
+ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files,\
+CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_id ELSE owner_id END,CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_name ELSE owner_name END";
+
+/// Home's history (`history`) without the entries' bodies and attachments
+/// (HISTORY_INDEX_COLUMNS): the same entries in the same order.
+pub(super) fn history_index(db: &Connection, project: &str) -> Result<Vec<Row>> {
+    read_columns(db, HISTORY_INDEX_COLUMNS, &format!("{HISTORY} ORDER BY history_at DESC, seq DESC"), params![project, history_cutoff()])
+}
+
+/// The entries of Home's history (`history`) with these identities and
+/// versions, in full and in its order. A pair that is no entry of it (live,
+/// expired, a past issue, an earlier version of a card, another Project's)
+/// is not among them.
+pub(super) fn history_entries(db: &Connection, project: &str, wanted: &[(i64, i64)]) -> Result<Vec<Row>> {
     read(
         db,
-        "project_id=?1 AND live=0 AND history_at>=?2 AND COALESCE(history_reason,'') NOT IN ('refreshed','revised')
-         ORDER BY history_at DESC, seq DESC",
-        params![project, history_cutoff()],
+        &format!("{HISTORY} AND EXISTS(SELECT 1 FROM json_each(?3) w
+                  WHERE json_extract(w.value,'$[0]')=COALESCE(lineage,seq) AND json_extract(w.value,'$[1]')=version)
+                  ORDER BY history_at DESC, seq DESC"),
+        params![project, history_cutoff(), serde_json::to_string(wanted)?],
     )
+}
+
+/// The identity of each entry of Home's history, in its order, by seq.
+pub(super) fn history_order(db: &Connection, project: &str) -> Result<Vec<(i64, i64)>> {
+    let mut query = db.prepare(&format!("SELECT seq,COALESCE(lineage,seq) FROM project_brief_sections WHERE {HISTORY} ORDER BY history_at DESC, seq DESC"))?;
+    let rows = query.query_map(params![project, history_cutoff()], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The identities of the live sections.
+pub(super) fn live_identities(db: &Connection, project: &str) -> Result<std::collections::HashSet<i64>> {
+    let mut query = db.prepare_cached("SELECT COALESCE(lineage,seq) FROM project_brief_sections WHERE project_id=?1 AND live=1")?;
+    let rows = query.query_map([project], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The live open asks, in the live Brief's order, with only their title and
+/// gate of their data (`{title, ask: {gate}}`): what Needs you shows of them.
+pub(super) fn open_asks(db: &Connection, project: &str) -> Result<Vec<Row>> {
+    let columns = COLUMNS.replacen(",data,", ",json_object('title',data->'$.title','ask',json_object('gate',data->'$.ask.gate')),", 1);
+    read_columns(db, &columns, "project_id=?1 AND live=1 AND kind='ask' AND ask_state='open' ORDER BY seq", [project])
+}
+
+/// The body of the section row `seq`.
+pub(super) fn body_of(db: &Connection, seq: i64) -> Result<Value> {
+    let raw: Option<String> = db.query_row("SELECT data->'$.body' FROM project_brief_sections WHERE seq=?1", [seq], |r| r.get(0))?;
+    Ok(match raw {
+        Some(raw) => serde_json::from_str(&raw)?,
+        None => Value::Null,
+    })
 }
 
 /// At most this many of a card's earlier versions in its `revisions`: each
@@ -712,19 +769,27 @@ pub(super) struct KeptReply {
     pub form: Option<Value>,
 }
 
-pub(super) fn kept_replies(db: &Connection, project: &str) -> Result<HashMap<i64, KeptReply>> {
-    let mut query = db.prepare_cached(
-        "SELECT seq,reply_snapshot,reply_form FROM project_brief_sections
-         WHERE project_id=?1 AND kind='ask' AND ask_state IN ('replied','resolved') AND (reply_snapshot IS NOT NULL OR reply_form IS NOT NULL)",
-    )?;
-    let rows = query.query_map([project], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))?;
+/// Which rows' kept replies a read takes: every answered ask's, live and in History (Home read whole); the live
+/// ones' (Home with its History as an index, whose entries are read on their own); or these rows' (those entries).
+pub(super) enum KeptRows<'a> {
+    Every,
+    Live,
+    Rows(&'a [i64]),
+}
+
+pub(super) fn kept_replies(db: &Connection, project: &str, which: KeptRows) -> Result<HashMap<i64, KeptReply>> {
+    const ANSWERED: &str = "SELECT seq,reply_snapshot,reply_form FROM project_brief_sections
+         WHERE project_id=?1 AND kind='ask' AND ask_state IN ('replied','resolved') AND (reply_snapshot IS NOT NULL OR reply_form IS NOT NULL)";
+    type Kept = (i64, Option<String>, Option<String>);
+    let row = |r: &rusqlite::Row| -> rusqlite::Result<Kept> { Ok((r.get(0)?, r.get(1)?, r.get(2)?)) };
+    let rows: Vec<Kept> = match which {
+        KeptRows::Every => db.prepare_cached(ANSWERED)?.query_map([project], row)?.collect::<rusqlite::Result<_>>()?,
+        KeptRows::Live => db.prepare_cached(&format!("{ANSWERED} AND live=1"))?.query_map([project], row)?.collect::<rusqlite::Result<_>>()?,
+        KeptRows::Rows(seqs) => db.prepare_cached(&format!("{ANSWERED} AND seq IN (SELECT value FROM json_each(?2))"))?
+            .query_map(params![project, serde_json::to_string(seqs)?], row)?.collect::<rusqlite::Result<_>>()?,
+    };
     let read = |raw: Option<String>| raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).filter(Value::is_object);
-    let mut kept = HashMap::new();
-    for row in rows {
-        let (seq, snapshot, form) = row?;
-        kept.insert(seq, KeptReply { snapshot: read(snapshot), form: read(form) });
-    }
-    Ok(kept)
+    Ok(rows.into_iter().map(|(seq, snapshot, form)| (seq, KeptReply { snapshot: read(snapshot), form: read(form) })).collect())
 }
 
 /// `mark_replied` of whatever version is live now: for tests that only set

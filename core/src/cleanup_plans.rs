@@ -747,7 +747,7 @@ impl Workspace {
     /// snapshots past `snapshotDays` are deleted (refs stay).
     pub(crate) fn start_cleanup(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc cleanup", async move {
             if let Some(ws) = weak.upgrade() {
                 match ws.stored(apply::recover).await {
                     Ok(0) => {}

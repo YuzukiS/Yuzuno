@@ -133,7 +133,7 @@ function mount(read, answer = () => undefined) {
   Object.defineProperty(window.navigator, "clipboard", { value: { writeText: async (text) => { copied.push(text); } } });
   window.actions = [];
   window.fetch = async (url, init = {}) => {
-    requests.push({ url: String(url), method: init.method || "GET", body: init.body ?? null });
+    requests.push({ url: String(url), method: init.method || "GET", body: init.body ?? null, signal: init.signal });
     // Home's read may be held (a promise) or refused (an Error), as Core's can.
     const body = String(url) === "/api/home" ? await read() : String(url) === "/api/machine-load" ? machine : answer(String(url)) ?? { repositories: [], links: [] };
     if (body instanceof Error) {
@@ -733,4 +733,66 @@ test("YN-16 a report page's blocks share its variables, which are not its card's
   assert.deepEqual(page.requests.filter((request) => request.method !== "GET").map((request) => request.url)
     .filter((url) => url !== "/api/collaboration/github_repositories" && url !== "/api/projects/p1/brief/opened"), [], "nothing is written");
   assert.deepEqual(page.errors, []);
+});
+
+test("Home reads one at a time: changes while a read is on its way ask for one more after it and abort nothing; another Workspace drops the read on its way (YN-221)", async () => {
+  const held = [];
+  const page = mount(() => new Promise((resolve) => held.push(resolve)));
+  const reads = () => page.requests.filter((r) => r.url === "/api/home");
+  try {
+    page.window.startProject = "p1";
+    page.window.renderHome(null, 1);
+    await until(() => reads().length === 1, "the first read");
+    for (let revision = 2; revision <= 6; revision++) {
+      page.window.renderHome(null, revision);
+      await tick();
+    }
+    await tick(50);
+    assert.equal(reads().length, 1, "no read starts while one is on its way");
+    held.shift()(homeData([section("eval", 7, 3)]));
+    await until(() => reads().length === 2, "one read after it");
+    await tick(50);
+    assert.equal(reads().length, 2, "five changes, one more read");
+    held.shift()(homeData([section("eval", 7, 4)]));
+    await tick(80);
+    assert.equal(reads().length, 2, "and none after that");
+    assert.ok(reads().every((r) => !r.signal?.aborted), "nothing was aborted");
+    // Another Workspace: the read on its way is dropped, and its own starts.
+    page.window.renderHome(null, 7);
+    await until(() => reads().length === 3, "a read for the next change");
+    page.window.renderHome(null, 7, "ws-2");
+    await until(() => reads().length === 4, "the other Workspace's read");
+    assert.equal(reads()[2].signal.aborted, true, "the first Workspace's read is dropped");
+    held.splice(0).forEach((resolve) => resolve(homeData([])));
+    await tick(50);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a Home read Core never answers ends at the snapshot deadline, and the read asked for meanwhile goes next (YN-221)", async () => {
+  let first = true;
+  const page = mount(() => {
+    if (first) {
+      first = false;
+      return new Promise(() => {});
+    }
+    return homeData([section("eval", 7, 3)]);
+  });
+  const reads = () => page.requests.filter((r) => r.url === "/api/home");
+  try {
+    page.window.startProject = "p1";
+    page.window.renderHome(null, 1);
+    await until(() => reads().length === 1, "the first read");
+    page.window.renderHome(null, 2);
+    await tick(200);
+    assert.equal(reads().length, 1, "one read at a time");
+    // SNAPSHOT_TIMEOUT_MS (snapshot-request.ts): 10 s.
+    await until(() => reads().length === 2, "the next read after the deadline", 12_000);
+    await until(() => page.document.querySelector(".project-home, .home-layout"), "Home drawn from it");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
 });

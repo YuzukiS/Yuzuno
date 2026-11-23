@@ -441,6 +441,7 @@ async fn a_replied_ask_waits_for_its_owner_and_a_new_version_asks_again() {
     let panel = &home::build(&ws.store).unwrap()["projects"][0];
     assert_eq!(panel["brief"]["history"][0]["ask"]["state"], "resolved");
     assert_eq!(panel["brief"]["history"][0]["history"], true);
+    history_index_tests::check(&ws.store);
     assert!(!sections::mark_replied_live(&ws.store, &project, "decide", "late").unwrap());
     assert_eq!(codes(&reject(&ws, "a", input("a6", 4, vec![op("resolve", "decide")])).await), ["not_found"]);
 }
@@ -532,6 +533,7 @@ async fn seen_records_only_the_version_shown_and_a_seen_report_moves_to_history(
     assert_eq!(panel["brief"]["sections"].as_array().unwrap().len(), 1, "a status stays");
     assert_eq!(panel["brief"]["history"][0]["key"], "result");
     assert_eq!(panel["brief"]["history"][0]["seen"]["version"], 2);
+    history_index_tests::check(&ws.store);
     // Written again, it is newer than anything seen.
     let again = accept(&ws, "a", input("a3", 2, vec![put("result", "report")])).await;
     assert_eq!(again["sections"], json!([{"key":"result","version":3}]));
@@ -709,6 +711,7 @@ async fn a_kept_image_has_the_size_core_read_from_its_header_and_nothing_else_ha
     assert_eq!((released["snapshot"].clone(), released.get("width"), released.get("height")), (json!(false), None, None), "{released}");
     let history = &home::build(&ws.store).unwrap()["projects"][0]["brief"]["history"][0]["attachments"];
     assert!(history.as_array().unwrap().iter().all(|shown| shown.get("width").is_none() && shown.get("height").is_none()), "{history}");
+    history_index_tests::check(&ws.store);
 }
 
 /// The test binary's allocator, armed only in a test process of its own
@@ -853,6 +856,7 @@ async fn pruning_and_clearing_never_remove_a_snapshot_a_live_section_shows() {
     let history = &home::build(&ws.store).unwrap()["projects"][0]["brief"]["history"];
     let kept: Vec<(Value, Value)> = history.as_array().unwrap().iter().map(|s| (s["key"].clone(), s["attachments"][0]["snapshot"].clone())).collect();
     assert!(kept.contains(&(json!("one"), json!(false))) && kept.contains(&(json!("copy"), json!(true))), "{kept:?}");
+    history_index_tests::check(&ws.store);
     // The live sections alone are over this: nothing they show is released.
     assert!(!prune(10));
     assert_eq!(total(&ws), 27 + 49);
@@ -1885,6 +1889,7 @@ async fn a_reply_names_its_section_so_home_tells_it_from_a_later_one_under_its_k
     let (_, _, decided, why) = entry("decide", decide).expect("the ask answered, in History");
     assert_eq!(why, "resolved");
     assert!(decided > 1, "resolving moved it past the version answered: {history:?}");
+    history_index_tests::check(&ws.store);
     let (_, _, removed, why) = entry("plan", plan).expect("the card answered, in History");
     assert_eq!(why, "removed");
     let (_, _, resolved, why) = entry("plan", later).expect("the later ask under its key, in History");
@@ -2163,6 +2168,8 @@ mod cas_tests;
 mod opened_tests;
 #[path = "card_tests.rs"]
 mod card_tests;
+#[path = "history_index_tests.rs"]
+pub(super) mod history_index_tests;
 #[path = "reply_image_tests.rs"]
 mod reply_image_tests;
 #[path = "reply_file_tests.rs"]
@@ -2629,6 +2636,7 @@ async fn legacy_unused_attachments_stay_readable_and_unrelated_edits_keep_asks_a
     assert_eq!(historical["key"], "old-report");
     assert_eq!(historical["body"], report["body"]);
     assert_eq!(historical["attachments"][0]["snapshot"], true);
+    history_index_tests::check(&ws.store);
 
     // An edit cannot forge context.
     let mut forged = edit("legacy", json!({"note":markdown("Spoofed.")}));

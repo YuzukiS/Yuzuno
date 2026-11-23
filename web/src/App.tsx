@@ -183,7 +183,8 @@ import { POLL_MS, SAFETY_NET_MS, useWorkspaceEvents } from "./useWorkspaceEvents
 import { useBrowserOffline, watchBrowserNetwork } from "./browser-offline";
 import type { WorkspaceEvent } from "./workspace-events.ts";
 import { useAgentDetail } from "./useAgentDetail";
-import { useRefreshTrigger } from "./refresh-trigger";
+import { HIDDEN_READ_MS, useRefreshTrigger } from "./refresh-trigger";
+import { usePageHidden } from "./page-visibility";
 import { useProgressBatch } from "./progress-batch";
 import { coreConnection } from "./connection-status";
 import { langTag, useLanguage } from "./i18n";
@@ -379,23 +380,26 @@ export function App() {
   const workspaceFailed = useRef(false);
   const workspaceError = workspaceFailure ? errorText(workspaceFailure) : "";
   const detailError = live.error ? errorText(live.error) : "";
-  // Each view is read again only for changes that concern it.
-  const [fullRevision, fullRefresh] = useRefreshTrigger();
-  const [workspaceRevision, workspaceRefresh] = useRefreshTrigger();
-  const [homeRevision, homeRefresh] = useRefreshTrigger();
-  const [boardRevision, boardRefresh] = useRefreshTrigger();
-  const [machinesRevision, machinesRefresh] = useRefreshTrigger();
-  const [jobsRevision, jobsRefresh] = useRefreshTrigger();
+  // Each view is read again only for changes that concern it. While the page
+  // is hidden (YN-221) what it shows waits for it to be shown again, with one
+  // read each then; the Agent list and the open Asks, which the badge, title
+  // and system notifications count, read at most every HIDDEN_READ_MS.
+  const [fullRevision, fullRefresh] = useRefreshTrigger("full", "pause");
+  const [workspaceRevision, workspaceRefresh] = useRefreshTrigger("workspace", HIDDEN_READ_MS);
+  const [homeRevision, homeRefresh] = useRefreshTrigger("home", "pause");
+  const [boardRevision, boardRefresh] = useRefreshTrigger("board", "pause");
+  const [machinesRevision, machinesRefresh] = useRefreshTrigger("machines", "pause");
+  const [jobsRevision, jobsRefresh] = useRefreshTrigger("jobs", "pause");
   // Core's merge queue (T-65): its tick and actions say `mergeQueue`.
-  const [mergeQueueRevision, mergeQueueRefresh] = useRefreshTrigger();
-  // Only for the Home tab's count of open Asks while Home is closed.
-  const [asksRevision, asksRefresh] = useRefreshTrigger();
+  const [mergeQueueRevision, mergeQueueRefresh] = useRefreshTrigger("mergeQueue", "pause");
+  // Only for the Home tab's count of open Asks while Home is closed or hidden.
+  const [asksRevision, asksRefresh] = useRefreshTrigger("asks", HIDDEN_READ_MS);
   // The executor whose Overview shows now, and its temporary directory's
   // measurements (YN-78 S2c): only that Overview reads again for them.
   const [tempUsageRevision, setTempUsageRevision] = useState(0);
   const overviewAgent = useRef<string | null>(null);
   // The shared Appearance preset, for a device that follows it (T-194).
-  const [presetRevision, presetRefresh] = useRefreshTrigger();
+  const [presetRevision, presetRefresh] = useRefreshTrigger("preset", "pause");
   const [loading, setLoading] = useState(!previewMode);
   // Retry in the connection banner, from its press until the read it starts
   // is over (T-19 SH:M05).
@@ -1104,7 +1108,8 @@ export function App() {
             // again, one read for a burst of changes (T-9).
             if (event.tasks) homeRefresh.atMostEvery(2_000);
           }
-          else if (event.scope === "jobs") jobsRefresh.now();
+          // A burst of Job changes, one read (YN-221).
+          else if (event.scope === "jobs") jobsRefresh.soon(250);
           else if (event.scope === "machines") machinesRefresh.now();
           else if (event.scope === "brief" || event.scope === "home") {
             homeRefresh.soon(250);
@@ -1296,9 +1301,26 @@ export function App() {
   useEffect(() => {
     // Expiry and stale observations can change without an event. One small
     // local aggregate read serves every row; no GitHub request or chat read.
+    // Not while the page is hidden: shown again, it reads once if it skipped (YN-221).
     if (previewMode || !workspaceId) { clearLiveCI(); return; }
-    const timer = setInterval(() => refreshLiveCI(workspaceId), 30_000);
-    return () => { clearInterval(timer); clearLiveCI(); };
+    let skipped = false;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "hidden") skipped = true;
+      else refreshLiveCI(workspaceId);
+    }, 30_000);
+    const shown = () => {
+      if (!skipped || document.visibilityState === "hidden") return;
+      skipped = false;
+      refreshLiveCI(workspaceId);
+    };
+    document.addEventListener("visibilitychange", shown);
+    window.addEventListener("pageshow", shown);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", shown);
+      window.removeEventListener("pageshow", shown);
+      clearLiveCI();
+    };
   }, [workspaceId, previewMode]);
   // What each Agent left running besides its Jobs and CI, for its ring
   // (YN-51): its reviews under way and its background shells and sub-agents.
@@ -1937,7 +1959,10 @@ export function App() {
   // dispatched. Turns that ended unseen stay with their
   // conversations and the Agent list's mark: Home does not list or count them.
   const totalPending = activeAgents.reduce((n, a) => n + a.pendingCount, 0);
-  const [openAsks, reportNeedsYou, needsYouItems] = useOpenAsks(workspaceId, !homeOpen && !previewMode, asksRevision);
+  // Home's own reads wait while the page is hidden (YN-221): the open Asks are
+  // read then as when Home is closed, for the badge and notifications.
+  const pageHidden = usePageHidden();
+  const [openAsks, reportNeedsYou, needsYouItems] = useOpenAsks(workspaceId, (!homeOpen || pageHidden) && !previewMode, asksRevision);
   // The open Agent's gate asks on Home (T-43 S4): the approvals an executor
   // asked for, answered in its Overview or Conversation as on Home.
   const gateAskItems = agent ? (needsYouItems ?? []).filter((item) => item.kind === "ask" && item.gate && item.agentId === agent.id) : [];

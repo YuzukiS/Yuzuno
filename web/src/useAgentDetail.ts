@@ -67,6 +67,16 @@ export function useAgentDetail(workspaceId: string, agentId: string | null) {
   // Back online, a read that failed while away is tried again at once,
   // rather than after the retry delay (T-170).
   useEffect(() => watchBrowserNetwork({ online: () => sync.online() }), [sync]);
+  // Shown again, the read owed while hidden (YN-221).
+  useEffect(() => {
+    const shown = () => sync.resume();
+    document.addEventListener("visibilitychange", shown);
+    window.addEventListener("pageshow", shown);
+    return () => {
+      document.removeEventListener("visibilitychange", shown);
+      window.removeEventListener("pageshow", shown);
+    };
+  }, [sync]);
   const navigate = useCallback(async (query: Record<string, string> = {}, retry = false) => {
     const key = JSON.stringify(query);
     if (!retry && (key === JSON.stringify(windowQuery.current) || key === missingQuery.current)) return;

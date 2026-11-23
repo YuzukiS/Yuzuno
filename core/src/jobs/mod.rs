@@ -1958,7 +1958,7 @@ impl Workspace {
             return;
         }
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc jobs", async move {
             loop {
                 let Some(ws) = weak.upgrade() else {
                     break;

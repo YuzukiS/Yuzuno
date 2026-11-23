@@ -114,6 +114,8 @@ pub struct Workspace {
     pub store: Arc<Store>,
     /// Live changes for clients (`/api/events`); see `events`.
     pub changes: Arc<crate::events::Events>,
+    /// What both entries served since this process started (YN-221 S7a).
+    pub http_counts: Arc<crate::runtime_diag::Http>,
     pub default_cwd: String,
     pub data_dir: PathBuf,
     pub runtime: Mutex<Value>,
@@ -219,6 +221,7 @@ impl Workspace {
             update_notice_layout: OnceLock::new(),
             store,
             changes: Arc::new(crate::events::Events::new()),
+            http_counts: Arc::default(),
             default_cwd: cwd,
             backups: Arc::new(crate::workspace_backup::online::Backups::open(&data_dir)),
             backup_schedule: Arc::new(crate::workspace_backup::schedule::Planner::open(&data_dir)),
@@ -274,7 +277,7 @@ impl Workspace {
     pub(crate) fn start_stream_ticker(self: &Arc<Self>) {
         if self.stream_ticker.set(()).is_err() { return; }
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc stream-ticker", async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
@@ -1605,7 +1608,7 @@ impl Workspace {
     /// backoff; UI activity is not their lifecycle owner.
     pub fn start_remote_recovery(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc remote-recovery", async move {
             let mut retry: HashMap<String, (std::time::Instant, u32)> = HashMap::new();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;

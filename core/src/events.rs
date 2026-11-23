@@ -63,7 +63,7 @@ use std::{
     collections::VecDeque,
     convert::Infallible,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex, Weak,
     },
     time::Duration,
@@ -111,6 +111,44 @@ struct Hub {
 pub struct Events {
     epoch: String,
     hub: Mutex<Hub>,
+    counts: Arc<Counts>,
+}
+
+/// The kinds of message `Counts` keeps apart (YN-221 S7a): each type, a
+/// workspace change by its scope, and any other as `other`.
+const KINDS: [&str; 22] = [
+    "agent.delta", "agent.item", "agent.context", "agent.changed", "agent.progress", "agent.tempUsage", "agent.codexUsage",
+    "workspace.changed:collaboration", "workspace.changed:projects", "workspace.changed:machines", "workspace.changed:runtime",
+    "workspace.changed:workspace", "workspace.changed:jobs", "workspace.changed:brief", "workspace.changed:requests",
+    "workspace.changed:executors", "workspace.changed:backup", "workspace.changed:appearance-preset", "workspace.changed:other",
+    "reset", "resumed", "other",
+];
+
+fn kind(value: &Value) -> usize {
+    let at = |name: &str| KINDS.iter().position(|kind| *kind == name);
+    let other = KINDS.len() - 1;
+    match value["type"].as_str() {
+        Some("workspace.changed") => {
+            let scope = value["scope"].as_str().unwrap_or("workspace");
+            at(&format!("workspace.changed:{scope}")).or_else(|| at("workspace.changed:other")).unwrap_or(other)
+        }
+        Some(kind) => at(kind).unwrap_or(other),
+        None => other,
+    }
+}
+
+/// What was published and sent since this process started (YN-221 S7a):
+/// messages and their bytes by kind, clients dropped for falling behind,
+/// and the event streams opened, open now and the frames they sent
+/// (heartbeats included). Read by /api/diagnostics/runtime.
+#[derive(Default)]
+struct Counts {
+    published: [AtomicU64; KINDS.len()],
+    bytes: [AtomicU64; KINDS.len()],
+    overflows: AtomicU64,
+    opened: AtomicU64,
+    open: AtomicU64,
+    frames: AtomicU64,
 }
 
 /// How a new connection starts.
@@ -171,7 +209,7 @@ impl Events {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis());
         let salt = &uuid::Uuid::new_v4().simple().to_string()[..6];
-        Self { epoch: format!("{millis:x}{salt}"), hub: Mutex::default() }
+        Self { epoch: format!("{millis:x}{salt}"), hub: Mutex::default(), counts: Arc::default() }
     }
 
     pub fn epoch(&self) -> &str {
@@ -202,6 +240,9 @@ impl Events {
         hub.head += 1;
         let entry = Arc::new(Entry { n: hub.head, data });
         let size = entry.data.len();
+        let kind = kind(value);
+        self.counts.published[kind].fetch_add(1, Ordering::Relaxed);
+        self.counts.bytes[kind].fetch_add(size as u64, Ordering::Relaxed);
         hub.bytes += size;
         hub.ring.push_back(entry.clone());
         while hub.ring.len() > RING_EVENTS || (hub.bytes > RING_BYTES && hub.ring.len() > 1) {
@@ -213,6 +254,7 @@ impl Events {
             // reset rather than kept behind.
             if s.queue.bytes.load(Ordering::Acquire) + size > SUBSCRIBER_BYTES {
                 s.queue.overflowed.store(true, Ordering::Release);
+                self.counts.overflows.fetch_add(1, Ordering::Relaxed);
                 return false;
             }
             match s.tx.try_send(entry.clone()) {
@@ -223,6 +265,7 @@ impl Events {
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     // Its stream sends `reset` and continues from a new queue.
                     s.queue.overflowed.store(true, Ordering::Release);
+                    self.counts.overflows.fetch_add(1, Ordering::Relaxed);
                     false
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
@@ -303,6 +346,18 @@ impl Events {
         self.hub.lock().unwrap().subscribers.len()
     }
 
+    /// What was published and sent since this process started (`Counts`),
+    /// for /api/diagnostics/runtime.
+    pub fn counts(&self) -> Value {
+        let c = &self.counts;
+        let published: Vec<Value> = KINDS.iter().enumerate()
+            .filter(|(i, _)| c.published[*i].load(Ordering::Relaxed) > 0)
+            .map(|(i, kind)| json!({"kind":kind,"count":c.published[i].load(Ordering::Relaxed),"bytes":c.bytes[i].load(Ordering::Relaxed)}))
+            .collect();
+        json!({"published":published,"subscribers":self.subscribers(),"overflowResets":c.overflows.load(Ordering::Relaxed),
+            "streams":{"opened":c.opened.load(Ordering::Relaxed),"open":c.open.load(Ordering::Relaxed),"frames":c.frames.load(Ordering::Relaxed)}})
+    }
+
     /// The server-sent event stream for one client.
     pub fn stream(
         self: &Arc<Self>,
@@ -312,6 +367,8 @@ impl Events {
         let first = std::mem::replace(&mut subscription.start, Start::Reset { head: 0, reason: "" });
         let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        self.counts.opened.fetch_add(1, Ordering::Relaxed);
+        self.counts.open.fetch_add(1, Ordering::Relaxed);
         let reader = Reader {
             hub: Arc::downgrade(self),
             epoch: self.epoch.clone(),
@@ -319,9 +376,11 @@ impl Events {
             replay: VecDeque::new(),
             subscription,
             heartbeat,
+            counts: self.counts.clone(),
         };
         futures_util::stream::unfold(reader, |mut r| async move {
             let event = r.next().await?;
+            r.counts.frames.fetch_add(1, Ordering::Relaxed);
             Some((Ok(event), r))
         })
     }
@@ -334,6 +393,13 @@ struct Reader {
     replay: VecDeque<Arc<Entry>>,
     subscription: Subscription,
     heartbeat: tokio::time::Interval,
+    counts: Arc<Counts>,
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.counts.open.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl Reader {

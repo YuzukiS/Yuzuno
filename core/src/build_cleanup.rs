@@ -571,7 +571,7 @@ impl Workspace {
             return;
         }
         let (weak, wakeup) = (Arc::downgrade(self), self.build_cleanup.wakeup.clone());
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc build-cleanup", async move {
             tokio::time::sleep(FIRST).await;
             loop {
                 let Some(ws) = weak.upgrade() else { break };

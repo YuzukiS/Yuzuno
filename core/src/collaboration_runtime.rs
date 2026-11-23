@@ -315,7 +315,7 @@ impl Workspace {
             return;
         }
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        crate::runtime_diag::spawn("svc collaboration", async move {
             let mut last: Option<tokio::time::Instant> = None;
             loop {
                 let Some(ws) = weak.upgrade() else {

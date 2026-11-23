@@ -248,6 +248,13 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
     posts: (pattern) => calls.filter((c) => c.method === "POST" && pattern.test(c.url)),
     /** Core's event stream, as the open connection delivers it. */
     event: (value) => streams.at(-1)?.onmessage?.({ data: JSON.stringify(value), lastEventId: "" }),
+    /** The stream opens and resumes: the page stops polling (useWorkspaceEvents). */
+    openStream() {
+      const stream = streams.at(-1);
+      stream.readyState = 1;
+      stream.onopen?.({});
+      stream.onmessage?.({ data: JSON.stringify({ type: "resumed", from: "e-0" }), lastEventId: "" });
+    },
     close: () => w.close(),
   };
   if (open) {
@@ -2585,9 +2592,9 @@ test("T-9 a task change Core announces reads Home again, once for a burst; other
   const reads = () => p.calls.filter((c) => c.url.endsWith("/api/home")).length;
   try {
     await waitFor(() => reads() > 0, "Home's first read");
-    // Hidden, the page's own polling and Home's safety net read nothing, so
-    // every read counted here is an event's.
-    p.setVisibility("hidden");
+    // With the stream open the page does not poll, and Home's safety net is
+    // 30 s away, so every read counted here is an event's.
+    p.openStream();
     await pause(2_500);
     const before = reads();
     // Mail, comments and GitHub syncs say collaboration without tasks.
@@ -2599,6 +2606,18 @@ test("T-9 a task change Core announces reads Home again, once for a burst; other
     await waitFor(() => reads() > before, "a task change reads Home again");
     await pause(2_500);
     assert.equal(reads(), before + 1, `one read for the burst: ${reads() - before}`);
+    // Hidden (YN-221), Home's own read waits; shown again, it reads once.
+    // Hiding reads the open Asks once (open-asks, as when Home is closed).
+    p.setVisibility("hidden");
+    await pause(500);
+    const hidden = reads();
+    for (let i = 0; i < 5; i++) p.event({ type: "workspace.changed", scope: "collaboration", collaboration: true, tasks: true });
+    await pause(2_500);
+    assert.equal(reads(), hidden, "hidden, a task change waits");
+    p.setVisibility("visible");
+    await waitFor(() => reads() > hidden, "shown again, Home reads");
+    await pause(1_000);
+    assert.equal(reads(), hidden + 1, `shown again, one read: ${reads() - hidden}`);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

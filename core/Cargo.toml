@@ -38,7 +38,9 @@ qrcodegen = "1.8"
 # public release reads without gh (YN-110, which adds client-proxy for an
 # HTTPS_PROXY tunnel). ring also encrypts each push message (RFC 8291) and
 # signs its VAPID token.
+http-body = "1"
 http-body-util = "0.1"
+pin-project-lite = "0.2"
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "tls12"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "http1", "tokio"] }
 ring = "0.17"
