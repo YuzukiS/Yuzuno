@@ -239,10 +239,10 @@ export function Home({
   // asks for one more after it and never aborts it, since Core would build
   // the aborted answer whole anyway. Only leaving, or another Workspace,
   // drops the read on its way.
-  const homeRead = useRef<{ controller: AbortController | null; again: boolean }>({ controller: null, again: false });
+  const readInFlight = useRef<{ controller: AbortController | null; again: boolean }>({ controller: null, again: false });
   useEffect(() => {
     if (readOnly) return;
-    const state = homeRead.current;
+    const state = readInFlight.current;
     if (state.controller) {
       state.again = true;
       return;
@@ -291,7 +291,7 @@ export function Home({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readOnly, workspaceId, revision, jobsRevision, tick]);
   useEffect(() => () => {
-    const state = homeRead.current;
+    const state = readInFlight.current;
     state.controller?.abort();
     state.controller = null;
     state.again = false;
