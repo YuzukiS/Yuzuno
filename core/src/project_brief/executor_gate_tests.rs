@@ -53,6 +53,7 @@ async fn an_executor_asks_for_its_gate_on_home_and_its_overview_waits_for_the_an
     let item = home["needsYou"].as_array().unwrap().iter().find(|i| i["kind"] == "ask" && i["sectionKey"] == "gates/design").cloned();
     let item = item.expect("the gate's ask is in Needs you");
     assert_eq!((item["agentId"].clone(), item["gate"].clone()), (json!("b"), json!({"taskId":public,"step":3})));
+    super::history_index_tests::check(&ws.store);
     // An ask without a gate says none.
     accept(&ws, "a", input("a2", 1, vec![put("plain", "ask")])).await;
     assert!(section(&brief(&ws, "a"), "plain")["ask"].get("gate").is_none());

@@ -136,6 +136,7 @@ async fn a_lead_makes_its_report_refresh_itself_and_each_put_keeps_the_last_issu
     assert_eq!(panel["brief"]["history"], json!([]), "past issues are not Home's history");
     // A seen card is: and it keeps its refresh.
     sections::mark_seen(&ws.store, &project, &[(KEY.to_owned(), 3)]).unwrap();
+    super::tests::history_index_tests::check(&ws.store);
     let history = sections::history(&ws.store.db.read().unwrap(), &project).unwrap();
     assert_eq!(history.iter().map(|row| row.history_reason.clone().unwrap()).collect::<Vec<_>>(), ["seen"]);
     assert!(timer(&ws, &project, first.identity).is_some());

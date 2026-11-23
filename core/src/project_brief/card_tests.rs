@@ -230,6 +230,7 @@ async fn a_done_task_archives_its_cards_and_a_report_not_read_yet_too() {
     let history = panel(&ws)["brief"]["history"].clone();
     let archived = history.as_array().unwrap().iter().find(|s| s["key"] == "page").unwrap();
     assert_eq!((archived["historyReason"].clone(), archived["card"]["task"]["status"].clone()), (json!("archived"), json!("done")));
+    super::history_index_tests::check(&ws.store);
     // Its owner is told why it left.
     let refused = reject(&ws, "a", input("a2", 2, vec![json!({"op":"edit","key":"page","elements":{"note":{"type":"Markdown","props":{"text":"x"}}}})])).await;
     assert!(refused["problems"][0]["reason"].as_str().unwrap().contains("ended"), "{refused}");

@@ -20,6 +20,8 @@ type ApiResult<T> = Result<T, ApiError>;
 pub(super) fn routes() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/home", get(view))
+        .route("/api/home/needs", get(needs))
+        .route("/api/projects/{id}/brief/history", get(history_entries))
         .route("/api/home/order", post(order))
         .route("/api/home/presentation", get(home_presentation).put(save_home_presentation))
         .route("/api/projects/{id}/home-editors", get(content_editors).put(save_content_editors))
@@ -45,8 +47,60 @@ impl IntoResponse for attachments::Missing {
     }
 }
 
-async fn view(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
-    let bytes = ws.stored(|store| Ok(serde_json::to_vec(&home::build(store)?)?)).await?;
+/// A request parameter Home does not know: 400, nothing is read.
+fn invalid(message: &str) -> Response {
+    (axum::http::StatusCode::BAD_REQUEST, Json(json!({"error":message,"code":"invalid_input"}))).into_response()
+}
+
+#[derive(Deserialize)]
+struct HomeQuery {
+    history: Option<String>,
+}
+
+/// Home whole, or with its history as an index (`?history=index`, or the
+/// header `X-Yuzuno-History: index` as a conversation's window is asked
+/// for, YN-221 S1); without either it is what every page has read.
+async fn view(State(ws): State<Arc<Workspace>>, Query(query): Query<HomeQuery>, headers: axum::http::HeaderMap) -> ApiResult<Response> {
+    // Each form is checked on its own: either alone asks for the index, both
+    // may say it together, and any other value of either is refused.
+    let header = headers.get("x-yuzuno-history").map(|v| v.to_str().unwrap_or(""));
+    let asked = [query.history.as_deref(), header];
+    if asked.iter().flatten().any(|value| *value != "index") {
+        return Ok(invalid("history is index, or not given"));
+    }
+    let history = if asked.iter().any(Option::is_some) { home::History::Index } else { home::History::Full };
+    let bytes = ws.stored(move |store| Ok(serde_json::to_vec(&home::build_with(store, history)?)?)).await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], bytes).into_response())
+}
+
+/// Needs you alone (YN-221 S1).
+async fn needs(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
+    let bytes = ws.stored(|store| Ok(serde_json::to_vec(&home::needs(store)?)?)).await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], bytes).into_response())
+}
+
+#[derive(Deserialize)]
+struct EntriesQuery {
+    entries: Option<String>,
+}
+
+/// History entries whole (YN-221 S1): `?entries=<id>:<version>,…`, the
+/// `id` and `version` of entries of Home's history index, at most
+/// home::ENTRIES_AT_ONCE at once.
+async fn history_entries(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Query(query): Query<EntriesQuery>) -> ApiResult<Response> {
+    let Some(entries) = query.entries else { return Ok(invalid("entries is required: <id>:<version>,…")) };
+    let mut wanted = vec![];
+    for entry in entries.split(',').filter(|entry| !entry.is_empty()) {
+        let parsed = entry.split_once(':').and_then(|(identity, version)| Some((identity.parse::<i64>().ok()?, version.parse::<i64>().ok()?)));
+        let Some(pair) = parsed else { return Ok(invalid("entries are <id>:<version>, separated by commas")) };
+        if !wanted.contains(&pair) {
+            wanted.push(pair);
+        }
+    }
+    if wanted.len() > home::ENTRIES_AT_ONCE {
+        return Ok(invalid(&format!("At most {} entries at once", home::ENTRIES_AT_ONCE)));
+    }
+    let bytes = ws.stored(move |store| Ok(serde_json::to_vec(&home::history_entries(store, &id, &wanted)?)?)).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], bytes).into_response())
 }
 
