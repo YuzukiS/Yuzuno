@@ -32,6 +32,7 @@ static BATCHES: AtomicU8 = AtomicU8::new(1);
 static LIMIT: AtomicU8 = AtomicU8::new(1);
 static SHARED: AtomicU8 = AtomicU8::new(1);
 static REFRESH: AtomicU8 = AtomicU8::new(0);
+static CUT: AtomicU8 = AtomicU8::new(1);
 
 /// GitHub as a fixture. owner/repo (7) has the release's commit; its PRs #1-#3 merged as M1-M3: compared with the
 /// release, M1 is in it ("behind": the head is an ancestor of the base), M2 merged after it ("ahead"), M3 is not
@@ -239,4 +240,22 @@ async fn github_refresh_of_a_task_asks_about_its_merged_prs_and_a_source_build_a
     .unwrap();
     assert_eq!(kept_rows(&ws, RELEASE), vec![(M1.into(), Some(1))]);
     assert_eq!(calls(dir.path(), "/pulls/"), reads, "a merged PR is not read again (YN-193)");
+}
+
+// Review 495d21bf: a check its caller's deadline drops while GitHub answers does not leave its question held busy;
+// it is free to be asked again.
+#[tokio::test]
+async fn a_check_cut_short_leaves_its_question_free_to_ask_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, _task, _internal, _project) = lab(dir.path(), || running(&CUT));
+    let release = running(&CUT).unwrap();
+    std::fs::write(dir.path().join("gh-fixture.slow"), "").unwrap();
+    assert!(tokio::time::timeout(Duration::from_millis(150), check(&ws, 7, "owner/repo", M1, &release)).await.is_err(), "cut short");
+    let key = format!("installed:7:{M1}:{RELEASE}");
+    assert!(ws.github.jobs.lock().unwrap().get(&key).is_some_and(|(busy, _)| !busy), "released, never held busy");
+    assert!(kept_rows(&ws, RELEASE).is_empty(), "nothing kept from a check cut short");
+    ws.github.jobs.lock().unwrap().clear();
+    std::fs::remove_file(dir.path().join("gh-fixture.slow")).unwrap();
+    assert_eq!(check(&ws, 7, "owner/repo", M1, &release).await.unwrap(), Asked::Kept);
+    assert_eq!(kept_rows(&ws, RELEASE), vec![(M1.into(), Some(1))]);
 }

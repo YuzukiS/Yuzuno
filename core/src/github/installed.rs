@@ -268,6 +268,31 @@ fn rate_limited(error: &anyhow::Error) -> bool {
 /// The key that holds every path while GitHub's rate limit cools down.
 const LIMITED: &str = "installed:limited";
 
+/// A claimed key of the GitHub reads' jobs, released when dropped: a check or a batch cancelled mid-flight (its
+/// future dropped, as a deadline does) never leaves its key held busy (review 495d21bf).
+struct Claim<'a> {
+    ws: &'a Workspace,
+    key: String,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        super::release(self.ws, std::mem::take(&mut self.key), false);
+    }
+}
+
+/// `check` on a task of its own, within GitHub's read slots and Core's update fence: what a refresh that read a PR
+/// merged asks, outside that refresh and its deadline (review 495d21bf).
+pub(crate) fn spawn_check(ws: &Arc<Workspace>, repo: i64, full_name: String, merge: String, installed: Installed) {
+    let weak = Arc::downgrade(ws);
+    tokio::spawn(async move {
+        let Some(ws) = weak.upgrade() else { return };
+        let Ok(_slot) = ws.github.slots.acquire().await else { return };
+        let Ok(_permit) = ws.admission.enter_work() else { return };
+        let _ = check(&ws, repo, &full_name, &merge, &installed).await;
+    });
+}
+
 /// What one question about a merged PR came to.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Asked {
@@ -308,6 +333,7 @@ pub(crate) async fn check(ws: &Workspace, repo: i64, full_name: &str, merge: &st
     if !super::claim(ws, &key) {
         return Ok(Asked::Elsewhere);
     }
+    let _claim = Claim { ws, key };
     let asked = async {
         let contained = match known.1 {
             Some(false) => None,
@@ -355,7 +381,6 @@ pub(crate) async fn check(ws: &Workspace, repo: i64, full_name: &str, merge: &st
         Ok::<_, anyhow::Error>(Asked::Kept)
     }
     .await;
-    super::release(ws, key, false);
     if matches!(asked, Ok(Asked::Limited)) {
         super::release(ws, LIMITED.to_owned(), true);
     }
@@ -383,6 +408,7 @@ pub(crate) async fn pass(ws: &Arc<Workspace>, task: Option<String>, size: usize)
     if !super::claim(ws, &key) {
         return Ok(Some(Batch { asked: 0, more: true, limited: false }));
     }
+    let _claim = Claim { ws: &**ws, key };
     let result = async {
         let scope = installed.clone();
         let pending = ws
@@ -444,7 +470,6 @@ pub(crate) async fn pass(ws: &Arc<Workspace>, task: Option<String>, size: usize)
         Ok::<_, anyhow::Error>(Batch { asked, more, limited: false })
     }
     .await;
-    super::release(ws, key, false);
     if matches!(result, Ok(Batch { asked, .. }) if asked > 0) {
         ws.changes.send(json!({"collaboration":true}));
     }

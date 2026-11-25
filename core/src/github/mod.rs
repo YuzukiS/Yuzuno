@@ -275,8 +275,9 @@ fn schedule(ws: &Arc<Workspace>, key: String) {
                         s.github_refresh_object(&object, result.map_err(|e| e.to_string()))
                     })
                     .await?;
+                    // Asked on its own task, outside this refresh's deadline (review 495d21bf).
                     if let (Some((name, merge)), Some(release)) = (merged, (ws.github.release)()) {
-                        let _ = installed::check(&ws, id, &name, &merge, &release).await;
+                        installed::spawn_check(&ws, id, name, merge, release);
                     }
                     Ok(rate)
                 }
