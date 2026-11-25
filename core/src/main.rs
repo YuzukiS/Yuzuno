@@ -201,6 +201,8 @@ async fn run(
     }
     ws.start_remote_recovery();
     ws.start_claude_quota_resume();
+    // Which merged PRs the release this Core runs has (R-38 §2.6).
+    ws.start_installed_check();
     let probe = Arc::clone(&ws);
     let check = updates.clone();
     tokio::spawn(async move {

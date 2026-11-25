@@ -6,9 +6,19 @@
 //! here per (repository, merge commit, installed commit). Reading only reads
 //! what is kept: a request's page never reaches the network. Until a compare
 //! is kept, and for a source build (no commit), it is unknown.
+//!
+//! What is kept is filled in three places, each asking GitHub only about a
+//! merged PR whose answer against the release is not kept yet: a refresh
+//! that reads a PR merged (mod.rs `schedule`), github_refresh of a task for
+//! its merged PRs, which a refresh no longer reads (YN-193), and once at
+//! start for every merged PR linked to a task, since a new install changes
+//! the release while a merged PR never changes. Answers against other
+//! releases are dropped then.
+use crate::workspace::Workspace;
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
     // contained: 1 the merge commit is an ancestor of (or is) the installed
@@ -144,4 +154,151 @@ pub(crate) fn merged_after(db: &Connection, project: &str, installed: &Installed
         }
     }
     Ok(Some(after))
+}
+
+/// Keeps GitHub's answer for merge commit `merge` of repository `repo`
+/// against the installed commit: Some(whether it is an ancestor), or None
+/// when the repository has no such commit.
+pub(crate) fn record(db: &Connection, repo: i64, merge: &str, installed: &str, contained: Option<bool>) -> Result<()> {
+    db.execute(
+        "INSERT INTO github_installed_commits(repo_id,merge_sha,installed_sha,contained,checked_at) VALUES(?1,?2,?3,?4,?5)
+         ON CONFLICT(repo_id,merge_sha,installed_sha) DO UPDATE SET contained=excluded.contained,checked_at=excluded.checked_at",
+        params![repo, merge.to_ascii_lowercase(), installed, contained, crate::model::now()],
+    )?;
+    Ok(())
+}
+
+/// Most merged PRs one pass asks GitHub about. Each takes one compare; one
+/// whose merge commit Core never read takes the PR's read (three calls)
+/// before it. A pass that stops short leaves the rest for the next one.
+pub(crate) const PASS: usize = 100;
+
+/// A merged PR whose answer against the release is not kept.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Unknown {
+    pub object: String,
+    pub repo: i64,
+    pub full_name: String,
+    pub number: u64,
+    /// Its merge commit, when Core read it.
+    pub merge: Option<String>,
+}
+
+/// The merged PRs linked to a task (to the task with internal id `task`
+/// only, when given) whose answer against `installed` is not kept, newest
+/// number first, at most `limit`.
+pub(crate) fn unknown(db: &Connection, installed: &Installed, task: Option<&str>, limit: usize) -> Result<Vec<Unknown>> {
+    let rows = db
+        .prepare_cached(
+            "SELECT o.id,o.repo_id,json_extract(r.data,'$.fullName'),o.number,json_extract(o.data,'$.snapshot.mergeCommitSha')
+             FROM github_objects o JOIN github_repositories r ON r.id=o.repo_id
+             WHERE o.kind='pull' AND json_extract(o.data,'$.snapshot.state')='merged'
+               AND EXISTS(SELECT 1 FROM github_task_links l WHERE l.object_id=o.id AND (?1 IS NULL OR l.task_id=?1))
+               AND NOT EXISTS(SELECT 1 FROM github_installed_commits c WHERE c.repo_id=o.repo_id
+                 AND c.merge_sha=lower(json_extract(o.data,'$.snapshot.mergeCommitSha')) AND c.installed_sha=?2)
+             ORDER BY o.number DESC LIMIT ?3",
+        )?
+        .query_map(params![task, installed.git_sha, limit as i64], |r| {
+            Ok(Unknown { object: r.get(0)?, repo: r.get(1)?, full_name: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                number: r.get::<_, i64>(3)? as u64, merge: r.get(4)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().filter(|row| !row.full_name.is_empty()).collect())
+}
+
+/// Drops what was kept against any release but `installed`.
+pub(crate) fn forget_others(db: &Connection, installed: &Installed) -> Result<usize> {
+    Ok(db.execute("DELETE FROM github_installed_commits WHERE installed_sha<>?1", [&installed.git_sha])?)
+}
+
+fn rate_limited(error: &anyhow::Error) -> bool {
+    error.to_string().starts_with("rate_limited")
+}
+
+/// Asks GitHub whether merge commit `merge` of `repo` (`full_name`) is in
+/// `installed`, and keeps the answer. An error keeps nothing: the next pass
+/// asks again.
+pub(crate) async fn check(ws: &Workspace, repo: i64, full_name: &str, merge: &str, installed: &Installed) -> Result<()> {
+    let contained = ws.github.client.contains(full_name, &installed.git_sha, merge).await?;
+    let (merge, sha) = (merge.to_owned(), installed.git_sha.clone());
+    ws.stored(move |store| record(&store.db.write()?, repo, &merge, &sha, contained)).await
+}
+
+/// One pass over the merged PRs whose answer against the release this Core
+/// runs is not kept (of the task with internal id `task` only, when given):
+/// each PR's merge commit read first where Core never read it, then GitHub's
+/// compare, one PR at a time within GitHub's read slots, at most PASS. It
+/// stops at GitHub's rate limit or Core's update fence; another pass of the
+/// same scope does not start while one runs. None for a source build.
+pub(crate) async fn pass(ws: &Arc<Workspace>, task: Option<String>) -> Result<Option<usize>> {
+    let Some(installed) = (ws.github.release)() else { return Ok(None) };
+    let key = format!("installed:{}", task.as_deref().unwrap_or("*"));
+    if !super::claim(ws, &key) {
+        return Ok(Some(0));
+    }
+    let result = async {
+        let scope = installed.clone();
+        let pending = ws
+            .stored(move |store| {
+                let db = store.db.write()?;
+                if task.is_none() {
+                    forget_others(&db, &scope)?;
+                }
+                unknown(&db, &scope, task.as_deref(), PASS)
+            })
+            .await?;
+        let mut asked = 0;
+        for one in pending {
+            let _slot = ws.github.slots.acquire().await?;
+            let Ok(_permit) = ws.admission.enter_work() else { break };
+            let merge = match one.merge {
+                Some(merge) => merge,
+                None => {
+                    let repo = super::client::Repository { id: one.repo, full_name: one.full_name.clone() };
+                    let read = ws.github.client.object(&repo, "pull", one.number).await;
+                    let limited = read.as_ref().err().is_some_and(rate_limited);
+                    let merge = read.as_ref().ok().and_then(|snapshot| snapshot["mergeCommitSha"].as_str().map(str::to_owned));
+                    let object = one.object.clone();
+                    ws.stored(move |store| store.github_refresh_object(&object, read.map(|snapshot| (repo, snapshot)).map_err(|e| e.to_string())))
+                        .await?;
+                    if limited {
+                        return Ok((asked, true));
+                    }
+                    let Some(merge) = merge else { continue };
+                    merge
+                }
+            };
+            asked += 1;
+            match check(ws, one.repo, &one.full_name, &merge, &installed).await {
+                Err(error) if rate_limited(&error) => return Ok((asked, true)),
+                _ => {}
+            }
+        }
+        Ok::<_, anyhow::Error>((asked, false))
+    }
+    .await;
+    super::release(ws, key, matches!(result, Ok((_, true))));
+    if matches!(result, Ok((asked, _)) if asked > 0) {
+        ws.changes.send(json!({"collaboration":true}));
+    }
+    result.map(|(asked, _)| Some(asked))
+}
+
+impl Workspace {
+    /// At start, once the release this Core runs is known: one pass over every
+    /// merged PR linked to a task (`pass`), after Core has settled. Nothing
+    /// for a source build.
+    pub fn start_installed_check(self: &Arc<Self>) {
+        if (self.github.release)().is_none() {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        crate::runtime_diag::spawn("svc installed-check", async move {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            let Some(ws) = weak.upgrade() else { return };
+            if let Err(error) = pass(&ws, None).await {
+                eprintln!("Which merged PRs the installed release has: {error:#}");
+            }
+        });
+    }
 }
