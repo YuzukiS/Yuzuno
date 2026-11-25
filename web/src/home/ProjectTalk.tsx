@@ -751,7 +751,15 @@ export function ProjectTalk({
           attach={readOnly ? undefined : { projectId, refusal, files: { refusal: filesRefusal } }}
           onUploading={setUploading}
         />
-        <button type="submit" className="primary-button project-talk-send" aria-label={t.send} aria-busy={busy || undefined} disabled={!canSend}>
+        <button
+          type="submit"
+          className="primary-button project-talk-send"
+          aria-label={t.send}
+          aria-busy={busy || undefined}
+          disabled={!canSend}
+          // A press of Send leaves the focus where it was (YN-226): the user writes on, and a phone's keyboard stays up.
+          onMouseDown={(event) => event.preventDefault()}
+        >
           {busy ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <Send size={14} aria-hidden="true" />}
         </button>
       </div>

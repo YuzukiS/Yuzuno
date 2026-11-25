@@ -545,15 +545,16 @@ async function check(run) {
       await d.landed(21);
       await d.idle();
       assert.equal(await d.notice(), d.w.recorded(21));
-      // The tap left the focus on Send, as the conversation's composer does; nothing of the arrival takes it.
+      // The tap on Send leaves the focus in the field (its press takes none), and nothing of the arrival takes it: the
+      // keyboard would stay up.
       const focus = await page.evaluate(() => ({
-        inComposer: !!document.querySelector(".home-dock .project-talk-compose")?.contains(document.activeElement),
+        inField: !!document.querySelector(".home-dock .project-talk-field [data-composer-input]")?.contains(document.activeElement),
         inNotice: !!document.querySelector(".project-talk-notice")?.contains(document.activeElement),
       }));
-      assert.deepEqual(focus, { inComposer: true, inNotice: false }, "the focus stays with the composer");
+      assert.deepEqual(focus, { inField: true, inNotice: false }, "the focus stays in the field");
       await shot(page, run, "keyboard-notice");
       await page.setViewportSize(run.viewport);
-      pass("with the keyboard up and the block out of sight, the notice above the field; the focus stays with the composer", { keyboard: "simulated" });
+      pass("with the keyboard up and the block out of sight, the notice above the field; the focus stays in the field", { keyboard: "simulated" });
     }
   } catch (error) {
     await page.screenshot({ path: join(output, `${engine}-${run.name}-failed.png`) }).catch(() => {});

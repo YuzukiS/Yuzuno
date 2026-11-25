@@ -467,6 +467,10 @@ test("while the words go, the field takes more, at its contrast; what the user w
   const kept = JSON.parse(page.window.localStorage.getItem("yuzuno.project-talk-drafts.v1"));
   assert.deepEqual([Object.values(kept)[0].text, Object.values(kept)[0].quote], ["and a light one", 3]);
   assert.equal(page.posts()[0].body.text, "Add a dark mode", "only what was there when it went");
+  // A press of Send leaves the focus in the field: a phone's keyboard stays up.
+  const press = new page.window.MouseEvent("mousedown", { bubbles: true, cancelable: true });
+  page.document.querySelector(".project-talk-send").dispatchEvent(press);
+  assert.ok(press.defaultPrevented);
   assert.deepEqual(page.errors, []);
 });
 
