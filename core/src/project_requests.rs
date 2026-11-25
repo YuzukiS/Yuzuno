@@ -577,7 +577,7 @@ pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> 
             announce(ws, project);
             let shown = ws.stored({
                 let project = project.to_owned();
-                move |store| view(&*store.db.read()?, &project, request)
+                move |store| view(&*store.db.read()?, &project, request, Installed::current().as_ref())
             }).await?;
             Ok(json!({"request":shown,"receipt":receipt}))
         }
