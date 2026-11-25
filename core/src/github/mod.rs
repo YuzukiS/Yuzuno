@@ -6,6 +6,8 @@ pub(crate) mod installed;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, unix))]
+mod installed_tests;
 use crate::workspace::Workspace;
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
@@ -22,6 +24,9 @@ pub struct SyncState {
     pub(crate) client: client::Client,
     /// Home's repository activity, cached per repository.
     pub(crate) activity: activity::Cache,
+    /// The release this Core runs, which merged PRs are checked against
+    /// (R-38 §2.6): `Installed::current`; a test gives its own.
+    pub(crate) release: fn() -> Option<installed::Installed>,
 }
 impl Default for SyncState {
     fn default() -> Self {
@@ -30,6 +35,7 @@ impl Default for SyncState {
             slots: tokio::sync::Semaphore::new(2),
             client: Default::default(),
             activity: Default::default(),
+            release: installed::Installed::current,
         }
     }
 }
@@ -138,6 +144,18 @@ pub async fn call(
         for key in keys(&page, input.project_id.is_some()) {
             schedule(&ws, key);
         }
+        // The task's merged PRs, which are not read again, are asked about
+        // once against the release this Core runs (R-38 §2.6).
+        if let Some(task) = input.task_id.clone().filter(|_| (ws.github.release)().is_some()) {
+            let weak = Arc::downgrade(&ws);
+            tokio::spawn(async move {
+                let Some(ws) = weak.upgrade() else { return };
+                let id = ws.stored(move |s| Ok(crate::collaboration_store::task_key(&*s.db.read()?, &task)?.0)).await;
+                if let Err(error) = async { installed::pass(&ws, Some(id?), installed::BATCH).await }.await {
+                    eprintln!("Which of a task's merged PRs the installed release has: {error:#}");
+                }
+            });
+        }
     } else if action == "link" {
         let target = client::parse(
             input
@@ -186,14 +204,31 @@ pub async fn call(
     list(&ws, input.project_id, input.task_id).await
 }
 
+/// Claims `key` for one read: false while one runs, or until its cooldown has passed.
+pub(crate) fn claim(ws: &Workspace, key: &str) -> bool {
+    let mut jobs = ws.github.jobs.lock().unwrap();
+    jobs.retain(|_, (busy, until)| *busy || *until > Instant::now());
+    if jobs.contains_key(key) {
+        return false;
+    }
+    jobs.insert(key.to_owned(), (true, Instant::now()));
+    true
+}
+
+/// Whether `key` waits out its cooldown now, with no read of it running.
+pub(crate) fn cooling(ws: &Workspace, key: &str) -> bool {
+    ws.github.jobs.lock().unwrap().get(key).is_some_and(|(busy, until)| !busy && *until > Instant::now())
+}
+
+/// Ends `key`'s read: its cooldown, five minutes after GitHub's rate limit, else 30 seconds.
+pub(crate) fn release(ws: &Workspace, key: String, rate_limited: bool) {
+    let cooldown = Duration::from_secs(if rate_limited { 300 } else { 30 });
+    ws.github.jobs.lock().unwrap().insert(key, (false, Instant::now() + cooldown));
+}
+
 fn schedule(ws: &Arc<Workspace>, key: String) {
-    {
-        let mut jobs = ws.github.jobs.lock().unwrap();
-        jobs.retain(|_, (busy, until)| *busy || *until > Instant::now());
-        if jobs.contains_key(&key) {
-            return;
-        }
-        jobs.insert(key.clone(), (true, Instant::now()));
+    if !claim(ws, &key) {
+        return;
     }
     let weak = Arc::downgrade(ws);
     tokio::spawn(async move {
@@ -231,11 +266,19 @@ fn schedule(ws: &Arc<Workspace>, key: String) {
                         .as_ref()
                         .err()
                         .is_some_and(|e| e.to_string().contains("rate_limited"));
+                    // A PR read merged: whether the release this Core runs has it (R-38 §2.6).
+                    let merged = result.as_ref().ok().and_then(|(repo, v)| {
+                        v["mergeCommitSha"].as_str().filter(|_| v["state"] == "merged").map(|merge| (repo.full_name.clone(), merge.to_owned()))
+                    });
                     let object = key.clone();
                     ws.stored(move |s| {
                         s.github_refresh_object(&object, result.map_err(|e| e.to_string()))
                     })
                     .await?;
+                    // Asked on its own task, outside this refresh's deadline (review 495d21bf).
+                    if let (Some((name, merge)), Some(release)) = (merged, (ws.github.release)()) {
+                        installed::spawn_check(&ws, id, name, merge, release);
+                    }
                     Ok(rate)
                 }
             };
@@ -259,14 +302,7 @@ fn schedule(ws: &Arc<Workspace>, key: String) {
             }
         }
         .await;
-        ws.github.jobs.lock().unwrap().insert(
-            key,
-            (
-                false,
-                Instant::now()
-                    + Duration::from_secs(if matches!(result, Ok(true)) { 300 } else { 30 }),
-            ),
-        );
+        release(&ws, key, matches!(result, Ok(true)));
         ws.changes.send(json!({"collaboration":true}));
         ws.delivery.wake.notify_one();
     });

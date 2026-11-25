@@ -345,6 +345,70 @@ impl Client {
         }
     }
 
+    /// One GET of `endpoint` filtered by gh's `--jq` `filter`, at most 4 KiB
+    /// out: Ok(Ok(its text)), Ok(Err(GitHub's refusal as `failure` names it:
+    /// not_found, rate_limited, ...)), or Err when it could not be read
+    /// (timeout, gh missing, too large).
+    async fn jq(&self, endpoint: &str, filter: &str) -> Result<std::result::Result<String, anyhow::Error>> {
+        let mut child = self.spawn_with_headers(endpoint, "Accept: application/vnd.github+json", "GET", false,
+            &["--jq".into(), filter.into()])?;
+        let mut out = child.stdout.take().context("gh stdout unavailable")?.take(4097);
+        let mut err = child.stderr.take().context("gh stderr unavailable")?.take(64 * 1024 + 1);
+        let result = tokio::time::timeout(self.deadline, async {
+            let (mut bytes, mut diagnostic) = (Vec::new(), Vec::new());
+            tokio::try_join!(out.read_to_end(&mut bytes), err.read_to_end(&mut diagnostic))?;
+            ensure!(bytes.len() <= 4096 && diagnostic.len() <= 64 * 1024, "GitHub answer exceeds its transport budget");
+            let status = child.wait().await?;
+            Ok::<_, anyhow::Error>((status, bytes, diagnostic))
+        })
+        .await;
+        let (status, bytes, diagnostic) = match result {
+            Ok(Ok(done)) => done,
+            failure => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                match failure {
+                    Ok(Err(e)) => return Err(e),
+                    _ => bail!("timeout: GitHub read timed out"),
+                }
+            }
+        };
+        if !status.success() {
+            return Ok(Err(failure(&diagnostic, status.code())));
+        }
+        Ok(Ok(String::from_utf8_lossy(&bytes).trim().to_owned()))
+    }
+
+    /// Whether commit `ancestor` is in the history of commit `descendant` in
+    /// `repo` (R-38 §2.6): GitHub's compare `descendant...ancestor` (base
+    /// `descendant`, head `ancestor`) says behind or identical exactly when
+    /// the head is an ancestor of the base, or is the base. Only its status is
+    /// read. None when GitHub answers not found: a repository it does not show,
+    /// or a commit it does not have, which this read cannot tell apart.
+    pub(crate) async fn contains(&self, repo: &str, descendant: &str, ancestor: &str) -> Result<Option<bool>> {
+        match self.jq(&format!("repos/{repo}/compare/{descendant}...{ancestor}?per_page=1"), ".status").await? {
+            Ok(status) => match status.as_str() {
+                "behind" | "identical" => Ok(Some(true)),
+                "ahead" | "diverged" => Ok(Some(false)),
+                other => bail!("unavailable: GitHub gave an unknown comparison status {:?}", other.chars().take(40).collect::<String>()),
+            },
+            Err(error) if error.to_string().starts_with("not_found") => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// A merged pull request's merge commit and when it merged, in one read of
+    /// the PR alone (R-38 §2.6); None while it is not merged.
+    pub(crate) async fn merge_commit(&self, repo: &str, number: u64) -> Result<Option<(String, Option<String>)>> {
+        let answer = self.jq(&format!("repos/{repo}/pulls/{number}"), "{sha: .merge_commit_sha, at: .merged_at}").await??;
+        let value: Value = serde_json::from_str(&answer).context("invalid_response: GitHub gave no merge commit")?;
+        let sha = value["sha"].as_str().filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()));
+        Ok(match (sha, value["at"].as_str()) {
+            (Some(sha), Some(at)) => Some((sha.to_ascii_lowercase(), Some(at.to_owned()))),
+            _ => None,
+        })
+    }
+
     /// The commit SHA GitHub resolves `reference` to in `repo`, with GitHub's
     /// status (T-164). Only the SHA is asked for (application/vnd.github.sha),
     /// so a large commit's files and patches are never read.
@@ -762,7 +826,8 @@ impl Client {
             .as_str()
             .filter(|s| matches!(*s, "open" | "closed"))
             .context("Unknown GitHub object state")?;
-        if kind == "pull" && v["merged_at"].is_string() {
+        let merged = kind == "pull" && v["merged_at"].is_string();
+        if merged {
             state = "merged";
         } else if kind == "pull" && v["draft"] == true && state == "open" {
             state = "draft";
@@ -785,6 +850,14 @@ impl Client {
             snapshot["headBranch"] = v["head"]["ref"].clone();
             snapshot["baseBranch"] = v["base"]["ref"].clone();
             snapshot["ci"] = checks_summary(sha, &checks, &statuses)?;
+            // When and as what it merged (R-38 §2.6): GitHub's merge commit
+            // tells whether the release this Core runs has it.
+            if merged {
+                snapshot["mergedAt"] = v["merged_at"].clone();
+                if let Some(merge) = v["merge_commit_sha"].as_str().filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())) {
+                    snapshot["mergeCommitSha"] = json!(merge.to_ascii_lowercase());
+                }
+            }
             // Its diff in size, as GitHub counts it (T-43 S3: the executor
             // Overview's Changes): only when GitHub gives all three.
             if let (Some(additions), Some(deletions), Some(files)) =
