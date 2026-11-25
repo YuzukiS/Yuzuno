@@ -208,7 +208,11 @@ test("an Ask of a task two requests share is in the first one's block once; the 
   assert.deepEqual([r12.fact.kind, r12.fact.home, r12.action, r12.group], ["ask", null, null, "needs"]);
   assert.deepEqual(r12.asks.map((s) => s.key), ["yn-197/scope"]);
   assert.equal(r12.askedElsewhere, null);
-  assert.deepEqual([r14.fact.kind, r14.fact.home, r14.fact.key, r14.action, r14.group], ["ask", 12, "yn-197/scope", "answer", "needs"]);
+  // R-38 §2.4: the Ask counts in Needs you once, under R-12; R-14 stays in progress and points to it.
+  assert.deepEqual([r14.fact.kind, r14.fact.home, r14.fact.key, r14.action, r14.group], ["ask", 12, "yn-197/scope", "answer", "doing"]);
+  assert.deepEqual(r14.next, { kind: "elsewhere", task: "YN-197", home: 12, title: "只查 Core 吗？" });
+  assert.deepEqual([r12.state, r12.next], ["decide", { kind: "ask" }]);
+  assert.deepEqual(blockCounts(blocks).needs, blocks.filter((b) => b.group === "needs").length);
   assert.deepEqual(r14.asks, [], "not drawn twice");
   assert.deepEqual(r14.askedElsewhere, { home: 12, key: "yn-197/scope", title: "只查 Core 吗？", count: 1 });
   assert.equal(blocks.flatMap((b) => b.asks).filter((s) => s.key === "yn-197/scope").length, 1, "one Ask, one block");
@@ -424,4 +428,125 @@ test("the Project cards group's count: its cards and answered Asks, none when on
   assert.equal(projectCardsCount(block([dev]), 1, dev), 2, "and an answered Ask: a group of both");
   assert.equal(projectCardsCount(block([dev]), 0, null), 1, "no banner: every card is the group's");
   assert.equal(projectCardsCount(null, 0, null), 0);
+});
+
+// R-38: a request's status label, its bar of outcomes, its one next step, and what its evidence counts.
+const x227 = who("x227", "YN-227 · 按批准的设计实现");
+const pull = (number, installed, state = "merged", repository = "o/r") =>
+  ({ number, title: `[YN-227] #${number}`, url: `https://example.com/${repository}/pull/${number}`, repository, state,
+    mergedAt: state === "merged" ? at(20) : null, installed });
+/** A card of `task` whose summary names its Plan of `steps` as the task's progress. */
+function planCard(key, task, steps, minutes, extra = {}) {
+  return section(key, "status", `${task} 进展`, 2, minutes, lead, {
+    status: status(minutes), card: binding(task, "doing", x227),
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", progress: "plan", size: "wide" } }, children: ["lead", "plan"] },
+      lead: { type: "Markdown", props: { text: "进展。" } },
+      plan: { type: "Plan", props: { steps } },
+    } },
+    ...extra,
+  });
+}
+/** A card's route with its task's progress, blocker and PRs (S2), as Core reads them. */
+function withTask(card, { progress = null, blocker = null, prs = [] } = {}) {
+  return { ...card, task: { ...card.task, progress, blocker }, prs: { items: prs } };
+}
+const R38_STEPS = [
+  { id: "s1", text: "S1 契约 — summary.progress 与步骤 prs", state: "done", prs: [1121] },
+  { id: "s2", text: "S2 Core — 任务进度与安装核实", state: "doing", prs: [1122] },
+  { id: "s3", text: "S3 网页模型", state: "todo" },
+];
+
+test("R-38 a request whose design is final and whose implementation goes on: in progress, its bar by outcome", () => {
+  ids = 900;
+  // The design delivered its report, which stays as evidence; the same task now implements, its card naming the Plan.
+  const card = planCard("yn-227", "YN-227", R38_STEPS, 3);
+  const design = { kind: "report", title: "R-38 · 请求卡定稿", note: null, key: "yn-227", version: 6, sectionId: 619, state: "history", currentVersion: 7 };
+  const r38 = request(38, 300, "doing", [withTask(routed(card, "YN-227", "doing", x227, [design], 60),
+    { progress: "① 分段成果条已定稿，正在实施。S1 等 CI。", prs: [pull(1121, false), pull(1122, null, "open")] })]);
+  const b = block(pageBlocks([r38], [card]).blocks, 38);
+  assert.deepEqual([b.state, b.group], ["team", "doing"], "a design delivered is no request done");
+  assert.equal(b.now.kind, "bar");
+  assert.deepEqual(b.now.segments.map((s) => [s.name, s.detail, s.state, s.asking]), [
+    ["S1 契约", "summary.progress 与步骤 prs", "merged", false], ["S2 Core", "任务进度与安装核实", "doing", false], ["S3 网页模型", null, "todo", false]]);
+  assert.deepEqual([b.now.label, b.now.count, b.now.total], ["merged", 1, 3], "none usable yet: merged, install not verified");
+  assert.deepEqual(b.next, { kind: "step", text: "S2 Core", task: "YN-227", who: x227 });
+  assert.deepEqual(b.details.got.map((i) => i.name), ["S1 契约"]);
+  assert.deepEqual(b.details.left.map((i) => [i.name, i.state]), [["S2 Core", "doing"], ["S3 网页模型", "todo"]]);
+  assert.deepEqual([b.evidence.installed.length, b.evidence.pending.map((p) => p.number), b.evidence.open.map((p) => p.number)], [0, [1121], [1122]]);
+  assert.equal(b.stale, null, "the card is newer than every fact Core knows");
+
+  // Once Core keeps that #1121 is in the release, S1 is usable: 1 of 3.
+  const installed = request(38, 300, "doing", [withTask(routed(card, "YN-227", "doing", x227), { prs: [pull(1121, true), pull(1122, null, "open")] })]);
+  const now = block(pageBlocks([installed], [card]).blocks, 38).now;
+  assert.deepEqual([now.label, now.count, now.segments[0].state, now.segments[0].prs.map((p) => p.number)], ["available", 1, "available", [1121]]);
+  // A number two linked PRs share (another repository's) is not verified, whatever either says.
+  const twice = request(38, 300, "doing", [withTask(routed(card, "YN-227", "doing", x227), { prs: [pull(1121, true), pull(1121, true, "merged", "o/other")] })]);
+  assert.equal(block(pageBlocks([twice], [card]).blocks, 38).now.segments[0].state, "merged");
+  // The user's confirmation is asked only once the task itself ended.
+  const ended = request(38, 300, "ended", [withTask(routed(card, "YN-227", "done", null), {})]);
+  const settled = block(pageBlocks([ended], [card]).blocks, 38);
+  assert.deepEqual([settled.state, settled.next, settled.group], ["accept", { kind: "accept" }, "needs"]);
+});
+
+test("R-38 the progress card may be an Ask (R-31); without a Plan, the task's own progress, its first sentence", () => {
+  ids = 900;
+  // R-31: the task's only card is an answered Ask; its summary names the Plan of six outcomes.
+  const asked = planCard("yn-221", "YN-221", [{ id: "a", text: "静态资源缓存与压缩", state: "done", prs: [1105] },
+    { id: "b", text: "定位 Core CPU — 等含分步计量的版本安装", state: "blocked" }], 40, {
+    kind: "ask", status: undefined, ask: ask("这轮做哪些运行改进？", "replied", { repliedAt: at(39), replyText: "6 项都做" }) });
+  const r31 = request(31, 900, "doing", [withTask(routed(asked, "YN-221", "doing", lead), { prs: [pull(1105, true)] })]);
+  const b = block(pageBlocks([r31], [asked]).blocks, 31);
+  assert.deepEqual(b.now.segments.map((s) => s.state), ["available", "blocked"]);
+  assert.deepEqual([b.now.label, b.now.count, b.now.total], ["available", 1, 2]);
+  assert.equal(b.evidence.answered, 1);
+  // No card names a Plan: the first sentence of the task's progress, never a card's title.
+  const plain = section("yn-228", "status", "某张卡的标题", 2, 10, lead, { status: status(10), card: binding("YN-228", "doing", x227) });
+  const r40 = request(40, 60, "doing", [withTask(routed(plain, "YN-228", "doing", x227), { progress: "查明了两个原因。第三个还在查。" })]);
+  const own = block(pageBlocks([r40], [plain]).blocks, 40);
+  assert.deepEqual([own.now, own.details, own.next], [{ kind: "progress", text: "查明了两个原因。", task: "YN-228" }, null, null]);
+  // Neither: no progress is guessed.
+  const r41 = request(41, 60, "doing", [withTask(routed(plain, "YN-228", "doing", x227))]);
+  assert.equal(block(pageBlocks([r41], [plain]).blocks, 41).now, null);
+});
+
+test("R-38 the status label: the first that holds, in order", () => {
+  ids = 900;
+  const card = section("yn-230", "status", "进行中", 2, 10, lead, { status: status(10), card: binding("YN-230", "doing", x227) });
+  const label = (req, sections = [card]) => block(pageBlocks([req], sections).blocks, req.n).state;
+  const going = (extra = {}, task = {}, responsible = x227) => request(50, 60, "doing", [withTask(routed(card, "YN-230", "doing", responsible), task)], extra);
+  assert.equal(label(request(50, 60, "done", [withTask(routed(card, "YN-230", "done", null))], { delivery: "rejected" })), "done", "done comes first");
+  assert.equal(label(going({ delivery: "rejected" })), "deliveryFailed");
+  for (const delivery of ["sending", "uncertain", "unknown", null]) assert.equal(label(going({ delivery })), "unconfirmed", String(delivery));
+  const question = section("yn-230/q", "ask", "选哪个？", 1, 5, lead, { ask: ask("选哪个？", "open"), card: binding("YN-230", "doing", x227) });
+  assert.equal(label(going(), [card, question]), "decide");
+  assert.equal(label(request(50, 60, "answered", [])), "accept");
+  const waits = block(pageBlocks([going({}, { blocker: "等 core.40 发布后用户安装" })], [card]).blocks, 50);
+  assert.deepEqual([waits.state, waits.next], ["condition", { kind: "condition", text: "等 core.40 发布后用户安装", task: "YN-230" }]);
+  assert.equal(label(going({}, {}, { ...x227, state: "idle" })), "going", "an executor that has stopped: only facts, no verdict");
+  assert.equal(label(going({}, {}, { agentId: "lead", name: "Dev Lead", kind: "lead", state: "active" })), "team");
+  assert.equal(label(request(50, 1, "waiting", [])), "frontDesk");
+});
+
+test("R-38 a progress written before later facts says which, at most three kinds; several tasks name their outcomes", () => {
+  ids = 900;
+  const card = planCard("yn-231", "YN-231", [{ id: "a", text: "导出", state: "doing", prs: [7] }], 30, { status: status(30, true) });
+  const r = withTask(routed(card, "YN-231", "doing", x227, [], 5), { prs: [pull(7, null)] });
+  const req = request(60, 300, "doing", [r], {
+    replies: [{ n: 1, text: "还要导入", textBlocks: null, images: [], files: [], at: at(2), messageId: "f1", deliveredTo: [] }],
+    lines: [{ kind: "done", task: "YN-231", status: "done", at: at(1), cardSectionId: card.id, title: card.title }],
+  });
+  const stale = block(pageBlocks([req], [card]).blocks, 60).stale;
+  assert.equal(stale.at, card.updatedAt);
+  assert.equal(stale.expired, true, "its status is past its validity");
+  assert.deepEqual(stale.facts, [{ kind: "merged", prs: [7] }, { kind: "result", task: "YN-231" }, { kind: "ended", task: "YN-231" }]);
+
+  const a = planCard("yn-232", "YN-232", [{ id: "a", text: "契约", state: "done" }], 10, { card: binding("YN-232", "doing", x227, {}) });
+  a.card.task.shortName = "契约";
+  const b2 = planCard("yn-233", "YN-233", [{ id: "a", text: "视图", state: "todo" }], 10);
+  b2.card.task.shortName = "视图";
+  const both = request(61, 300, "doing", [withTask(routed(a, "YN-232", "doing", x227)), withTask(routed(b2, "YN-233", "doing", x227))]);
+  const bar = block(pageBlocks([both], [a, b2]).blocks, 61).now;
+  assert.deepEqual(bar.segments.map((s) => s.name), ["契约 · 契约", "视图 · 视图"]);
+  assert.deepEqual([bar.label, bar.count, bar.total], ["done", 1, 2], "no step names a PR: done, not available");
 });
