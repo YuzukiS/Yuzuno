@@ -53,6 +53,7 @@ export const progressText = strings(
     installedRelease: (release: string) => `Installed ${release}`,
     mergedAfter: (n: number) => `${n} merged ${n === 1 ? "PR" : "PRs"} linked to this project ${n === 1 ? "is" : "are"} not in this version`,
     related: "Related requests",
+    replied: (who: string) => `${who} replied`,
     stale: (time: string, facts: string[]) => `Summary written ${time}${facts.length ? `; since then ${facts.join(", ")}` : ""}: what follows may be out of date`,
     expired: "Summary past its validity",
     fact: {
@@ -113,6 +114,7 @@ export const progressText = strings(
     installedRelease: (release) => `已装 ${release}`,
     mergedAfter: (n) => `当前版本未包含本项目关联的 ${n} 个已合并 PR`,
     related: "相关请求",
+    replied: (who) => `${who} 回复`,
     stale: (time, facts) => `摘要写于 ${time}${facts.length ? `；之后${facts.join("、")}` : ""}，下面可能已不准`,
     expired: "摘要已过有效期",
     fact: {
@@ -122,7 +124,7 @@ export const progressText = strings(
       followUp: (n) => `你追问了 ${n} 次`,
     },
     stats: (task, who, prs, ago) => `${task}${who ? ` · ${who}` : ""} · ${prs} 个 PR · 最后变化 ${ago}`,
-    noSummary: "还没有进度摘要，以上由 Core 统计",
+    noSummary: "还没有进度摘要，上一行由 Core 统计",
     followUp: "↩ 追问",
     details: (got, left) => `明细：已得到 ${got} · 还差 ${left}`,
     detailsPlain: "明细",
@@ -353,7 +355,33 @@ export function NowLine({ block }: { block: RequestBlock }) {
         <span>{now.text}</span>
       </p>
     );
-  return <StatsLine block={block} />;
+  return (
+    <>
+      {block.reply && <ReplyLine reply={block.reply} />}
+      <StatsLine block={block} />
+    </>
+  );
+}
+
+/**
+ * The front desk's newest reply (R-43): with no progress yet, the last the project said to the user is its first
+ * look, not only in the folded conversation. At most three lines; the whole of it stays in the conversation.
+ */
+function ReplyLine({ reply }: { reply: NonNullable<RequestBlock["reply"]> }) {
+  const language = useLanguage();
+  const t = progressText(language);
+  const time = useTimeDisplay();
+  const agents = useContext(CardAgents);
+  const who = agents.get(reply.by.agentId)?.name || reply.by.name;
+  return (
+    <p className="request-reply">
+      <span className="request-bar-label">{t.replied(who)}</span>
+      <span className="request-reply-text">{reply.text}</span>
+      <Tip content={<TipText title={absolute(reply.at, time)} />} describe={false}>
+        <time className="request-reply-at" dateTime={reply.at}>{relative(reply.at, language)}</time>
+      </Tip>
+    </p>
+  );
 }
 
 /**

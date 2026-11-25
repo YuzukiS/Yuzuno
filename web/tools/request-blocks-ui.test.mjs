@@ -194,7 +194,7 @@ test("the same in Chinese", () => {
   assert.equal(page.text(page.block(8).querySelector(".request-block-action")), "确认完成");
   assert.equal(page.text(page.block(9).querySelector(".request-block-follow")), "↩ 追问");
   assert.equal(page.text(page.block(9).querySelector(".request-state")), "团队在办");
-  assert.match(page.text(page.block(9).querySelector(".request-stats")), /^YN-93 · YN-91 · Design · 0 个 PR · 最后变化 .+还没有进度摘要，以上由 Core 统计$/);
+  assert.match(page.text(page.block(9).querySelector(".request-stats")), /^YN-93 · YN-91 · Design · 0 个 PR · 最后变化 .+还没有进度摘要，上一行由 Core 统计$/);
   assert.equal(page.text(page.block(8).querySelector(".request-block-more[data-evidence]")), "依据：交付 2 · 对话 1");
   assert.equal(page.text(page.block(7).querySelector(".request-block-more")), "1 个任务 · 对话 3 条");
   const group = page.document.querySelector("[data-project-block] > summary");
@@ -771,4 +771,24 @@ test("R-38 the first look: its state, its bar by outcome, the outcome a segment 
   assert.deepEqual([...b.querySelectorAll(".request-evidence section")].map((s) => [s.dataset.evidence, page.text(s.querySelector("h4"))]),
     [["pending", "Merged · install not verified 1"], ["open", "Not merged yet 1"]]);
   assert.deepEqual(page.errors, []);
+});
+
+test("R-43 a request with no progress yet shows the front desk's newest reply outside the fold, in both languages", async () => {
+  const said = "I'll write the rule into what Agents see when they submit a Job, and check whether main allows a fast-forward.";
+  const leadHere = { agentId: "d", name: "Dev Lead", kind: "lead", state: "active" };
+  // R-42: routed to a task the lead answers for, with no card and no progress yet.
+  const r42 = request(42, 4, "doing", [routed(null, "YN-230", "doing", leadHere)], { notes: [{ note: said, by: desk, at: ago(3) }] });
+  for (const lang of ["en", "zh"]) {
+    const page = mount({ lang });
+    page.window.renderPage({ requests: [r42], sections: [] });
+    const b = page.block(42);
+    const reply = b.querySelector(".request-block-now .request-reply");
+    assert.ok(reply, "in the first look, not behind the fold");
+    assert.equal(b.querySelector(".request-block-more").getAttribute("aria-expanded"), "false");
+    assert.equal(page.text(reply.querySelector(".request-bar-label")), lang === "en" ? "Dev Lead replied" : "Dev Lead 回复");
+    assert.equal(page.text(reply.querySelector(".request-reply-text")), said);
+    assert.equal(reply.querySelector("time").getAttribute("datetime"), r42.notes[0].at);
+    assert.ok(b.querySelector(".request-stats"), "Core's count stays under it");
+    assert.deepEqual(page.errors, []);
+  }
 });
