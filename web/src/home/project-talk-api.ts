@@ -135,18 +135,33 @@ export const readFrontDesk = (projectId: string, signal?: AbortSignal) =>
 export const saveFrontDesk = (projectId: string, expectedVersion: number, agentId: string | null) =>
   api<FrontDesk>(`${base(projectId)}/front-desk`, { method: "PUT", body: JSON.stringify({ expectedVersion, agentId }) });
 
+/** A request as Core gives it: a Core from before Home's images (YN-134) lists none, and one from before its files (YN-145) either. */
+const shown = (request: ProjectRequest): ProjectRequest => ({
+  ...request,
+  images: request.images ?? [],
+  files: request.files ?? [],
+  replies: request.replies.map((reply) => ({ ...reply, images: reply.images ?? [], files: reply.files ?? [] })),
+});
+
 /** The Project's requests, newest first: the newest page, or those numbered below `before`. */
 export const readRequests = (projectId: string, before?: number, signal?: AbortSignal) =>
   api<RequestPage>(`${base(projectId)}/requests${before ? `?before=${before}` : ""}`, { signal }).then((page) => ({
     ...page,
-    // A Core from before Home's images (YN-134) lists none, and one from before its files (YN-145) either.
-    requests: page.requests.map((request) => ({
-      ...request,
-      images: request.images ?? [],
-      files: request.files ?? [],
-      replies: request.replies.map((reply) => ({ ...reply, images: reply.images ?? [], files: reply.files ?? [] })),
-    })),
+    requests: page.requests.map(shown),
   }));
+
+/**
+ * The request Core answered a new request with (project_requests.rs `submit`), as the page reads it: only one whole
+ * enough to draw a block from, and the one these words made; else none, and the page reads its requests for it.
+ */
+function answered(value: unknown, clientMessageId: string): ProjectRequest | null {
+  const request = value as Partial<ProjectRequest> | null | undefined;
+  if (!request || typeof request !== "object" || typeof request.n !== "number" || typeof request.id !== "string") return null;
+  if (request.messageId !== clientMessageId || typeof request.text !== "string" || typeof request.createdAt !== "string") return null;
+  const lists = [request.replies, request.notes, request.routes, request.cards, request.lines];
+  if (!lists.every(Array.isArray) || typeof request.state !== "string" || typeof request.progress !== "object" || !request.progress) return null;
+  return shown(request as ProjectRequest);
+}
 
 /** The user's confirmation that request R-n is done (YN-184): only the user's page sends it. */
 export const confirmRequest = (projectId: string, n: number, workspaceId: string) =>
@@ -189,7 +204,9 @@ export const forgetWords = (slot: string) => outbox.save(slot, null);
  * client ID; other words are a new message. Once Core answers it keeps the
  * message, listed with how its delivery stands and sent again from there
  * (`resendKept`), and the slot is cleared; so is it when Core refused it
- * before keeping it. Without an answer the words stay in the slot.
+ * before keeping it. Without an answer the words stay in the slot. A new
+ * request comes back as Core answered it (`request`), when whole (YN-226);
+ * the client ID is in the slot before anything is sent (`pendingWords`).
  */
 export async function sendWords(slot: string, projectId: string, workspaceId: string, words: Words, request?: number) {
   const kept = pendingWords(slot);
@@ -211,7 +228,7 @@ export async function sendWords(slot: string, projectId: string, workspaceId: st
   };
   const path = request ? `${base(projectId)}/requests/${request}/replies` : `${base(projectId)}/requests`;
   try {
-    const answer = await post<{ receipt?: MessageReceipt; receipts?: MessageReceipt[] }>(path, {
+    const answer = await post<{ receipt?: MessageReceipt; receipts?: MessageReceipt[]; request?: unknown; reply?: { n?: unknown } }>(path, {
       workspaceId,
       text: record.text,
       ...(record.textBlocks ? { textBlocks: record.textBlocks } : {}),
@@ -221,7 +238,12 @@ export async function sendWords(slot: string, projectId: string, workspaceId: st
       clientMessageId: record.clientMessageId,
     });
     settle();
-    return { clientMessageId: record.clientMessageId, receipts: answer.receipts ?? (answer.receipt ? [answer.receipt] : []) };
+    return {
+      clientMessageId: record.clientMessageId,
+      receipts: answer.receipts ?? (answer.receipt ? [answer.receipt] : []),
+      request: request ? null : answered(answer.request, record.clientMessageId),
+      reply: request && typeof answer.reply?.n === "number" ? answer.reply.n : null,
+    };
   } catch (error) {
     // Core says nothing was kept or sent: sending again is a new message.
     if (error instanceof HttpError && error.code === "message_not_submitted") settle();

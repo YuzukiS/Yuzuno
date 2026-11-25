@@ -86,6 +86,24 @@
 .request-block[data-group="needs"] {
   border-color: color-mix(in srgb, var(--home-attention) 55%, var(--line));
 }
+/* The request the user just sent (YN-226): its edge in the send button's colour while it comes into place (the first
+   26% of settle, the rise's 310 ms of its 1200), then back to its own over the rest. Its edge only, a light stroke:
+   a focused control in it keeps its own outline, plainly another. surface.ts arriveIn moves it; request-arrival.ts
+   marks it. Under reduced motion the edge stays as it is while it is marked, and goes with the mark. */
+.request-block[data-arriving] {
+  animation: request-arrived var(--motion-settle) ease-out;
+}
+@keyframes request-arrived {
+  0%,
+  26% {
+    border-color: var(--home-arrival);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .request-block[data-arriving] {
+    border-color: var(--home-arrival);
+  }
+}
 .request-block-head {
   grid-area: head;
   display: flex;

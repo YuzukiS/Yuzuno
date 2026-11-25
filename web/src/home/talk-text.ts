@@ -83,6 +83,14 @@ export const talkText = strings(
       `The project (front desk ${desk}) passes it to the right responsible Agent or opens a card; your words go as they are.`,
     send: "Send",
     kept: "No answer from Core yet. Sending again sends the same message, never a second one.",
+    // What the user just sent, where its block is not in sight (YN-226).
+    sending: "Sending…",
+    recorded: (n: number) => `Recorded as R-${n}`,
+    recordedUndelivered: (n: number) => `Recorded as R-${n} · not confirmed delivered`,
+    added: (n: number) => `Added to R-${n}`,
+    showArrived: "Show",
+    showArrivedLabel: (n: number) => `Show request R-${n}`,
+    dismissArrived: "Dismiss",
     reading: "Reading requests…",
     // Images (YN-134).
     deskNoImages: (desk: string) =>
@@ -205,6 +213,13 @@ export const talkText = strings(
     hint: (desk) => `项目（前台 ${desk}）会转给合适的负责人或新开卡片，你的原话原样带过去`,
     send: "发送",
     kept: "还没收到 Core 的回答。再发一次发的是同一条消息，不会发两遍。",
+    sending: "发送中…",
+    recorded: (n) => `已记下为 R-${n}`,
+    recordedUndelivered: (n) => `已记下为 R-${n} · 没确认送达`,
+    added: (n) => `已追加到 R-${n}`,
+    showArrived: "查看",
+    showArrivedLabel: (n) => `查看请求 R-${n}`,
+    dismissArrived: "关闭",
     reading: "正在读取需求…",
     deskNoImages: (desk) => `${desk}（项目的前台）不能接收图片（Codex、Claude 和 OpenCode Agent 可以）。移除图片，或在设置里换一个前台。`,
     deskNoFiles: (desk) => `${desk}（项目的前台）不能接收文件（Codex、Claude 和 OpenCode Agent 可以）。移除文件，或在设置里换一个前台。`,

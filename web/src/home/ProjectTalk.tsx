@@ -8,6 +8,7 @@ import { useLanguage } from "../i18n";
 import { MessageContent } from "../MessageContent";
 import type { TextBlock } from "../message-content";
 import { settleWhenLanded } from "../settle";
+import { arriveIn } from "../surface";
 import { Tip, TipText } from "../Tip";
 import { useTimeDisplay } from "../time-preferences";
 import { CardAgents } from "./card-responsible";
@@ -20,6 +21,7 @@ import type { HomeTarget } from "./home-navigation";
 import { scrollWithinHome } from "./HomeJumps";
 import { draftStore } from "./reply-drafts";
 import { ReplyLength, replyTooLong } from "./reply-limit";
+import { markArrived } from "./request-arrival";
 import { conversation, earlierBefore, itemKey, replyDelivered, untitledHint, type TalkItem } from "./project-talk";
 import {
   delivered,
@@ -61,6 +63,50 @@ function loadDraft(slot: string): Draft {
   return kept;
 }
 
+/** A draft worth keeping: words, images, files or the request it follows up. */
+const worthKeeping = (draft: Draft) => !!(draft.text.trim() || draft.images?.length || draft.files?.length || draft.quote !== undefined);
+
+/**
+ * What stays of the draft once Core has the words sent from `sent` (YN-226): what the user wrote, attached or chose
+ * while they went. Nothing, when the draft is still the one sent. Words written after the words sent stay, without
+ * them; words changed among them stay whole, so nothing the user wrote is lost. Images and files added meanwhile
+ * stay, and so does another request chosen to follow up.
+ */
+function afterSent(now: Draft, sent: Draft): Draft {
+  let text = now.text;
+  let blocks = now.blocks;
+  if (now.text === sent.text) {
+    text = "";
+    blocks = undefined;
+  } else if (now.text.startsWith(sent.text)) {
+    const rest = now.text.slice(sent.text.length);
+    const cut = sent.text.length + rest.length - rest.trimStart().length;
+    text = now.text.slice(cut);
+    blocks = now.blocks?.filter((block) => block.start >= cut).map((block) => ({ ...block, start: block.start - cut, end: block.end - cut }));
+  }
+  const sentImages = new Set((sent.images ?? []).map((image) => image.id));
+  const sentFiles = new Set((sent.files ?? []).map((file) => file.id));
+  const images = (now.images ?? []).filter((image) => !sentImages.has(image.id));
+  const files = (now.files ?? []).filter((file) => !sentFiles.has(file.id));
+  const quote = now.quote === sent.quote ? undefined : now.quote;
+  return {
+    text,
+    ...(blocks?.length ? { blocks } : {}),
+    ...(images.length ? { images } : {}),
+    ...(files.length ? { files } : {}),
+    ...(quote !== undefined ? { quote } : {}),
+    at: new Date().toISOString(),
+  };
+}
+
+/** A read of the newest requests, with the requests Core answered this page's sends with that it does not list yet
+ * (YN-226); those it lists are no longer kept. */
+function withConfirmed(value: RequestPage, kept: Map<number, ProjectRequest>): RequestPage {
+  for (const request of value.requests) kept.delete(request.n);
+  if (!kept.size) return value;
+  return { ...value, requests: [...kept.values(), ...value.requests].sort((a, b) => b.n - a.n) };
+}
+
 /** The words as they are sent: trimmed, as every reply is (reply-limit.tsx), their pasted blocks moved with them. */
 function trimmed(words: ReplyWords): { text: string; textBlocks?: TextBlock[] } {
   const start = words.text.length - words.text.trimStart().length;
@@ -80,6 +126,16 @@ export type TalkBusy = { confirming: ReadonlySet<number>; resending: ReadonlySet
 
 /** Older requests than those read, for the page's blocks: whether there are, a read under way, and how to read them. */
 export type TalkOlder = { hasMore: boolean; reading: boolean; read: () => void };
+
+/**
+ * What the user just sent has landed (YN-226), told once for each send, as soon as Core's answer or a read of the
+ * requests has it: a new request R-n, or a follow-up to R-n. `fresh`: no block of R-n was on the page before this
+ * send; `delivered`: Core says it reached its Agents.
+ */
+export type TalkArrival = { kind: "request" | "follow"; n: number; seq: number; fresh: boolean; delivered: boolean };
+
+/** The send under way: its words' client ID, what it is, the requests shown before it, and whether it was told. */
+type Going = { id: string; kind: TalkArrival["kind"]; n?: number; before: ReadonlySet<number>; told: boolean };
 
 /**
  * "Talk to the project" on a Project's page (YN-86 §4.1; YN-212 §3–4): it
@@ -107,6 +163,9 @@ export function ProjectTalk({
   onShowRequest,
   onShowChat,
   onFocusTarget,
+  onArrival,
+  notice = null,
+  onDismissNotice,
 }: {
   projectId: string;
   projectName: string;
@@ -136,12 +195,19 @@ export function ProjectTalk({
   onShowChat?: () => void;
   /** The composer took focus following up request `n`: the page keeps that request in view above the dock (§4.4). */
   onFocusTarget?: (n: number) => void;
+  /** What the user just sent has landed (YN-226): the page marks its block, or shows `notice`. */
+  onArrival?: (arrival: TalkArrival) => void;
+  /** Where what was just sent went, said above the composer while its block is not in sight (YN-226). */
+  notice?: TalkArrival | null;
+  /** The notice goes: closed, its request shown, or another send under way. */
+  onDismissNotice?: () => void;
 }) {
   const language = useLanguage();
   const t = talkText(language);
   const time = useTimeDisplay();
   const agents = useContext(CardAgents);
   const root = useRef<HTMLElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
   const composer = useRef<HomeComposerHandle>(null);
   const wordRefs = useRef(new Map<number, HTMLLIElement>());
 
@@ -151,6 +217,11 @@ export function ProjectTalk({
   const [older, setOlder] = useState<{ requests: ProjectRequest[]; hasMore: boolean } | null>(null);
   const [loadError, setLoadError] = useState("");
   const [reads, setReads] = useState(0);
+  // Requests Core answered this page's sends with (YN-226), drawn before a read lists them. A read that does not list
+  // one yet started before Core kept it: the page keeps it, so its block never leaves and comes back. Listed, it is
+  // the read's.
+  const confirmed = useRef({ projectId, requests: new Map<number, ProjectRequest>() });
+  if (confirmed.current.projectId !== projectId) confirmed.current = { projectId, requests: new Map() };
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
@@ -158,7 +229,7 @@ export function ProjectTalk({
     readRequests(projectId, undefined, signal)
       .then((value) => {
         if (signal.aborted) return;
-        setPage(value);
+        setPage(withConfirmed(value, confirmed.current.requests));
         setLoadError("");
       })
       .catch((e) => !signal.aborted && setLoadError(errorText(e)));
@@ -269,13 +340,15 @@ export function ProjectTalk({
   // What the user writes: one draft per project, a follow-up when it quotes a request.
   const draftSlot = talkSlot(workspaceId, projectId);
   const [draft, setDraft] = useState<Draft>(() => loadDraft(draftSlot));
+  const draftNow = useRef(draft);
+  draftNow.current = draft;
   // The request quoted, by its number: one not among those read (an older one, kept with the draft) is still that request.
   const quote = draft.quote !== undefined ? { n: draft.quote, title: titleOrNumber(draft.quote) } : null;
   const words: ReplyWords = { text: draft.text, ...(draft.blocks ? { blocks: draft.blocks } : {}), ...(draft.images?.length ? { images: draft.images } : {}), ...(draft.files?.length ? { files: draft.files } : {}) };
   const write = (next: Partial<Draft>) =>
     setDraft((was) => {
       const value: Draft = { ...was, ...next, at: new Date().toISOString() };
-      drafts.save(draftSlot, value.text.trim() || value.images?.length || value.files?.length || value.quote !== undefined ? value : null);
+      drafts.save(draftSlot, worthKeeping(value) ? value : null);
       return value;
     });
   const sendSlot = talkSlot(workspaceId, projectId, quote?.n);
@@ -286,8 +359,10 @@ export function ProjectTalk({
     ...(images.length ? { images: images.map((image) => image.id) } : {}),
     ...(files.length ? { files } : {}),
   };
+  const [busy, setBusy] = useState(false);
   const kept = pendingWords(sendSlot);
-  const unanswered = !!kept && kept.text === outgoing.text && JSON.stringify(kept.images ?? []) === JSON.stringify(outgoing.images ?? []) &&
+  // Kept from a send Core did not answer; not the send under way, which is kept in the slot as it goes.
+  const unanswered = !busy && !!kept && kept.text === outgoing.text && JSON.stringify(kept.images ?? []) === JSON.stringify(outgoing.images ?? []) &&
     JSON.stringify(kept.files ?? []) === JSON.stringify(outgoing.files ?? []);
   // Words Core keeps by now, listed with their own delivery, are no longer this page's to send.
   useEffect(() => {
@@ -297,7 +372,6 @@ export function ProjectTalk({
       if (words && ids.has(words.clientMessageId)) forgetWords(slot);
     }
   }, [requests, workspaceId, projectId]);
-  const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [sendError, setSendError] = useState("");
   const deskId = desk?.effectiveAgentId ?? null;
@@ -307,21 +381,89 @@ export function ProjectTalk({
   const deskAgent = deskId ? agents.get(deskId) : undefined;
   const refusal = !quote && deskAgent && !takesImages(deskAgent.harness) ? t.deskNoImages(deskName) : null;
   const filesRefusal = !quote && deskAgent && !agentTakesFiles(deskAgent) ? t.deskNoFiles(deskName) : null;
-  const canSend =
-    !readOnly && !busy && !blocked && !uploading && !(images.length && refusal) && !(files.length && filesRefusal) && !!outgoing.text &&
+  // The words could go now, but for a send under way (YN-226: the button shows it is ready, then that they go).
+  const ready =
+    !readOnly && !blocked && !uploading && !(images.length && refusal) && !(files.length && filesRefusal) && !!outgoing.text &&
     !replyTooLong(words.text);
+  const canSend = ready && !busy;
+
+  // Where what the user sends lands (YN-226), told once for each send, by Core's answer or by a read of the requests
+  // that lists it first: the page marks its block, or says where it went. A send that fails tells nothing.
+  const going = useRef<Going | null>(null);
+  const told = useRef(0);
+  const [landed, setLanded] = useState<{ selector: string; seq: number } | null>(null);
+  const modeNow = useRef(mode);
+  modeNow.current = mode;
+  function tell(n: number, delivered: boolean, selector: string) {
+    const now = going.current;
+    if (!now || now.told) return;
+    now.told = true;
+    told.current += 1;
+    // In the conversation the words themselves arrive; the page says where their request is.
+    if (modeNow.current === "chat") setLanded({ selector, seq: told.current });
+    onArrival?.({ kind: now.kind, n, seq: told.current, fresh: !now.before.has(n), delivered });
+  }
+  useEffect(() => {
+    const now = going.current;
+    if (!now || now.told) return;
+    if (now.kind === "request") {
+      const listed = requests.find((request) => request.messageId === now.id);
+      if (listed) tell(listed.n, delivered(listed.delivery), `[data-words="${listed.n}"]`);
+      return;
+    }
+    const request = requests.find((r) => r.n === now.n);
+    const reply = request?.replies.find((r) => r.messageId === now.id);
+    if (request && reply) tell(request.n, replyDelivered(reply), `[data-reply="${request.n}:${reply.n}"]`);
+    // tell reads what is under way when called.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requests]);
+  const played = useRef(0);
+  useLayoutEffect(() => {
+    if (!landed || played.current === landed.seq || mode !== "chat") return;
+    const said = root.current?.querySelector<HTMLElement>(landed.selector);
+    // Drawn with the next read of the requests: this runs again then.
+    if (!said) return;
+    played.current = landed.seq;
+    arriveIn(said, false);
+    markArrived(said);
+  }, [landed, mode, items]);
+
   async function send() {
     if (!canSend) return;
+    // The draft as it goes: what the user writes, attaches or chooses meanwhile stays (afterSent).
+    const sent = draft;
     setBusy(true);
     setSendError("");
+    onDismissNotice?.();
+    const sending = sendWords(sendSlot, projectId, workspaceId, outgoing, quote?.n);
+    // The words' client ID, kept in their slot before anything goes.
+    const id = pendingWords(sendSlot)?.clientMessageId;
+    going.current = id
+      ? { id, kind: quote ? "follow" : "request", n: quote?.n, before: new Set(requests.map((r) => r.n)), told: false }
+      : null;
     try {
-      await sendWords(sendSlot, projectId, workspaceId, outgoing, quote?.n);
-      const empty: Draft = { text: "", at: new Date().toISOString() };
-      setDraft(empty);
-      drafts.save(draftSlot, null);
+      const answer = await sending;
+      const focused = !!formRef.current?.contains(document.activeElement);
+      setDraft((was) => {
+        const next = afterSent(was, sent);
+        drafts.save(draftSlot, worthKeeping(next) ? next : null);
+        return next;
+      });
+      // Words written meanwhile stay where the user was writing them, at their end.
+      if (focused && afterSent(draftNow.current, sent).text) requestAnimationFrame(() => composer.current?.focusEnd());
+      if (answer.request) {
+        // Drawn from Core's answer at once; the read below lists it too.
+        const request = answer.request;
+        confirmed.current.requests.set(request.n, request);
+        setPage((was) => (was ? withConfirmed(was, confirmed.current.requests) : was));
+        tell(request.n, delivered(request.delivery), `[data-words="${request.n}"]`);
+      } else if (quote && answer.reply !== null) {
+        tell(quote.n, answer.receipts.length > 0 && answer.receipts.every((r) => delivered(r.status)), `[data-reply="${quote.n}:${answer.reply}"]`);
+      }
       toBottom.current = true;
       setReads((n) => n + 1);
     } catch (e) {
+      going.current = null;
       // An older Core refused the images or files before reading anything: nothing was sent, and the draft stays.
       if (olderCoreImages(e) || olderCoreFiles(e)) {
         forgetWords(sendSlot);
@@ -549,14 +691,43 @@ export function ProjectTalk({
   // The composer (YN-212 §4): in Home's dock when there is one, under the conversation otherwise.
   const form = (
     <form
+      ref={formRef}
       className={`project-talk-compose${dock ? " project-dock-form" : ""}`}
       data-quoting={quote ? "" : undefined}
+      data-state={busy ? "sending" : ready ? "ready" : "idle"}
       onSubmit={(event) => {
         event.preventDefault();
         void send();
       }}
       onFocus={() => quote && onFocusTarget?.(quote.n)}
     >
+      {/* Above the field, over the page (YN-226): where what was just sent went, while its block is not in sight; and,
+          under reduced motion, that the words are going, which the spinner says otherwise. */}
+      <div className="project-talk-arrival" role="status" data-sending={busy ? "" : undefined}>
+        {busy ? (
+          <span className="project-talk-notice" data-tone="quiet">{t.sending}</span>
+        ) : notice ? (
+          <span key={notice.seq} className="project-talk-notice" data-tone={notice.delivered ? undefined : "attention"}>
+            <span className="project-talk-notice-text">
+              {notice.kind === "follow" ? t.added(notice.n) : notice.delivered ? t.recorded(notice.n) : t.recordedUndelivered(notice.n)}
+            </span>
+            <button
+              type="button"
+              className="talk-link"
+              aria-label={t.showArrivedLabel(notice.n)}
+              onClick={() => {
+                onDismissNotice?.();
+                onShowRequest?.(notice.n);
+              }}
+            >
+              {t.showArrived}
+            </button>
+            <button type="button" className="icon-button" aria-label={t.dismissArrived} onClick={() => onDismissNotice?.()}>
+              <X size={12} aria-hidden="true" />
+            </button>
+          </span>
+        ) : null}
+      </div>
       {quote && (
         <p className="project-talk-quoting">
           <span>{t.followUpOf(quote.title)}</span>
@@ -580,7 +751,7 @@ export function ProjectTalk({
           attach={readOnly ? undefined : { projectId, refusal, files: { refusal: filesRefusal } }}
           onUploading={setUploading}
         />
-        <button type="submit" className="primary-button project-talk-send" aria-label={t.send} disabled={!canSend}>
+        <button type="submit" className="primary-button project-talk-send" aria-label={t.send} aria-busy={busy || undefined} disabled={!canSend}>
           {busy ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <Send size={14} aria-hidden="true" />}
         </button>
       </div>

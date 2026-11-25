@@ -234,6 +234,7 @@ p.request-deliverable:hover {
   white-space: nowrap;
 }
 .project-talk-compose {
+  position: relative;
   display: grid;
   flex: none;
   gap: 4px;
@@ -286,6 +287,108 @@ p.request-deliverable:hover {
   min-width: 32px;
   height: 32px;
   padding: 0;
+}
+/* Send (YN-226). From disabled to ready, once, as the draft first has words: its opacity eases over small, and
+   nothing changes as the user writes on or composes with an input method. Return presses it as the pointer does:
+   back from the pressed-in scale and shadow (styles.css :active) over micro. While the words go it stays as it
+   was, its spinner for its arrow; the draft keeps its contrast, and so does what the user writes meanwhile. */
+.project-talk-compose .project-talk-send {
+  transition:
+    opacity var(--motion-small) var(--ease-standard),
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard),
+    box-shadow var(--motion-micro) var(--ease-standard),
+    transform var(--motion-micro) var(--ease-spring);
+}
+.project-talk-compose[data-state="sending"] .project-talk-send {
+  animation: talk-send-press var(--motion-micro) var(--ease-spring);
+}
+.project-talk-compose[data-state="sending"] .project-talk-send:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+@keyframes talk-send-press {
+  from {
+    transform: scale(0.97);
+    box-shadow: var(--press-shadow);
+  }
+}
+/* Above the field, over the page's end, so the dock keeps its height (YN-226): where what was just sent went, while
+   its block is not in sight; under reduced motion, where the spinner stands still, that the words are going. */
+.project-talk-arrival {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 5;
+  max-width: 100%;
+}
+.project-talk-arrival:empty,
+.project-talk-arrival[data-sending] {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-talk-arrival[data-sending] {
+    display: block;
+  }
+}
+.project-talk-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 4px 2px 11px;
+  border: 1px solid color-mix(in srgb, var(--home-arrival) 45%, var(--line));
+  border-radius: 999px;
+  background: var(--accent-wash, var(--home-soft));
+  color: var(--accent-ink, var(--ink));
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  animation: talk-notice-in var(--motion-small) var(--ease-standard);
+}
+.project-talk-notice[data-tone="attention"] {
+  border-color: color-mix(in srgb, var(--home-attention) 55%, var(--line));
+  background: color-mix(in srgb, var(--home-attention) 16%, var(--paper));
+  color: var(--home-attention-ink);
+}
+.project-talk-notice[data-tone="quiet"] {
+  padding-right: 11px;
+  border-color: var(--line);
+  background: var(--home-soft);
+  color: var(--home-ink-2);
+}
+.project-talk-notice-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-talk-notice .talk-link {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: inherit;
+  font-weight: 600;
+}
+.project-talk-notice .icon-button {
+  flex: none;
+  color: inherit;
+}
+/* As surface.ts's small enters: up from 4px (App.tsx useSurfaceIn). */
+@keyframes talk-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+/* The words just sent, in the conversation (YN-226): their bubble's edge as a request's block's (request-blocks.css). */
+.project-talk-mine[data-arriving] .project-talk-bubble {
+  animation: request-arrived var(--motion-settle) ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-talk-mine[data-arriving] .project-talk-bubble {
+    border-color: var(--home-arrival);
+  }
 }
 .project-talk-hint {
   margin: 0;

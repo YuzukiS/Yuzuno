@@ -21,6 +21,9 @@
   --home-error: var(--error-ink, var(--coral));
   --home-error-ink: color-mix(in srgb, var(--home-error) 60%, var(--ink));
   --home-new: color-mix(in srgb, var(--accent-ink, var(--green)) 85%, var(--ink));
+  /* What the user just sent, as it lands (YN-226): the send button's own colour (appearance.css, palettes.css
+     --button-fill); without a palette, the garden send button's edge (styles.css .primary-button). */
+  --home-arrival: var(--button-fill, #ddbd67);
 }
 .home-view {
   overflow: auto;

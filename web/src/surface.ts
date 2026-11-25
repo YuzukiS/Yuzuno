@@ -183,6 +183,42 @@ export function useRevealIn(ref: RefObject<HTMLElement | null>, key: unknown) {
   }, []);
 }
 
+/**
+ * What the user just sent arrives in its place (YN-226): a request's block
+ * on its Project's page, or the words in its conversation. It rises 8px into
+ * place as it fades in, over --motion-card-in (what comes into a card); with
+ * `room`, the box it is in also opens from nothing to its height over
+ * --motion-medium, pushing what is below down, as `useRevealIn` does, its gap
+ * above taken back with it (the gap of the grid it is in). Only the user's
+ * own send arrives this way: what arrives on its own fades in only
+ * (`useArrivalsIn`, T-19 M9). Call it with the box drawn, before it is
+ * painted. Under reduced motion, or without the Web Animations API, nothing
+ * plays.
+ */
+export function arriveIn(element: HTMLElement, room: boolean): Animation[] {
+  if (typeof element.animate !== "function" || window.matchMedia?.(REDUCED).matches) return [];
+  const rise = tokenMs("--motion-card-in");
+  const open = tokenMs("--motion-medium");
+  if (!rise) return [];
+  const easing = ease("--ease-standard", "ease");
+  const played = [element.animate([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: rise, easing })];
+  if (room && open) {
+    const height = element.getBoundingClientRect().height;
+    const parent = element.parentElement;
+    const gap = parent ? parseFloat(getComputedStyle(parent).rowGap) || 0 : 0;
+    const overflow = element.style.overflow;
+    element.style.overflow = "hidden";
+    const opening = element.animate([{ height: "0px", marginTop: `${-gap}px` }, { height: `${height}px`, marginTop: "0px" }], { duration: open, easing });
+    const done = () => {
+      element.style.overflow = overflow;
+    };
+    opening.addEventListener("finish", done);
+    opening.addEventListener("cancel", done);
+    played.push(opening);
+  }
+  return played;
+}
+
 /** The box that scrolls `element`: the nearest that can, else the page's. */
 function scrollerOf(element: HTMLElement): HTMLElement | null {
   for (let el = element.parentElement; el; el = el.parentElement) {
