@@ -261,7 +261,8 @@ function driver(page, state, run) {
     await field.click();
     await page.keyboard.type(text);
   };
-  const send = () => page.keyboard.press("Enter");
+  // Return sends on a computer; on a touch screen Return is a new line and the user taps Send (device-preferences.ts).
+  const send = () => (run.phone ? page.locator(".home-dock .project-talk-send").tap() : page.keyboard.press("Enter"));
   const landed = (n, timeout = 5000) => page.waitForFunction((n) => window.__seen.marks.includes(String(n)) || document.querySelector(".project-talk-notice")?.textContent.includes(`R-${n}`), n, { timeout });
   const idle = () => page.waitForFunction(() => document.querySelector(".home-dock .project-talk-compose")?.dataset.state !== "sending", null, { timeout: 8000 });
   const text = () => field.evaluate((el) => el.textContent);
@@ -310,7 +311,7 @@ async function check(run) {
     await d.send();
     await page.waitForFunction(() => document.querySelector(".home-dock .project-talk-compose").dataset.state === "sending");
     const pressed = (await d.seen()).css.filter((name) => name === "talk-send-press");
-    assert.deepEqual(pressed, reduced ? [] : ["talk-send-press"], "Return presses the button");
+    assert.deepEqual(pressed, reduced ? [] : ["talk-send-press"], "Return (or a tap) presses the button");
     const sending = await page.evaluate(() => {
       const slot = document.querySelector(".home-dock .project-talk-arrival");
       const pill = slot.querySelector(".project-talk-notice");
@@ -319,6 +320,9 @@ async function check(run) {
     assert.equal(sending.shown, reduced, reduced ? "Sending… said where the spinner stands still" : "the spinner says it");
     assert.equal(sending.text, d.w.sending);
     assert.equal(sending.opacity, "1", "the draft keeps its contrast");
+    // Back in the field (a tap on Send leaves it on a touch screen), at its end.
+    await d.field.click();
+    await page.keyboard.press("Control+End");
     await page.keyboard.type(run.language === "en" ? " and the logo" : "，还有图标");
     const meanwhile = await d.seen();
     assert.deepEqual(meanwhile.marks, [], "nothing lands while the words go");
@@ -534,10 +538,15 @@ async function check(run) {
       await d.landed(21);
       await d.idle();
       assert.equal(await d.notice(), d.w.recorded(21));
-      assert.ok(await page.evaluate(() => document.querySelector(".home-dock .project-talk-field").contains(document.activeElement)), "the keyboard stays: the field keeps the focus");
+      // The tap left the focus on Send, as the conversation's composer does; nothing of the arrival takes it.
+      const focus = await page.evaluate(() => ({
+        inComposer: !!document.querySelector(".home-dock .project-talk-compose")?.contains(document.activeElement),
+        inNotice: !!document.querySelector(".project-talk-notice")?.contains(document.activeElement),
+      }));
+      assert.deepEqual(focus, { inComposer: true, inNotice: false }, "the focus stays with the composer");
       await shot(page, run, "keyboard-notice");
       await page.setViewportSize(run.viewport);
-      pass("with the keyboard up and the block out of sight, the notice above the field; the focus stays", { keyboard: "simulated" });
+      pass("with the keyboard up and the block out of sight, the notice above the field; the focus stays with the composer", { keyboard: "simulated" });
     }
   } catch (error) {
     await page.screenshot({ path: join(output, `${engine}-${run.name}-failed.png`) }).catch(() => {});
