@@ -656,6 +656,33 @@ test("on Home, a card the user folds while its landing waits for the requests st
   assert.deepEqual(page.errors, []);
 });
 
+// Review 63e8f668: the user's last choice counts. Folded and opened again while the landing waits, the card is open
+// when the landing comes, as the user left it.
+test("on Home, a card folded and opened again while its landing waits is left open", async (t) => {
+  const team = homeData([section("other", 40, 1)], [], [ask("export-paging", 10, 4)]);
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const page = mount({ respond: async (url) => {
+    if (/\/requests(\?|$)/.test(url)) await held;
+    return { body: url === "/api/home" ? team : url === "/api/machine-load" ? machine : { repositories: [], links: [] } };
+  } });
+  t.after(page.close);
+  const shown = () => page.document.querySelector('[data-section-key="export-paging"]');
+  page.window.renderHome({ origin: askReply, back, n: 1 });
+  await until(() => shown() && page.requests.some((r) => /\/requests/.test(r.url)), "the Ask drawn while the requests are read");
+  shown().querySelector(".home-fold").click();
+  await tick(40);
+  assert.ok(shown().querySelector(".home-card-body").hidden, "folded");
+  shown().querySelector(".home-fold").click();
+  await tick(40);
+  assert.ok(!shown().querySelector(".home-card-body").hidden, "and opened again");
+  release();
+  await focused(page, () => shown(), "the landing comes once the requests are read");
+  await tick(200);
+  assert.ok(!shown().querySelector(".home-card-body").hidden, "open, as the user left it");
+  assert.deepEqual(page.errors, []);
+});
+
 test("on Home, another section under the key kept out of view is not opened as the one answered", async () => {
   await arrivals([
     ["key written anew, kept out of view", homeData([section("other", 40, 1)], [], [ask("plan", 31, 2)]), reportReply, (page) => {

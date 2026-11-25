@@ -20,7 +20,8 @@ import type { SeenMark } from "./home-api";
 import { askKey, HomeJumps, nextAsk, scrollWithinHome, waitingAsks } from "./HomeJumps";
 import { RefreshHome } from "./home-tools";
 import { History30, ProjectFacts, RepoBlock } from "./HomePanel";
-import { ProjectTalk, type TalkArrival, type TalkBusy, type TalkCommand, type TalkOlder } from "./ProjectTalk";
+import { ProjectTalk, type InstalledFacts, type TalkArrival, type TalkBusy, type TalkCommand, type TalkOlder } from "./ProjectTalk";
+import { InstalledLine } from "./RequestProgress";
 import { savedView, saveView, type TalkView } from "./project-talk";
 import type { ProjectRequest } from "./project-talk-api";
 import { ProjectTalkLink, type TalkLink } from "./talk-link";
@@ -28,7 +29,7 @@ import { talkText } from "./talk-text";
 import { openTask } from "./CardResponsible";
 import { KeptCardReplies, referableHistory } from "./CardReply";
 import {
-  askUpFront, blockCounts, blockOfSection, openAsk, pageBlocks, projectCardsCount, projectLine, type BlockAction, type BlockGroup, type RequestBlock,
+  askUpFront, blockCounts, blockOfSection, openAsk, pageBlocks, projectCardsCount, projectLine, type BlockAction, type BlockGroup, type RequestBlock, commonTasks, relatedRequests,
 } from "./request-blocks";
 import { blockText, ProjectAsks, ProjectCards, RequestBlockView, useAsksUpFront, type BlockCommon } from "./RequestBlocks";
 import { ProjectNow } from "./ProjectNow";
@@ -165,6 +166,7 @@ export function ProjectHome({
   // The requests "Talk to the project" reads, for the blocks and the cards' "See words" (YN-86 §4.5).
   // null until "Talk to the project" has read them once.
   const [talkRequests, setTalkRequests] = useState<readonly ProjectRequest[] | null>(null);
+  const [installed, setInstalled] = useState<InstalledFacts | null>(null);
   const requests = useMemo(() => talkRequests ?? [], [talkRequests]);
   const [reveal, setReveal] = useState<{ n: number; seq: number } | null>(null);
   const [older, setOlder] = useState<TalkOlder | null>(null);
@@ -388,7 +390,9 @@ export function ProjectHome({
     const onFold = (event: Event) => {
       const fold = (event.target as Element | null)?.closest?.(".home-fold");
       const card = document.getElementById(sectionDomId(id, key));
-      if (fold && card?.contains(fold) && fold.getAttribute("aria-expanded") === "true") foldedWhileLanding.current = { n, key };
+      if (!fold || !card?.contains(fold)) return;
+      // The user's last choice counts (review 63e8f668): a fold opened again is no fold to keep.
+      foldedWhileLanding.current = fold.getAttribute("aria-expanded") === "true" ? { n, key } : null;
     };
     page.addEventListener("click", onFold, true);
     return () => page.removeEventListener("click", onFold, true);
@@ -452,7 +456,9 @@ export function ProjectHome({
     const state = agent.executor?.state ? life.states[agent.executor.state] : "";
     return [name, state].filter(Boolean).join(" · ");
   };
-  const common: BlockCommon = { projectId: id, workspaceId, agents, readOnly, onSeen: (marks) => onSeen(id, marks), onChanged, onReport, notice, upFront };
+  // R-38 §2.4: what the lead's card names as common items, by task; a request waiting on one points to it.
+  const common: BlockCommon = { projectId: id, workspaceId, agents, readOnly, onSeen: (marks) => onSeen(id, marks), onChanged, onReport, notice, upFront,
+    commonTasks: new Set(commonTasks(line)), onShowNow: () => jumpTo(root.current?.querySelector<HTMLElement>(".now-hero") ?? null, "start") };
   const teamFacts = (
     <>
       <ul className="project-team-members">
@@ -537,7 +543,8 @@ export function ProjectHome({
           {panel.project.name}
           <span className="home-panel-chips">
             {needsCount > 0 && <span className="home-chip is-attention">{t.needCount(needsCount)}</span>}
-            {unseen > 0 && <span className="home-chip is-new">{t.newCount(unseen)}</span>}
+            {/* R-38 §2.7: updated, never a to-do: a quiet chip, not counted with Needs you. */}
+            {unseen > 0 && <span className="home-chip is-new is-quiet">{t.newCount(unseen)}</span>}
           </span>
         </h1>
         <span className="home-header-tools">
@@ -560,7 +567,9 @@ export function ProjectHome({
           {!readOnly && <RefreshHome busy={refreshing} onRefresh={onRefresh} />}
         </span>
       </header>
-      {line && <ProjectNow section={line} more={cardsCount} onMore={showProjectCards} common={common} />}
+      {line && <ProjectNow section={line} more={cardsCount} onMore={showProjectCards} common={common}
+        related={relatedRequests(line, blocks)} onShowBlock={showBlock} />}
+      {installed?.release && <InstalledLine release={installed.release} mergedAfter={installed.mergedAfter} />}
       {/* The page's one bar (R-36): the jumps, then Requests or Conversation beside them, stuck together at the top of
           Home's scroller as R-25's tabs were; its measured height is what a jump keeps clear (HomeJumps.tsx). */}
       <HomeJumps
@@ -607,6 +616,7 @@ export function ProjectHome({
         onNavigate={onNavigate}
         reveal={reveal}
         onRequests={setTalkRequests}
+        onInstalled={setInstalled}
         onOlder={setOlder}
         onBusy={setBusy}
         dock={dock}
@@ -631,6 +641,9 @@ export function ProjectHome({
                 </h2>
                 {needs}
               </section>
+            ) : talkRequests !== null && !empty ? (
+              // R-38 §2.1: nothing for the user is said once, quietly; nothing counts it.
+              <p className="request-group-none" data-group="needs">{tb.needsNone}</p>
             ) : null}
             {groups.doing.length > 0 ? (
               <section className="request-group" data-group="doing" aria-label={tb.groups.doing}>

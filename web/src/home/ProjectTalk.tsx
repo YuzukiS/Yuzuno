@@ -36,6 +36,7 @@ import {
   type FrontDesk,
   type ProjectRequest,
   type RequestPage,
+  type InstalledRelease,
 } from "./project-talk-api";
 import { talkText } from "./talk-text";
 import "./project-talk.css";
@@ -107,6 +108,9 @@ function withConfirmed(value: RequestPage, kept: Map<number, ProjectRequest>): R
   return { ...value, requests: [...kept.values(), ...value.requests].sort((a, b) => b.n - a.n) };
 }
 
+/** What the requests' page says of the release this Core runs (R-38 §2.6): null from an older Core or a source build. */
+export type InstalledFacts = { release: InstalledRelease | null; mergedAfter: number | null };
+
 /** The words as they are sent: trimmed, as every reply is (reply-limit.tsx), their pasted blocks moved with them. */
 function trimmed(words: ReplyWords): { text: string; textBlocks?: TextBlock[] } {
   const start = words.text.length - words.text.trimStart().length;
@@ -155,6 +159,7 @@ export function ProjectTalk({
   onNavigate,
   reveal = null,
   onRequests,
+  onInstalled,
   onOlder,
   onBusy,
   dock,
@@ -180,6 +185,8 @@ export function ProjectTalk({
   reveal?: { n: number; seq: number } | null;
   /** The requests read, for the page's blocks and cards (talk-link.ts). */
   onRequests?: (requests: readonly ProjectRequest[]) => void;
+  /** The release this Core runs and how many PRs merged after it, as the requests' page says (R-38 §2.6). */
+  onInstalled?: (installed: InstalledFacts) => void;
   onOlder?: (older: TalkOlder) => void;
   onBusy?: (busy: TalkBusy) => void;
   /** Home's dock under its scroller (YN-212 §4.1): the composer stays there on screen, whichever view shows. null
@@ -273,6 +280,9 @@ export function ProjectTalk({
     if (page) onRequests?.(requests);
     else if (loadError) onRequests?.([]);
   }, [page, loadError, requests, onRequests]);
+  useEffect(() => {
+    if (page) onInstalled?.({ release: page.installedRelease ?? null, mergedAfter: page.mergedAfterInstalled ?? null });
+  }, [page, onInstalled]);
 
   // The conversation is the page (YN-212 §3.1): Home's scroller holds it, the newest last next to the dock. It opens
   // at its newest, goes there again after the user's own message, and stays there while the user is there as the

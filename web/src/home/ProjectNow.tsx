@@ -14,6 +14,7 @@ import { homeText } from "./home-text";
 import { useReportOpen } from "./report/report-open";
 import { authorOf, forYouTodo, splitLead } from "./request-blocks";
 import { blockText, When, type BlockCommon } from "./RequestBlocks";
+import { RelatedRequests } from "./RequestProgress";
 import { DataAsOf } from "./SectionCard";
 import { MoreActions } from "./SummaryCard";
 import type { Section } from "./types";
@@ -39,6 +40,8 @@ export function ProjectNow({
   more,
   onMore,
   common,
+  related = [],
+  onShowBlock,
 }: {
   section: Section;
   /** How many the Project cards group holds; 0 when it is not drawn (projectCardsCount). */
@@ -46,6 +49,9 @@ export function ProjectNow({
   /** Shows the Project cards group, opened. */
   onMore: () => void;
   common: BlockCommon;
+  /** The requests its common items serve (R-38 §2.4): only by the tasks its LiveRefs name. */
+  related?: readonly { task: string; n: number }[];
+  onShowBlock?: (n: number) => void;
 }) {
   const { projectId, workspaceId, agents, readOnly } = common;
   const language = useLanguage();
@@ -111,6 +117,7 @@ export function ProjectNow({
             <BriefMarkdown text={lead.rest} />
           </div>
         )}
+        {onShowBlock && <RelatedRequests related={related} onShowBlock={onShowBlock} />}
         <p className="now-meta">
           {lead && <span className="now-meta-part now-meta-title">{section.title}</span>}
           <span className="now-meta-part">{authorOf(section)}</span>
