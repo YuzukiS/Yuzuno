@@ -204,6 +204,10 @@ async function stage(run, contextOptions = {}) {
       }
       return route.fulfill({ status: 500, json: { error: "not answered by this fixture" } });
     }
+    // An Agent's own reads a live page makes (Codex usage, MCP, kept inputs): not in this fixture, as brief-tabs-check
+    // answers them; an empty object would not be one of their answers.
+    if (/^\/api\/agents\/\w+\/(codex\/usage|codex\/mcp|conversation\/inputs)$/.test(path))
+      return route.fulfill({ status: 404, json: { error: "not in the fixture" } });
     const detail = path.match(/^\/api\/agents\/(\w+)$/);
     if (detail) return route.fulfill({ json: { agent: agents.find((agent) => agent.id === detail[1]), pending: [], messageReceipts: [], artifacts: [], turns: [] } });
     const json = {
