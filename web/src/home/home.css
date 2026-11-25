@@ -2106,7 +2106,6 @@ fieldset.home-ask-options {
 }
 .home-answer-bar > .home-answer-again {
   margin-left: auto;
-  margin-right: -0.5rem;
 }
 .home-answer-bar > .home-answer-again[aria-expanded="true"] {
   color: var(--green);
