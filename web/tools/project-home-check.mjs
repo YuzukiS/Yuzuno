@@ -461,14 +461,15 @@ async function check(run) {
         todo: text(hero?.querySelector(".now-todo-head")), items: [...(hero?.querySelectorAll(".now-todo-list li") ?? [])].map(text),
         more: text(hero?.querySelector(".now-todo-more")), cards: text(hero?.querySelector(".now-actions .talk-link")),
         beside: hero ? getComputedStyle(hero).gridTemplateColumns.split(" ").length : 0,
-        above: hero && document.querySelector(".project-view-tabs-bar") ? hero.compareDocumentPosition(document.querySelector(".project-view-tabs-bar")) === Node.DOCUMENT_POSITION_FOLLOWING : false,
+        // R-36: the views are in the page's one bar with its jumps.
+        above: hero && document.querySelector(".home-jumps .project-view-tabs") ? hero.compareDocumentPosition(document.querySelector(".home-jumps .project-view-tabs")) === Node.DOCUMENT_POSITION_FOLLOWING : false,
         needsTop: first ? Math.round(first.getBoundingClientRect().top) : null, screen: innerHeight,
       };
     });
     assert.deepEqual([now.key, now.label, now.head, now.todo, now.items, now.more, now.cards],
       ["status", w.now.label, "Two cards run; one waits for your choice.", w.now.todo,
         ["Open Settings and change the theme", "Switch the language to Chinese and back"], w.now.more, w.now.cards], JSON.stringify(now));
-    assert.ok(now.above, "above the tabs' bar, so in both views");
+    assert.ok(now.above, "above the bar with the views, so in both views");
     assert.equal(now.beside, run.phone ? 1 : 2, `what is asked of the user beside the conclusion, under it on a phone: ${JSON.stringify(now)}`);
     if (run.phone) assert.ok(now.needsTop !== null && now.needsTop < now.screen, `Needs you's first item in the first screen: ${JSON.stringify(now)}`);
     pass("the banner: the conclusion, what the user is asked to do and the Project cards; nothing wider than the window", now);

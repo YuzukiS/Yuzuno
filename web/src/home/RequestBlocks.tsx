@@ -31,7 +31,7 @@ export const blockText = strings(
   {
     groups: { needs: "Needs you", doing: "In progress", done: "Done" } as Record<BlockGroup, string>,
     views: "Show",
-    requestsTab: (n: number) => `Requests ${n}`,
+    requestsTab: "Requests",
     chatTab: "Conversation",
     project: "Project",
     projectCards: "Project cards",
@@ -90,7 +90,7 @@ export const blockText = strings(
   {
     groups: { needs: "等你", doing: "进行中", done: "已完成" },
     views: "显示",
-    requestsTab: (n) => `请求 ${n}`,
+    requestsTab: "请求",
     chatTab: "对话",
     project: "项目",
     projectCards: "项目卡",

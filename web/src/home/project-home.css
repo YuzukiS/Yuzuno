@@ -40,34 +40,62 @@
   }
 }
 
-/* Requests or Conversation (YN-212 §3.1), under the page's jumps and stuck there with them (R-25): a long
-   conversation or request list can be switched where it is read, not only from the top. Opaque, so what scrolls
-   under the tabs is not read through them, and under the jumps, which keep the scroller's top edge. */
-.project-view-tabs-bar {
-  position: sticky;
-  top: calc(var(--home-jumps-height, 0px) - var(--home-pad-top));
-  z-index: 3;
-  margin: 8px 0 0;
-  padding: 6px 0 8px;
-  background: var(--paper);
+/* The page's one bar (R-36): its jumps, then Requests or Conversation (YN-212 §3.1) beside them, stuck together at
+   the top of Home's scroller (R-25, home.css): a long conversation or request list is switched where it is read. The
+   four share one height, one type size and one centre line; only the view shows a selected state, the jumps none.
+   A thin rule between them says which are places to go and which is what the page shows. */
+/* Flex at every width: a phone's three-column grid (home.css) is for the whole of Home's three jumps. */
+.home-jumps.has-views {
+  display: flex;
+  align-items: stretch;
+}
+.home-jumps-group {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+.home-jumps-divider {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--line);
 }
 .project-view-tabs {
   display: inline-flex;
+  flex: 0 1 auto;
   gap: 2px;
+  min-width: 0;
   padding: 2px;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: 999px;
+  background: var(--home-surface);
 }
+/* 24 px inside the switch's border and padding: the 30 px of a jump (home.css). */
 .project-view-tabs button {
-  padding: 3px 12px;
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 12px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 999px;
   background: transparent;
   color: var(--home-ink-2);
   font: inherit;
-  font-size: calc(9.5px + var(--font-adjust, 3px));
+  font-size: calc(10px + var(--font-adjust, 3px));
   white-space: nowrap;
   cursor: pointer;
+  transition:
+    background-color var(--motion-micro) var(--ease-standard),
+    color var(--motion-micro) var(--ease-standard);
+}
+.project-view-tabs button:hover {
+  color: var(--ink);
 }
 .project-view-tabs button[aria-selected="true"] {
   background: var(--home-soft);
@@ -77,6 +105,84 @@
 .project-view-tabs button:focus-visible {
   outline: 2px solid var(--home-focus);
   outline-offset: 1px;
+}
+/* Where there is not room for every word, a view's name gives way; its count never does. */
+.project-view-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The requests' count, drawn as the Asks jump draws its count. */
+.project-view-count {
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--home-soft);
+  color: var(--home-ink-2);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.project-view-tabs button[aria-selected="true"] .project-view-count {
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+}
+/* A narrow page keeps the row: Latest report becomes its icon first, its name kept for assistive technology and in
+   its tip; narrower still, Asks keeps its icon and count, and the switch takes the rest of the row. Thresholds: the
+   four at full width measure 454 px in English and 361 px in Chinese at the default text size (R-36 browser check),
+   so 540 leaves room for longer counts and a larger text size. */
+.home-jumps.has-views .home-jump {
+  position: relative;
+}
+@container home (max-width: 540px) {
+  .home-jumps.has-views .home-jump[data-jump="report"] {
+    justify-content: center;
+    min-width: 30px;
+    padding: 4px 7px;
+  }
+  .home-jumps.has-views .home-jump[data-jump="report"] .home-jump-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+@container home (max-width: 440px) {
+  .home-jumps.has-views .home-jump[data-jump="asks"] {
+    padding: 4px 8px;
+  }
+  .home-jumps.has-views .home-jump[data-jump="asks"] .home-jump-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .project-view-tabs {
+    flex: 1 1 auto;
+  }
+  .project-view-tabs button {
+    flex: 1 1 auto;
+    padding: 0 8px;
+  }
+}
+/* The narrowest phones (320 px): the switch's own border sets it apart, so the rule goes and the gaps close, which
+   keeps "Requests 24 | Conversation" whole in English (R-36 browser check). */
+@container home (max-width: 330px) {
+  .home-jumps.has-views,
+  .home-jumps-group {
+    gap: 4px;
+  }
+  .home-jumps-divider {
+    display: none;
+  }
+  .project-view-tabs button {
+    padding: 0 6px;
+  }
 }
 /* The Conversation view is the conversation alone, next to the composer; the team stays with the requests. */
 .project-home-body[hidden] {

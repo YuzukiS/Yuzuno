@@ -94,8 +94,8 @@ function useHeldBlocks(projectId: string, blocks: readonly RequestBlock[], ready
 
 /**
  * One Project's page on Home (YN-212 §3, by request; YN-86 §2.2): its header
- * and tools, where the project stands (R-27, in both views), its own jumps,
- * "Requests | Conversation", then each request once
+ * and tools, where the project stands (R-27, in both views), its own jumps
+ * with "Requests | Conversation" beside them in one bar (R-36), then each request once
  * in three groups (needs you, in progress, done), what belongs to no request
  * (its Asks in Needs you, its cards in a group of their own after In progress,
  * R-27), and the team and its running work beside them
@@ -155,7 +155,6 @@ export function ProjectHome({
   const tt = talkText(language);
   const life = useStrings(lifecycleText);
   const root = useRef<HTMLDivElement>(null);
-  const tabBar = useRef<HTMLDivElement>(null);
   const [wide, setWide] = useState(false);
   const [seeingAll, setSeeingAll] = useState(false);
   const [seenError, setSeenError] = useState("");
@@ -254,22 +253,6 @@ export function ProjectHome({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  // The room Home keeps clear above a jump's target, from the tabs' bar as drawn (R-25): it sticks under the jumps,
-  // so a card landed on by a jump must start below it too (home.css).
-  useLayoutEffect(() => {
-    const element = tabBar.current;
-    const view = element?.closest<HTMLElement>(".home-view");
-    if (!element || !view) return;
-    const keep = () => view.style.setProperty("--project-tabs-height", `${Math.ceil(element.getBoundingClientRect().height)}px`);
-    keep();
-    if (typeof ResizeObserver !== "function") return;
-    const observer = new ResizeObserver(keep);
-    observer.observe(element);
-    return () => {
-      observer.disconnect();
-      view.style.removeProperty("--project-tabs-height");
-    };
-  }, [panel !== null]);
   /** Scrolls to `target`, opens the card or fold that holds it, and settles once it has landed. */
   function jumpTo(target: HTMLElement | null, block: ScrollLogicalPosition = "center") {
     if (!target) return;
@@ -517,34 +500,42 @@ export function ProjectHome({
         </span>
       </header>
       {line && <ProjectNow section={line} more={cardsCount} onMore={showProjectCards} common={common} />}
+      {/* The page's one bar (R-36): the jumps, then Requests or Conversation beside them, stuck together at the top of
+          Home's scroller as R-25's tabs were; its measured height is what a jump keeps clear (HomeJumps.tsx). */}
       <HomeJumps
         asks={asks.length}
         report={latest ? { title: latest.title, projectName: panel.project.name } : null}
         onAsk={toAsk}
         onReport={toReport}
+        views={
+          <div className="project-view-tabs" role="tablist" aria-label={tb.views}>
+            {(["requests", "chat"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                data-tab={tab}
+                aria-selected={view === tab}
+                aria-controls={tab === "chat" ? `project-talk-chat-${id}` : `project-requests-${id}`}
+                onClick={() => chooseView(tab)}
+              >
+                <span className="project-view-label">{tab === "requests" ? tb.requestsTab : tb.chatTab}</span>
+                {tab === "requests" && (
+                  <>
+                    {" "}
+                    <span className="project-view-count">{counts.needs + counts.doing}</span>
+                  </>
+                )}
+              </button>
+            ))}
+          </div>
+        }
       />
       {seenError && (
         <p className="inline-error" role="alert">
           {seenError}
         </p>
       )}
-      <div className="project-view-tabs-bar" ref={tabBar}>
-        <div className="project-view-tabs" role="tablist" aria-label={tb.views}>
-          {(["requests", "chat"] as const).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              role="tab"
-              data-tab={tab}
-              aria-selected={view === tab}
-              aria-controls={tab === "chat" ? `project-talk-chat-${id}` : `project-requests-${id}`}
-              onClick={() => chooseView(tab)}
-            >
-              {tab === "requests" ? tb.requestsTab(counts.needs + counts.doing) : tb.chatTab}
-            </button>
-          ))}
-        </div>
-      </div>
       <ProjectTalk
         projectId={id}
         projectName={panel.project.name}
