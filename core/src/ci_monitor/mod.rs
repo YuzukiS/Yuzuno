@@ -1,5 +1,6 @@
 //! Explicit, bounded GitHub Actions monitoring. This is a remote Jobs source,
 //! never an executor, local resource reservation, or task-completion mechanism.
+mod admission;
 mod client;
 mod live;
 pub(crate) mod lifecycle;

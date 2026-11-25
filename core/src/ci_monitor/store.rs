@@ -6,13 +6,6 @@ use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
-/// The most live CI targets still waiting for something (YN-193: no run
-/// yet on a current commit, or a run not finished), as before for all of
-/// them, and the most live targets in all. Finished ones are read every
-/// DONE_SECONDS, so 50 waiting at ACTIVE_SECONDS and 50 finished ask the
-/// monitor about 10% more often than 50 waiting did.
-const WAITING_TARGETS: i64 = 50;
-const LIVE_TARGETS: i64 = 100;
 // Monitoring is current local state, separate from GitHub's last run fact.
 // Match any subscriber: another Agent can still be keeping this run fresh.
 const RUN_WATCHED: &str = "EXISTS(SELECT 1 FROM ci_watch_runs wr JOIN ci_watches cw ON cw.id=wr.watch_id JOIN ci_subscriptions cs ON cs.watch_id=cw.id WHERE wr.run_id=r.id AND cw.failures<8 AND cs.active=1 AND cs.expires>strftime('%s','now'))";
@@ -22,6 +15,10 @@ const RUN_WATCHED: &str = "EXISTS(SELECT 1 FROM ci_watch_runs wr JOIN ci_watches
 /// mail, and a bounded read inside the mail's transaction.
 const SAME_LISTED: usize = 5;
 const SAME_SCANNED: i64 = 200;
+/// How many failed attempts' failed jobs and steps are kept for that note:
+/// the newest, the oldest giving way to a new one (R-39). The note reads the
+/// newest SAME_SCANNED of a workflow, so older ones are only its spare.
+const FAILURES_KEPT: i64 = 10000;
 
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS ci_watches(id TEXT PRIMARY KEY, next_poll INTEGER NOT NULL, failures INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL);
@@ -38,6 +35,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS ci_run_failures(run_id TEXT PRIMARY KEY,repository_id TEXT NOT NULL,workflow_id TEXT NOT NULL,data TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS ci_run_failures_workflow ON ci_run_failures(repository_id,workflow_id);")?;
     super::lifecycle::migrate(db)?;
+    super::admission::migrate(db)?;
     Ok(())
 }
 fn cooldown(db: &Connection) -> Result<i64> {
@@ -271,15 +269,12 @@ impl Store {
             .is_some())
     }
     /// Records where a failed attempt failed: its failed jobs and steps (at most
-    /// 20), maybe none. Once the table holds 10000 attempts nothing more is
-    /// recorded; older rows are not replaced.
+    /// 20), maybe none. The newest FAILURES_KEPT are kept: a new record takes
+    /// the place of the oldest ones, which only the note ever read (R-39).
     pub(super) fn ci_record_failures(&self, run: &Value, failed: &[Value]) -> Result<()> {
-        let db = self.db.write()?;
-        let count: i64 = db.query_row("SELECT COUNT(*) FROM ci_run_failures", [], |r| r.get(0))?;
-        if count >= 10000 {
-            return Ok(());
-        }
-        db.execute(
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let added = tx.execute(
             "INSERT OR IGNORE INTO ci_run_failures(run_id,repository_id,workflow_id,data) VALUES(?1,?2,?3,?4)",
             params![
                 run["id"].as_str().context("Missing run key")?,
@@ -288,6 +283,13 @@ impl Store {
                 Value::from(failed.to_vec()).to_string()
             ],
         )?;
+        if added > 0 {
+            tx.execute(
+                "DELETE FROM ci_run_failures WHERE rowid IN (SELECT rowid FROM ci_run_failures ORDER BY rowid DESC LIMIT -1 OFFSET ?1)",
+                [FAILURES_KEPT],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
     /// Bounded recovery of committed terminal facts lacking notification receipts.
@@ -366,19 +368,6 @@ impl Store {
             !closed || kind != "pull",
             "Reopen the task to watch a PR candidate; a specific run or commit may still be subscribed for post-merge verification"
         );
-        // The live watches, and those of them still waiting for something:
-        // a run not finished, or no run yet on a commit that is still
-        // current (YN-193). A watch whose runs all finished, or an older PR
-        // head with nothing of it still running, is read every five minutes.
-        let (waiting, live): (i64, i64) = tx.query_row(
-            "SELECT COUNT(*) FILTER (WHERE EXISTS(SELECT 1 FROM ci_watch_runs wr JOIN ci_runs r ON r.id=wr.run_id WHERE wr.watch_id=w.id
-                   AND (json_extract(r.data,'$.rawStatus') IS NOT 'completed' OR json_type(r.data,'$.conclusion') IS NOT 'text'))
-                 OR (NOT EXISTS(SELECT 1 FROM ci_watch_runs wr WHERE wr.watch_id=w.id) AND COALESCE(json_extract(w.data,'$.state'),'')<>'older_commit')),
-               COUNT(*)
-             FROM ci_watches w WHERE EXISTS(SELECT 1 FROM ci_subscriptions s WHERE s.watch_id=w.id AND s.active=1 AND s.expires>?1)",
-            [chrono::Utc::now().timestamp()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
         // A commit watch is its exact target: commit, branch and event.
         let wid = if kind == "commit" {
             format!(
@@ -391,13 +380,21 @@ impl Store {
         } else {
             format!("{}:{kind}:{number}:{}", repo.id, input.expected_sha)
         };
-        let existing:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM ci_subscriptions WHERE watch_id=?1 AND active=1 AND expires>?2)",params![wid,chrono::Utc::now().timestamp()],|r|r.get(0))?;
-        ensure!(
-            existing || (waiting < WAITING_TARGETS && live < LIVE_TARGETS),
-            "At most {WAITING_TARGETS} distinct CI targets still waiting for a run to finish (now {waiting}), and {LIVE_TARGETS} in all \
-             (now {live}), can be monitored at once. A target whose runs all finished, or an older PR head with nothing of it \
-             still running, does not count toward the {WAITING_TARGETS}. ci_unsubscribe a subscription you no longer need."
-        );
+        let epoch = chrono::Utc::now().timestamp();
+        let mine: Option<(String, bool)> = tx
+            .query_row(
+                "SELECT id,active=1 AND expires>?4 FROM ci_subscriptions WHERE watch_id=?1 AND agent_id=?2 AND task_id=?3",
+                params![wid, agent_id, task, epoch],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        // Only what is monitored now counts (R-39). A refusal is said on the
+        // task in its own write, as the refused one is rolled back.
+        if let Some(reason) = super::admission::refusal(&tx, &wid, mine.as_ref().is_some_and(|m| m.1), epoch)? {
+            drop(tx);
+            super::admission::notice(&mut db, &task, &wid, &recipient, &input.url, &input.expected_sha, &reason)?;
+            anyhow::bail!(reason);
+        }
         let mut w = json!({"id":wid,"repositoryId":repo.id,"repository":repo.full_name,"kind":kind,"number":number,"url":input.url,"expectedSha":input.expected_sha,"currentHeadSha":input.expected_sha,"state":"watching","error":null,"observedAt":null,"lastAttemptAt":null,"createdAt":now()});
         if kind == "commit" {
             w["branch"] = json!(input.branch);
@@ -405,20 +402,9 @@ impl Store {
             w["state"] = json!("waiting_for_run");
             w["excludedRuns"] = json!(0);
         }
-        tx.execute("INSERT INTO ci_watches(id,next_poll,data) VALUES(?1,0,?2) ON CONFLICT(id) DO UPDATE SET next_poll=MIN(next_poll,?3),failures=0",params![wid,w.to_string(),chrono::Utc::now().timestamp()+30])?;
-        let id: Option<String> = tx
-            .query_row(
-                "SELECT id FROM ci_subscriptions WHERE watch_id=?1 AND agent_id=?2 AND task_id=?3",
-                params![wid, agent_id, task],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if id.is_none() {
-            let count: i64 =
-                tx.query_row("SELECT COUNT(*) FROM ci_subscriptions", [], |r| r.get(0))?;
-            ensure!(count < 2000, "CI subscription history limit reached (2000)");
-        }
-        let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        tx.execute("INSERT INTO ci_watches(id,next_poll,data) VALUES(?1,0,?2) ON CONFLICT(id) DO UPDATE SET next_poll=MIN(next_poll,?3),failures=0",params![wid,w.to_string(),epoch+30])?;
+        super::admission::admitted(&tx, &task, &wid, agent_id)?;
+        let id = mine.map_or_else(|| uuid::Uuid::new_v4().to_string(), |m| m.0);
         let expires = chrono::Utc::now() + chrono::Duration::days(7);
         let sub = json!({"id":id,"watchId":wid,"agentId":agent_id,"agent":recipient,"taskId":task,"taskRef":reference,"source":source,"createdAt":now(),"expiresAt":expires.to_rfc3339(),"active":true});
         tx.execute("INSERT INTO ci_subscriptions(id,watch_id,agent_id,task_id,active,expires,data) VALUES(?1,?2,?3,?4,1,?5,?6) ON CONFLICT(id) DO UPDATE SET active=1,expires=excluded.expires,data=excluded.data",params![id,wid,agent_id,task,expires.timestamp(),sub.to_string()])?;
@@ -676,8 +662,6 @@ impl Store {
                 // Whether this observation saw anything new: a run or attempt
                 // not seen before, or a changed status or conclusion.
                 let mut changed = false;
-                let mut count: i64 =
-                    tx.query_row("SELECT COUNT(*) FROM ci_runs", [], |r| r.get(0))?;
                 for run in &runs {
                     ensure!(
                         run["repositoryId"] == w["repositoryId"]
@@ -690,13 +674,9 @@ impl Store {
                     let previous: Option<String> = tx
                         .query_row("SELECT data FROM ci_runs WHERE id=?1", [rid], |r| r.get(0))
                         .optional()?;
-                    let exists = previous.is_some();
-                    ensure!(
-                        exists || count < 10000,
-                        "CI history limit reached (10000 attempts); last observations retained"
-                    );
-                    if !exists {
-                        count += 1;
+                    // A new attempt of a live watch is always recorded: how many
+                    // runs were recorded before never keeps it out (R-39).
+                    if previous.is_none() {
                         changed = true;
                     }
                     if let Some(previous) = previous {
