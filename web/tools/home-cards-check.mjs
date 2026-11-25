@@ -8,10 +8,11 @@
 //    by Enter, Escape closes it and focus goes back to the picture; a small
 //    card's View image opens it too;
 //  - a card whose author named no summary shows its first paragraph;
-//  - a replied Ask is its answer card (YN-223, R-29's design): the question as
-//    answered, then the reply as given, never New; an earlier reply (no
-//    snapshot) says its question was not kept; Details opens its body, Reply
-//    again its reply's controls;
+//  - a replied Ask is its answer card (YN-230, R-41's design): the question as
+//    answered, then one line of the reply (two lines at most), never New; an
+//    earlier reply (no snapshot) says its question was not kept; its owner's
+//    update in its record, one toggle away; Reply again opens its body and
+//    reply's controls on the card, and closes them;
 //  - the deck in its order (open Asks, current status, reports, Asks put off;
 //    the answered Asks under their heading; status out of date last, closed),
 //    and with no gap before a card: every cell of its grid, and of Out of
@@ -489,8 +490,8 @@ async function check(run) {
     }
 
     // ---- Answered Asks are answer cards (YN-3, the user's D3): small cards the deck packs, two sharing a row; as
-    // R-29 settled them (YN-223): whom each waits for or its owner's update, the question as answered, then the reply
-    // as given (six lines at most, the rest behind Show all); an earlier reply says its question was not kept.
+    // R-41 settled them (YN-230): whom each waits for or its owner's update, the question as answered, then one line
+    // of the reply (two lines at most, the rest in its record); an earlier reply says its question was not kept.
     const answers = {};
     for (const key of ["tokenizer", "draft"]) {
       answers[key] = await card(key).evaluate((el) => {
@@ -503,8 +504,9 @@ async function check(run) {
           kind: el.querySelector(".home-kind")?.textContent.trim(), changed: el.querySelector(".home-changed")?.textContent.trim() ?? null,
           ask: answer?.querySelector(".home-answer-ask")?.textContent ?? null, unkept: !!answer?.querySelector(".home-answer-unkept"),
           reply: words?.textContent.trim() ?? null, wordLines: words ? Math.round(words.clientHeight / line) : null,
-          questionFirst: top(".home-answer-ask") !== null && top(".home-answer-ask") < top(".home-reply-answer"),
+          questionFirst: top(".home-answer-ask") !== null && top(".home-answer-ask") < top(".home-answer-value"),
           update: answer?.querySelector(".home-answer-update")?.textContent ?? null,
+          toggle: answer?.querySelector(".home-answer-toggle")?.textContent.trim() ?? null,
           top: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) };
       });
     }
@@ -518,7 +520,7 @@ async function check(run) {
       assert.equal(a.kind, key === "draft" ? w.updatedBy : w.replied);
       assert.equal(a.cols, sharing[n], `${key}: ${main.columns} columns, filled from the last back (YN-157): ${JSON.stringify(a)}`);
       assert.ok(a.questionFirst, `${key}: the question before the reply: ${JSON.stringify(a)}`);
-      assert.ok(a.wordLines <= 6, `${key}: the reply in six lines at most: ${JSON.stringify(a)}`);
+      assert.ok(a.wordLines <= 2, `${key}: the reply in two lines at most: ${JSON.stringify(a)}`);
     }
     if (main.columns >= 2) assert.equal(answers.tokenizer.top, answers.draft.top, "side by side");
     assert.equal(answers.tokenizer.changed, null, "answered, not New");
@@ -528,11 +530,21 @@ async function check(run) {
     assert.ok(!answers.tokenizer.unkept, "kept with its question");
     assert.ok(answers.draft.unkept, "an earlier reply: its question not kept, said so");
     assert.equal(answers.draft.reply, "Yes, once main CI is green.");
-    assert.ok(answers.draft.update, "its owner's update after the reply, apart from it");
-    // Opened: the question and details, its row its own; the other takes the row it is left alone on, as far as
-    // its twice-its-size cap allows (YN-157); still no gap before a card.
+    assert.equal(answers.draft.update, null, "its owner's update is in its record");
+    assert.ok(answers.draft.toggle, "so its record has a toggle");
+    assert.equal(answers.tokenizer.toggle, null, "a reply whole on its line, nothing else: no toggle");
+    const draft = card("draft");
+    await draft.locator(":scope > .home-answer .home-answer-toggle").click();
+    await draft.locator(":scope > .home-answer .home-answer-update").waitFor({ timeout: 10_000 });
+    const draftUpdate = await draft.locator(":scope > .home-answer .home-answer-update").innerText();
+    assert.ok(draftUpdate, "its owner's update after the reply, apart from it");
+    await cardShot("draft", "answer-card-record");
+    await draft.locator(":scope > .home-answer .home-answer-toggle").click();
+    await draft.locator(":scope > .home-answer .home-answer-update").waitFor({ state: "detached", timeout: 10_000 });
+    // Opened by Reply again: the Ask's body and the reply's controls, its row its own; the other takes the row it is
+    // left alone on, as far as its twice-its-size cap allows (YN-157); still no gap before a card.
     const tokenizer = card("tokenizer");
-    await tokenizer.locator(":scope > .home-answer .home-answer-details").click();
+    await tokenizer.locator(":scope > .home-answer .home-answer-again").click();
     await tokenizer.locator(":scope > .home-card-body .home-section-body").waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => {
       const grid = document.querySelector('[data-home-project="p-orch"] .home-brief');
@@ -541,14 +553,12 @@ async function check(run) {
     }, null, { timeout: 5000 }).catch(() => {});
     const opened = await holes(deck);
     assert.deepEqual(opened.missing, [], `no hole with an answer card open: ${JSON.stringify(opened)}`);
-    await cardShot("tokenizer", "answer-open");
     // Reply again, on the card: the reply field, in the card.
-    await tokenizer.locator(":scope > .home-answer .home-answer-again").click();
     await tokenizer.locator(".home-card-body textarea").waitFor({ timeout: 10_000 });
     await cardShot("tokenizer", "answer-again");
-    await tokenizer.locator(":scope > .home-answer .home-answer-details").click();
+    await tokenizer.locator(":scope > .home-answer .home-answer-again").click();
     await tokenizer.locator(":scope > .home-card-body").waitFor({ state: "hidden", timeout: 10_000 });
-    pass("answered Asks are small answer cards sharing a row: the question as answered, then the reply; an earlier reply said so; the owner's update apart, Updated only after the owner's change; opened, its own row with no hole; Reply again on the card", answers);
+    pass("answered Asks are small answer cards sharing a row: the question as answered, then one line of the reply; an earlier reply said so; the owner's update in its record, Updated only after the owner's change; opened by Reply again, its own row with no hole, and closed by it again", { ...answers, draftUpdate });
 
     // ---- Enter sends a reply from Home, in Chinese (the user's item): Shift+Enter a new line, nothing while composing.
     if (run.language === "zh-Hans") {

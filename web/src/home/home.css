@@ -1805,18 +1805,19 @@ fieldset.home-ask-options {
   margin-top: 6px;
 }
 /* A replied Ask waiting for its owner, as it was when first shown in this
-   visit: an answer card (YN-3), drawn as R-29's design settled it (YN-223,
-   question-first): whose card it is and whom it waits for on one small line;
-   the question as the user answered it, and its note, whole; then the reply
-   as the conversation shows a reply from Home (home-reply.css), its actions
-   under a dashed rule. Folded, the question and what was chosen stay in
-   view. A small card on the deck, as other small cards are. */
+   visit: an answer card (YN-3). R-41's two states (YN-230, the design the
+   user approved over R-29's, YN-223): whose card it is and whom it waits for
+   on one small line; the question as the user answered it, whole, at a
+   compact size; one line of what they decided. Its record, one toggle away
+   only when it holds more: the answer field by field as given, the options
+   not chosen, their notes and files, then what its owner says now, apart.
+   A small card on the deck, as other small cards are. */
 .home-section.is-answer {
   display: flex;
   flex-direction: column;
   /* As wide as its place, never its one-line byline's width (a grid's auto column, as a request's Asks are). */
   min-width: 0;
-  padding: 14px 18px 8px;
+  padding: 14px 18px 6px;
   border-radius: 12px;
 }
 .home-section.is-answer > .home-section-head.home-answer-byline {
@@ -1824,7 +1825,7 @@ fieldset.home-ask-options {
   align-items: center;
   gap: 2px 10px;
   min-width: 0;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   color: var(--home-ink-2);
   font-size: calc(10px + var(--font-adjust, 3px));
   line-height: 1.5;
@@ -1870,8 +1871,6 @@ fieldset.home-ask-options {
   flex: none;
   width: auto;
 }
-/* The question's heading is as wide as the card lets it read (the design's
-   18–23 px): sized by the card, so a small card on the deck reads as a phone. */
 .home-answer {
   display: flex;
   flex: 1 1 auto;
@@ -1880,30 +1879,23 @@ fieldset.home-ask-options {
   container: answer / inline-size;
 }
 .home-answer-question {
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--line);
   overflow-wrap: anywhere;
 }
+/* The question whole, at the design's compact 17 px (16 on a phone): it is read, not decided, any more. */
 .home-answer-ask {
-  max-width: 34em;
   margin: 0;
   color: var(--ink);
-  font-size: calc(15px + var(--font-adjust, 3px));
-  font-weight: 650;
+  font-size: calc(14px + var(--font-adjust, 3px));
+  font-weight: 600;
   line-height: 1.5;
-  letter-spacing: -0.015em;
   white-space: pre-wrap;
-}
-@container answer (min-width: 600px) {
-  .home-answer-ask {
-    font-size: clamp(calc(15px + var(--font-adjust, 3px)), 3.2cqi, calc(20px + var(--font-adjust, 3px)));
-  }
+  text-wrap: pretty;
 }
 .home-answer-hint {
-  margin: 5px 0 0;
+  margin: 4px 0 0;
   color: var(--home-ink-2);
-  font-size: calc(11.5px + var(--font-adjust, 3px));
-  line-height: 1.65;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  line-height: 1.6;
   white-space: pre-wrap;
 }
 /* An earlier reply, from before Core kept the question with it: said, quietly. */
@@ -1914,44 +1906,163 @@ fieldset.home-ask-options {
   color: var(--home-ink-2);
   font-size: calc(9.5px + var(--font-adjust, 3px));
 }
+/* Closed: "Your reply" and what was decided on one line, its words at most two lines. */
+.home-answer-line {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-top: 8px;
+}
 .home-answer-label {
-  margin: 12px 0 8px;
+  flex: none;
   color: var(--home-ink-2);
-  font-size: calc(10px + var(--font-adjust, 3px));
-  font-weight: 500;
+  font-size: calc(9px + var(--font-adjust, 3px));
 }
-/* The reply drawn as in the conversation, on the card's own surface. */
-.home-reply.home-answer-given {
-  max-width: none;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: none;
-  font-size: calc(13px + var(--font-adjust, 3px));
+.home-answer-value {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  min-width: 0;
+  color: var(--ink);
+  font-size: calc(12px + var(--font-adjust, 3px));
+  font-weight: 540;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
 }
-.home-answer-given footer {
+.home-answer-value > .home-reply-words {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.home-answer-picks {
+  display: -webkit-box;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.home-answer-picks[data-empty] {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.home-answer-notes {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 400;
+}
+/* Open: the record of the answer, under a rule. */
+.home-answer-record {
   margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
 }
-.home-answer-given .home-reply-action.home-answer-again {
-  margin-left: auto;
-  color: var(--green);
+.home-answer-record-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin: 0 0 10px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-answer-record-head strong {
+  color: var(--ink);
+  font-size: calc(12px + var(--font-adjust, 3px));
   font-weight: 600;
 }
-.home-answer-given .home-answer-options-toggle[aria-expanded="true"] .chev {
-  transform: rotate(180deg);
+.home-answer-record > .home-reply-words {
+  font-size: calc(12px + var(--font-adjust, 3px));
 }
-.home-section.is-answer .home-fold.home-answer-details {
-  align-self: auto;
-  width: auto;
-  height: auto;
+.home-answer-fields {
+  display: grid;
+  gap: 11px;
   margin: 0;
 }
-.home-answer-given .home-answer-unfold {
-  margin-top: 6px;
+.home-answer-fields > div {
+  display: grid;
+  grid-template-columns: minmax(0, 34%) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
 }
-/* What its owner says now, after the reply: apart from it. */
-.home-answer-update {
+/* Labels and "Skipped" in the app's secondary text colour, which reads at 4.5:1 on the card (home-reply.css). */
+.home-answer-fields dt {
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-answer-fields dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(12px + var(--font-adjust, 3px));
+}
+.home-answer-fields dd[data-empty] {
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+/* A small card, or a phone: each label over its answer. */
+@container answer (max-width: 460px) {
+  .home-answer-fields {
+    gap: 9px;
+  }
+  .home-answer-fields > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1px;
+  }
+}
+.home-answer-record > :is(.input-images, .input-files) {
   margin-top: 10px;
+}
+/* The options the user saw and did not choose. */
+.home-answer-others {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--home-soft);
+}
+.home-answer-others-head,
+.home-answer-others-field {
+  margin: 0 0 4px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
+.home-answer-others-field {
+  margin-top: 6px;
+  font-weight: 400;
+}
+.home-answer-others ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-answer-others li {
+  display: flex;
+  gap: 8px;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.6;
+}
+.home-answer-others li > span:first-child {
+  flex: none;
+  width: 1em;
+  text-align: center;
+}
+.home-answer-tools {
+  margin-top: 6px;
+  font-size: calc(12px + var(--font-adjust, 3px));
+}
+.home-answer-tools > .home-reply-action:first-child {
+  margin-left: -0.5rem;
+}
+/* What its owner says now, after the reply: apart from the record. */
+.home-answer-update {
+  margin-top: 12px;
   padding: 8px 10px;
   border-radius: 8px;
   background: var(--home-soft);
@@ -1964,7 +2075,44 @@ fieldset.home-ask-options {
 .home-answer-update-head {
   color: var(--home-ink-2);
 }
-/* The options as the user saw them, the chosen one marked. */
+/* The one toggle, and Reply again at the row's end. */
+.home-answer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin-top: 6px;
+  font-size: calc(12px + var(--font-adjust, 3px));
+}
+.home-answer-bar > .home-reply-action:first-child {
+  margin-left: -0.5rem;
+}
+.home-answer-bar > .home-answer-toggle {
+  color: var(--accent-ink, var(--green));
+  font-weight: 600;
+}
+.home-answer-toggle .chev {
+  transition: transform var(--motion-micro) var(--ease-standard);
+}
+.home-answer-toggle[aria-expanded="true"] .chev {
+  transform: rotate(180deg);
+}
+.home-answer-bar > .home-answer-again {
+  margin-left: auto;
+  margin-right: -0.5rem;
+}
+.home-answer-bar > .home-answer-again[aria-expanded="true"] {
+  color: var(--green);
+}
+.home-reply.home-answer-given {
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-size: calc(13px + var(--font-adjust, 3px));
+}
+/* The options as the user saw them, the chosen one marked: a resolved Ask in History. */
 .home-answer-options ul {
   margin: 8px 0 4px;
   padding: 8px 14px;
@@ -2001,23 +2149,19 @@ fieldset.home-ask-options {
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
-/* A phone: the actions are 44 px targets; Reply again keeps the row's end. */
+/* A phone: the question at 16 px; the actions are 44 px targets. */
 .app.phone .home-section.is-answer {
-  padding: 12px 13px 6px;
+  padding: 12px 13px 4px;
 }
-.app.phone .home-answer-given footer {
-  gap: 0 2px;
-}
-.app.phone .home-answer-given .home-reply-action {
-  min-height: 44px;
-  padding: 0 3px;
-  gap: 0.25em;
-}
-.app.phone .home-answer-given footer > .home-reply-action:first-child {
-  margin-left: 0;
+.app.phone .home-answer-ask {
+  font-size: calc(13px + var(--font-adjust, 3px));
+  line-height: 1.45;
 }
 .app.phone .home-answer-hint {
   font-size: calc(11px + var(--font-adjust, 3px));
+}
+.app.phone :is(.home-answer-bar, .home-answer-tools) .home-reply-action {
+  min-height: 44px;
 }
 /* A resolved Ask's answer as the user gave it (YN-223), at History's own size. */
 .home-reply.home-history-answer {

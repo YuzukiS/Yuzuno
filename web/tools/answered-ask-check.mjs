@@ -1,13 +1,16 @@
-// YN-223 in Chromium, through the production build, every API answered here (no Core, no daily configuration):
-// an answered Ask on a Project's page drawn as R-29's settled design (question-first) has it:
-//  - the question as the user answered it, its note whole, then "Your reply": the option chosen and the user's
-//    words; a multi-select form's answers by field; words alone; an earlier reply (no snapshot) said so, nothing
-//    read back from its text as chosen; its owner's update after the reply apart from the reply;
+// YN-223 and YN-230 in Chromium, through the production build, every API answered here (no Core, no daily
+// configuration): an answered Ask on a Project's page drawn as R-41's approved design (YN-230, over R-29's) has it:
+//  - closed: the question as the user answered it, its note whole, then "Your reply" and one line of what was
+//    decided: the option chosen, a form's choices without its title, labels or the fields left empty; the user's
+//    other words counted; words alone at most two lines; an earlier reply (no snapshot) said so, nothing read back
+//    from its text as chosen;
+//  - one toggle, only where its record holds more than that line, opens the record: the answer field by field as
+//    given (a field left empty said so), the user's words whole, the options not chosen, Copy answer; its owner's
+//    update after the reply apart, after it; a one-line reply has no toggle, Copy answer and Reply again instead;
+//  - R-40's form (yn-229/ask, the design's own sample) on the real page, closed and open, measured beside the design;
 //  - a long question and a long unbroken word are never cut, and nothing is wider than the window, at desktop
 //    (1440), 390 and 320 px, in Chinese and English;
-//  - Options then lists the options with the chosen one marked; Copy answer copies the answer as shown;
-//  - folded by the card's own fold, the question and what was chosen stay, the rest one unfold away;
-//  - from the keyboard, Reply again opens the reply's controls on the card, and Details its body;
+//  - from the keyboard, the toggle opens and closes the record and Reply again the reply's controls on the card;
 //  - beside R-27's banner (#1104): the Project cards group holds the answered Asks with the lead's status;
 //  - the path the Dev Lead named (YN-223 seq 12138): R-29's Ask answered in its request's first look becomes its
 //    answer card there; reloaded (the request entered a second time), the request's task row has it as one compact
@@ -71,6 +74,14 @@ const longQuestion = "这是一条特意写长的问题，用来确认首页卡�
   "会在桌面和手机上都折成好几行，其中还夹着一个很长的路径 /w/yuzuno/results/yn-223/answered-ask-check/very-long-file-name-without-breaks.json，" +
   "以及更多的说明文字，直到它比一张小卡片能放下的宽度长得多为止";
 const longWords = Array.from({ length: 9 }, (_, n) => `第 ${n + 1} 行：补充的说明写得很长，让它超过六行后折起来。`).join("\n\n");
+// R-40's form (yn-229/ask v2), the sample R-41's design was drawn from: one choice, the optional words left empty.
+const r40Title = "R-40 · 采样 Job 起不来，改用哪种方式补实测？";
+const r40Question = "你同意的只读采样 Job 起不来（WSL 的 Windows 互操作现在没有登记）。改用哪种方式补这条实测？";
+const r40Options = ["我在 Windows 运行一条命令（推荐）", "先恢复互操作，再由你跑 Job", "我自己截图，附在这里", "先不测"];
+const r40Form = { id: "sample2", title: "Windows 客户端实测（第 2 轮）", fields: [
+  { id: "how", type: "single", label: "补样本的方式", required: true, options: r40Options.map((label, n) => ({ id: `o${n}`, label })) },
+  { id: "doing", type: "text", label: "开着 Yuzuno 时你一般在做什么？（可选）", required: false }] };
+const simpleWords = "Windows 桌面版 0.7.0。";
 
 /** Each run starts from the same page: R-29's Ask open in its request, the Project's own answered Asks. */
 function fixture() {
@@ -122,6 +133,18 @@ function fixture() {
       updatedAt: at(91),
       ask: { question: longQuestion, state: "replied", repliedAt: at(90), replyText: "收到。", reply: { freeText: true },
         replySnapshot: kept("R-34 · 很长的问题", longQuestion, [], { text: "收到。" }) },
+    }),
+    section("yn-229/ask", "ask", r40Title, spec(["a"], { a: md("**为什么又问**：Core 拒绝了 Windows Job。") }), {
+      updatedAt: at(16),
+      ask: { question: r40Question, state: "replied", repliedAt: at(6), replyText: "Answers to “Windows 客户端实测（第 2 轮）”: …", reply: { form: r40Form },
+        replySnapshot: kept(r40Title, r40Question, [], { form: { id: "sample2", title: r40Form.title, fields: [
+          { id: "how", type: "single", label: "补样本的方式", answer: r40Options[1] },
+          { id: "doing", type: "text", label: "开着 Yuzuno 时你一般在做什么？（可选）", answer: "" }] } }) },
+    }),
+    section("simple", "ask", "简答示例", spec(["a"], { a: md("确认版本。") }), {
+      updatedAt: at(4),
+      ask: { question: "你用的是哪个桌面版本？", state: "replied", repliedAt: at(2), replyText: simpleWords, reply: { freeText: true },
+        replySnapshot: kept("简答示例", "你用的是哪个桌面版本？", [], { text: simpleWords }) },
     }),
   ];
   // Answered before, and resolved since: in History, kept with their reply as given.
@@ -176,7 +199,7 @@ function answer(body) {
   state.line.state = "replied";
 }
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
-const PROJECT_ANSWERS = ["yn-221/ask", "words", "earlier", "updated", "long"];
+const PROJECT_ANSWERS = ["yn-221/ask", "words", "earlier", "updated", "long", "yn-229/ask", "simple"];
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 const runs = [
@@ -198,14 +221,17 @@ assert.deepEqual(report.unexpected, [], "nothing was asked of another host");
 assert.deepEqual(report.errors, [], "no page errors");
 assert.deepEqual(report.posts.map((post) => post.path), runs.map(() => "/api/projects/p-next/brief/reply"), "nothing but reads and one reply a run");
 console.log(`answered-ask-check: ${report.runs.length} runs, ${report.runs.reduce((n, run) => n + run.checks.length, 0)} checks`);
+console.log(`R-40 closed/open (CSS px): ${report.runs.map((run) => `${run.run} ${run.r40?.closed.width}×${run.r40?.closed.height}/${run.r40?.open.height}`).join(", ")}`);
 
 async function check(run) {
   const zh = run.language !== "en";
   const words = zh
-    ? { then: "当时的问题", now: "问题", label: "你的回复", wait: "等 Dev Lead 跟进", updated: "Dev Lead 已更新", options: "当时的选项", chosen: "已选",
-      again: "补充回复", details: "详情", whole: "查看完整回复", copy: "复制回答", copied: "已复制" }
+    ? { then: "当时的问题", now: "问题", label: "你的回复", wait: "等 Dev Lead 跟进", updated: "Dev Lead 已更新", show: "查看回答记录", hide: "收起记录",
+      record: "回答记录", choice: "你的选择", note: "你的补充", skipped: "已跳过", others: "当时的其他选项", oneNote: "另有 1 条补充",
+      again: "补充回复", copy: "复制回答", copied: "已复制" }
     : { then: "The question as you answered it", now: "Question", label: "Your reply", wait: "Waiting for Dev Lead", updated: "Dev Lead updated it",
-      options: "Options then", chosen: "chosen", again: "Reply again", details: "Details", whole: "Show the whole reply", copy: "Copy answer", copied: "Copied" };
+      show: "Show answer record", hide: "Hide record", record: "Answer record", choice: "Your choice", note: "Your note", skipped: "Skipped",
+      others: "The other options then", oneNote: "1 more note", again: "Reply again", copy: "Copy answer", copied: "Copied" };
   state = fixture();
   const result = { run: run.name, checks: [], shots: [] };
   report.runs.push(result);
@@ -293,7 +319,7 @@ async function check(run) {
     const found = await page.evaluate(() => {
       const view = document.querySelector(".home-view");
       const edge = view.getBoundingClientRect().right;
-      const boxes = [...document.querySelectorAll(".home-section.is-answer, .home-section.is-answer > .home-answer :is(.home-answer-question, .home-answer-ask, .home-answer-hint, .home-answer-given, .home-reply-answer, footer, dl, dd), .request-task-answered")];
+      const boxes = [...document.querySelectorAll(".home-section.is-answer, .home-section.is-answer > .home-answer :is(.home-answer-question, .home-answer-ask, .home-answer-hint, .home-answer-line, .home-answer-value, .home-answer-record, .home-answer-others, .home-answer-bar, dl, dd), .request-task-answered")];
       const over = boxes.filter((el) => el.getBoundingClientRect().right > edge + 1 || el.scrollWidth > el.clientWidth + 1)
         .map((el) => `${el.className || el.tagName}: ${Math.round(el.getBoundingClientRect().right)} > ${Math.round(edge)} / ${el.scrollWidth} > ${el.clientWidth}`);
       // The question's heading and note show whole: as tall as their lines, inside their card.
@@ -309,11 +335,13 @@ async function check(run) {
     assert.deepEqual(found.cut, [], JSON.stringify(found));
     return found;
   };
-  // An answer card read as the user reads it: the question as answered, its note, then the reply as given.
+  // An answer card read as the user reads it: the question as answered, its note, then one line of the reply; its
+  // record when open; the actions under it.
   const read = (key) => card(key).evaluate((el) => {
     const answer = el.querySelector(":scope > .home-answer");
     const one = (selector) => answer?.querySelector(selector) ?? null;
     const top = (selector) => one(selector)?.getBoundingClientRect().top ?? null;
+    const record = one(".home-answer-record");
     return {
       then: el.querySelector(":scope > .home-answer-byline .home-answer-then")?.textContent ?? null,
       kind: el.querySelector(":scope > .home-answer-byline .home-kind")?.textContent.trim() ?? null,
@@ -321,15 +349,32 @@ async function check(run) {
       hint: one(".home-answer-hint")?.textContent ?? null,
       unkept: !!one(".home-answer-unkept"),
       label: one(".home-answer-label")?.textContent ?? null,
-      choice: one(".home-reply-choice")?.textContent ?? null,
-      words: one(".home-reply-words")?.textContent.trim() ?? null,
-      form: [...(answer?.querySelectorAll("dd li") ?? [])].map((li) => li.textContent),
+      line: (one(".home-answer-line .home-answer-picks") ?? one(".home-answer-line .home-reply-words"))?.textContent.trim() ?? null,
+      notes: one(".home-answer-notes")?.textContent ?? null,
+      record: record && {
+        label: record.getAttribute("aria-label"),
+        head: record.querySelector(".home-answer-record-head")?.textContent ?? null,
+        fields: [...record.querySelectorAll(".home-answer-fields > div")].map((row) => [row.querySelector("dt").textContent, row.querySelector("dd").textContent.trim()]),
+        words: record.querySelector(":scope > .home-reply-words")?.textContent.trim() ?? null,
+        others: [...record.querySelectorAll(".home-answer-others li")].map((li) => li.lastElementChild.textContent),
+        showAll: record.querySelectorAll(".home-reply-action.more").length,
+      },
       update: one(".home-answer-update")?.textContent ?? null,
-      order: [top(".home-answer-ask"), top(".home-answer-label"), top(".home-reply-answer")],
-      actions: [...(answer?.querySelectorAll(".home-answer-given footer button") ?? [])].map((b) => b.textContent.trim()),
+      order: [top(".home-answer-ask"), top(".home-answer-label"), top(".home-answer-value")],
+      actions: [...(answer?.querySelectorAll(".home-answer-bar > button") ?? [])].map((b) => b.textContent.trim()),
     };
   });
-  const footerButton = (key, label) => inCard(key, ".home-answer .home-answer-given footer button").filter({ hasText: label });
+  const toggle = (key) => inCard(key, ".home-answer .home-answer-toggle");
+  /** Its record opened or closed by its one toggle; read once settled. */
+  const setRecord = async (key, open) => {
+    if ((await toggle(key).getAttribute("aria-expanded")) !== String(open)) await toggle(key).click();
+    await settled();
+    return read(key);
+  };
+  const box = (key) => card(key).evaluate((el) => {
+    const { width, height } = el.getBoundingClientRect();
+    return { width: Math.round(width), height: Math.round(height) };
+  });
   const projectPage = `http://${HOST}/#/home?w=ws-next&p=p-next`;
   const block = () => page.locator('[data-request-block="29"]');
   try {
@@ -348,14 +393,15 @@ async function check(run) {
     const now = await read("yn-220/ask");
     assert.equal(now.ask, "参照会话的回复样式，你想在首页采用哪一种排法？");
     assert.equal(now.hint, "选择只定设计；如果希望直接开发，可在补充里写「按这版实现」。");
-    assert.equal(now.choice, "还要改，我来指出位置");
-    assert.equal(now.words, r29Words);
+    assert.equal(now.line, "还要改，我来指出位置", "one line: the option chosen");
+    assert.equal(now.notes, words.oneNote, "the words counted, in its record");
+    assert.equal(now.record, null, "its record closed");
     assert.equal(now.kind, words.wait);
-    assert.ok(now.order[0] < now.order[1] && now.order[1] < now.order[2], `the question, then the reply: ${now.order}`);
-    assert.deepEqual(now.actions, [words.copy, words.options, words.details, words.again]);
+    assert.ok(now.order[0] < now.order[1] && now.order[1] <= now.order[2], `the question, then the reply: ${now.order}`);
+    assert.deepEqual(now.actions, [words.show, words.again]);
     await nothingCut();
     await shot("request-answered", card("yn-220/ask"));
-    pass("answered in the request's first look, it is its answer card there: the question, then the option and the words", { now });
+    pass("answered in the request's first look, it is its answer card there: the question, then one line of what was chosen", { now });
 
     // 2. The request entered a second time (reloaded): one compact line in its task's row, opened in place to the same card.
     const secondEntry = async (tag) => {
@@ -406,20 +452,20 @@ async function check(run) {
     const first = await read("yn-220/first");
     assert.equal(first.ask, "第一轮先看哪种排法？");
     assert.equal(first.hint, "三种都在附图里。");
-    assert.equal(first.choice, "会话同款");
-    assert.equal(first.words, "再加上问题本身");
+    assert.equal(first.line, "会话同款");
+    assert.equal(first.notes, words.oneNote);
     assert.equal(first.kind, zh ? "已由 Dev Lead 解决" : "Resolved by Dev Lead");
     assert.notEqual(await card("yn-220/first").evaluate((el) => el.querySelector(".home-changed")?.textContent ?? null), zh ? "新" : "New",
       "answered and resolved: never New");
-    assert.deepEqual(first.actions, [words.copy, words.options, words.details], "resolved: nothing more is sent from it");
-    await inCard("yn-220/first", ".home-answer .home-answer-options-toggle").click();
-    await settled();
-    const firstOptions = await inCard("yn-220/first", ".home-answer .home-answer-options li").evaluateAll((els) => els.map((li) => [li.querySelector("span").textContent, !!li.getAttribute("aria-current")]));
-    assert.deepEqual(firstOptions, state.firstOptions.map((option) => [option.label, option.id === "a"]));
+    assert.deepEqual(first.actions, [words.show], "resolved: nothing more is sent from it");
+    const firstRecord = (await setRecord("yn-220/first", true)).record;
+    assert.deepEqual(firstRecord.fields, [[words.choice, "会话同款"], [words.note, "再加上问题本身"]]);
+    const firstOptions = firstRecord.others;
+    assert.deepEqual(firstOptions, state.firstOptions.filter((option) => option.id !== "a").map((option) => option.label), "the options not chosen");
     assert.ok(report.entryReads.some((read) => read.run === run.name && read.wanted.some(([id]) => id === state.first.id)), "its entry read whole");
     await nothingCut();
     await shot("history-request", block().locator('[data-answered="yn-220/first"]'));
-    pass("an Ask resolved in History opens from its request's line: read whole first (saying so), then the question, the options then and the reply as kept",
+    pass("an Ask resolved in History opens from its request's line: read whole first (saying so), then the question and the reply as kept; its record, the options not chosen",
       { readingText, first, firstOptions });
     // The same from the History list (Done, History 30 days): the question, the reply and the options then.
     const done = page.locator('details[data-group="done"]');
@@ -451,75 +497,106 @@ async function check(run) {
     assert.deepEqual([...keys].sort(), [...PROJECT_ANSWERS, "development"].sort());
     const r31 = await read("yn-221/ask");
     assert.equal(r31.ask, r31Question);
-    assert.deepEqual(r31.form, r31Picks, "the form's six choices");
+    assert.equal(r31.line, r31Picks.join(zh ? "、" : ", "), "the form's six choices on one line, without its title or label");
+    assert.deepEqual((await setRecord("yn-221/ask", true)).record.fields, [["这轮要做哪些？可多选", r31Picks.join(zh ? "、" : ", ")]]);
+    await setRecord("yn-221/ask", false);
     const alone = await read("words");
-    assert.equal(alone.choice, null);
-    assert.match(alone.words, /^第 1 行/);
-    assert.equal(await inCard("words", ".home-answer .home-reply-action.more").count(), 1, "long words fold behind Show all");
+    assert.match(alone.line, /^第 1 行/);
+    assert.deepEqual(alone.actions, [words.show, words.again], "words longer than two lines: the rest in its record");
+    assert.equal(await inCard("words", ".home-answer .home-reply-action.more").count(), 0, "no Show all of its own: one toggle");
+    const aloneRecord = (await setRecord("words", true)).record;
+    for (let n = 1; n <= 9; n++) assert.ok(aloneRecord.words.includes(`第 ${n} 行`), `the words whole in its record: line ${n}`);
+    assert.equal(aloneRecord.showAll, 0);
+    await setRecord("words", false);
     const earlier = await read("earlier");
     assert.equal(earlier.then, words.now);
     assert.ok(earlier.unkept, "an earlier reply says its question was not kept");
-    assert.equal(earlier.choice, null, "nothing read back from its text as chosen");
-    assert.equal(earlier.words, "Plan B: 先按 B 做");
+    assert.equal(earlier.line, "Plan B: 先按 B 做", "as sent: nothing read back from its text as chosen");
+    assert.equal(await inCard("earlier", ".home-answer .home-answer-picks").count(), 0);
     const updated = await read("updated");
     assert.equal(updated.kind, words.updated);
-    assert.equal(updated.choice, "可以");
-    assert.match(updated.update, /已排进周五的发布/);
+    assert.equal(updated.line, "可以");
+    assert.equal(updated.update, null, "its owner's update is in its record");
+    const updatedOpen = await setRecord("updated", true);
+    assert.deepEqual(updatedOpen.record.fields, [[words.choice, "可以"]]);
+    assert.deepEqual(updatedOpen.record.others, ["下周再说"], "the Ask's own options are the snapshot's, whatever changed since");
+    assert.match(updatedOpen.update, /已排进周五的发布/);
+    await setRecord("updated", false);
     const long = await read("long");
     assert.equal(long.ask, longQuestion, "the long question whole, word for word");
+    // A one-line reply: nothing more to record, so no toggle.
+    const simple = await read("simple");
+    assert.equal(simple.line, simpleWords);
+    assert.deepEqual(simple.actions, [words.copy, words.again], "its words whole: Copy answer and Reply again, no toggle");
     const widths = await nothingCut();
-    pass("the Project's answered Asks: a form's answers, words alone, an earlier reply said so, an update apart, a long question whole; nothing cut",
-      { r31: r31.form.length, earlier, updated: updated.kind, widths });
-    for (const [key, name] of [["yn-221/ask", "r31-form"], ["words", "words"], ["earlier", "earlier"], ["updated", "updated"], ["long", "long"]]) {
+    pass("the Project's answered Asks: a form's choices on one line and by field in its record, long words folded to two lines, an earlier reply said so, an update in the record, a long question whole, a one-line reply with no toggle; nothing cut",
+      { r31: r31.line, earlier, updated: updated.kind, simple: simple.actions, widths });
+    for (const [key, name] of [["yn-221/ask", "r31-form"], ["words", "words"], ["earlier", "earlier"], ["updated", "updated"], ["long", "long"], ["simple", "simple"]]) {
       await card(key).scrollIntoViewIfNeeded();
       await shot(name, card(key));
     }
+    // R-40, the design's own sample (results/YN-230/ask.html), closed and open on the real page.
+    const r40 = "yn-229/ask";
+    await card(r40).scrollIntoViewIfNeeded();
+    const r40Closed = await read(r40);
+    assert.equal(r40Closed.ask, r40Question, "the question whole");
+    assert.equal(r40Closed.line, r40Options[1], "one line: what was chosen, not the optional field left empty");
+    assert.equal(r40Closed.notes, null);
+    assert.deepEqual(r40Closed.actions, [words.show, words.again]);
+    const closedBox = await box(r40);
+    await shot("r40", card(r40));
+    const r40Open = await setRecord(r40, true);
+    assert.equal(r40Open.line, null, "the line gives way to the record");
+    assert.equal(r40Open.record.head, `${words.record}${r40Form.title}`);
+    assert.deepEqual(r40Open.record.fields, [["补样本的方式", r40Options[1]], ["开着 Yuzuno 时你一般在做什么？（可选）", words.skipped]]);
+    assert.deepEqual(r40Open.record.others, [r40Options[0], r40Options[2], r40Options[3]], "the field's other options, as the form answered offered them");
+    assert.deepEqual(r40Open.actions, [words.hide, words.again]);
+    const openBox = await box(r40);
+    await nothingCut();
+    await shot("r40-record", card(r40));
+    result.r40 = { closed: closedBox, open: openBox };
+    await setRecord(r40, false);
+    pass("R-40's form, the design's sample: closed, the question whole and the choice; open, the answers by field, the empty one skipped, the other three options",
+      { closed: closedBox, open: openBox });
 
-    // 4. On R-29's card, opened again in its request: Options then, Copy answer, its fold, and Reply again by keyboard.
+    // 4. On R-29's card, opened again in its request, from the keyboard: its record, Copy answer, Reply again.
     const r29 = "yn-220/ask";
     await card(r29).scrollIntoViewIfNeeded();
     await shot("r29", card(r29));
-    await inCard(r29, ".home-answer .home-answer-options-toggle").click();
+    await toggle(r29).focus();
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.querySelector('.home-section[data-section-key="yn-220/ask"] .home-answer-record'));
     await settled();
-    const options = await inCard(r29, ".home-answer .home-answer-options li").evaluateAll((els) => els.map((li) => [li.querySelector("span").textContent, !!li.getAttribute("aria-current")]));
-    assert.deepEqual(options, r29Options.map((option) => [option.label, option.id === "revise"]));
-    assert.equal(await inCard(r29, ".home-answer .home-answer-options li[aria-current] small").innerText(), words.chosen);
+    assert.equal(await toggle(r29).getAttribute("aria-expanded"), "true");
+    assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("home-answer-toggle")), true, "focus stays on the toggle");
+    const opened = await read(r29);
+    assert.deepEqual(opened.record.fields, [[words.choice, "还要改，我来指出位置"], [words.note, r29Words]]);
+    assert.deepEqual(opened.record.others, r29Options.filter((option) => option.id !== "revise").map((option) => option.label));
+    assert.deepEqual(opened.actions, [words.hide, words.again]);
     await nothingCut();
-    await shot("r29-options", card(r29));
-    await inCard(r29, ".home-answer .home-answer-options-toggle").click();
-    await settled();
-    pass("Options then: the six options as seen, the chosen one marked", { options });
-    await footerButton(r29, words.copy).click();
-    await page.waitForFunction((copied) => [...document.querySelectorAll('.home-section[data-section-key="yn-220/ask"] > .home-answer footer button')].some((b) => b.textContent.trim() === copied), words.copied);
+    await shot("r29-record", card(r29));
+    pass("from the keyboard, the toggle opens its record: the option and the words by field, the five options not chosen", { record: opened.record });
+    await inCard(r29, ".home-answer .home-answer-tools button").click();
+    await page.waitForFunction((copied) => [...document.querySelectorAll('.home-section[data-section-key="yn-220/ask"] > .home-answer .home-answer-tools button')].some((b) => b.textContent.trim() === copied), words.copied);
     const clip = await page.evaluate(() => navigator.clipboard.readText());
     assert.equal(clip, `还要改，我来指出位置\n\n${r29Words}`);
     pass("Copy answer copies the option chosen and the words", { clip });
-    await inCard(r29, ".home-answer-byline .home-fold").click();
-    await page.waitForFunction(() => document.querySelector('.home-section[data-section-key="yn-220/ask"]').classList.contains("is-folded"));
-    const folded = await read(r29);
-    assert.equal(folded.ask, now.ask);
-    assert.equal(folded.hint, now.hint);
-    assert.equal(folded.choice, "还要改，我来指出位置");
-    assert.equal(folded.words, null, "the words one unfold away");
-    assert.deepEqual(folded.actions, []);
-    assert.equal((await inCard(r29, ".home-answer .home-answer-unfold").innerText()).trim(), words.whole);
-    await nothingCut();
-    await shot("r29-fold", card(r29));
-    await inCard(r29, ".home-answer .home-answer-unfold").click();
-    await page.waitForFunction(() => !document.querySelector('.home-section[data-section-key="yn-220/ask"]').classList.contains("is-folded"));
-    pass("folded, the question and the chosen answer stay; unfolded again, the whole reply");
-    await settled();
-    await footerButton(r29, words.details).focus();
+    await toggle(r29).focus();
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => !document.querySelector('.home-section[data-section-key="yn-220/ask"] .home-answer-record'));
+    assert.deepEqual({ ...(await read(r29)), order: null }, { ...now, order: null }, "closed again: as it was");
+    await toggle(r29).focus();
     await page.keyboard.press("Tab");
     assert.equal(await page.evaluate(() => document.activeElement?.textContent.trim()), words.again);
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => document.querySelector('.home-section[data-section-key="yn-220/ask"] > .home-card-body:not([hidden]) .home-ask-reply'), null, { timeout: 10_000 });
+    assert.equal(await inCard(r29, ".home-answer .home-answer-again").getAttribute("aria-expanded"), "true");
     await nothingCut();
     await shot("r29-reply-again", card(r29));
-    await footerButton(r29, words.details).focus();
+    await inCard(r29, ".home-answer .home-answer-again").focus();
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => document.querySelector('.home-section[data-section-key="yn-220/ask"] > .home-card-body')?.hidden);
-    pass("from the keyboard: Reply again opens the reply's controls on the card, Details closes its body");
+    pass("from the keyboard: the toggle closes its record; Reply again opens the reply's controls on the card and closes them again");
 
     await page.locator('[data-project-home="p-next"]').evaluate((el) => el.scrollIntoView({ block: "start" }));
     await shot("page");
