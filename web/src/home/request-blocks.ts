@@ -147,9 +147,11 @@ export type BlockState = "done" | "deliveryFailed" | "unconfirmed" | "decide" | 
 
 /**
  * One outcome on a request's bar (R-38 §3): a step of the Plan its task's card names as `summary.progress`. Its text
- * before the first " — " is its name, the rest its detail. available: done, and every PR it names is in the release
- * (Core kept the commit ancestry); done: done, naming no PR; merged: done, a PR not known to be in the release;
- * doing, blocked, todo as the step says. `asking`: its task has an open Ask, on its first step not done.
+ * before the first " — " is its name, the rest its detail. Of a step its author marked done: merged, when every PR
+ * it names is exactly one PR its task links and each is merged; available, when each of those is also in the
+ * release (Core kept the commit ancestry); else done, as its author marked it, with what is known of each PR in
+ * `facts` (the lead's rule on YN-227, comment 12387). doing, blocked, todo as the step says. `asking`: its task has
+ * an open Ask, on its first step not done.
  */
 export type Segment = {
   id: string;
@@ -157,20 +159,26 @@ export type Segment = {
   name: string;
   detail: string | null;
   state: "available" | "done" | "merged" | "doing" | "blocked" | "todo";
-  /** The PRs it names that its task links; a number two of them share, or none links, is not verified. */
-  prs: RequestPull[];
-  /** Whether it names PRs at all. */
-  namesPrs: boolean;
+  /** What is known of each PR it names, in its order. */
+  facts: PullFact[];
   asking: boolean;
 };
 
 /**
- * A block's progress. bar: its outcomes, with the label beside it: available (n of m usable), done (n of m done, no
- * step naming a PR), or merged (none usable yet, `count` merged and not known to be installed). progress: no Plan,
- * the first sentence of its task's own progress.
+ * A PR a step names, as Core knows it: the one its task links by that number, with whether it merged and is in the
+ * release (installed); or none (unlinked); or more than one, of other repositories (ambiguous).
+ */
+export type PullFact =
+  | { number: number; kind: "linked"; pr: RequestPull }
+  | { number: number; kind: "unlinked" | "ambiguous" };
+
+/**
+ * A block's progress. bar: its outcomes, `done` of `total` done (available, merged or done, whatever kind of work),
+ * and apart from that how many are `available` (in the release, by commit) and how many `merged` and not known to be
+ * installed. progress: no Plan, the first sentence of its task's own progress.
  */
 export type BlockNow =
-  | { kind: "bar"; label: "available" | "done" | "merged"; count: number; total: number; segments: Segment[] }
+  | { kind: "bar"; done: number; total: number; available: number; merged: number; segments: Segment[] }
   | { kind: "progress"; text: string; task: string }
   | null;
 
@@ -187,7 +195,7 @@ export type BlockNext =
   /** The first step in progress, and who answers for its task. */
   | { kind: "step"; text: string; task: string; who: Who | null };
 
-export type DetailItem = { task: string; name: string; detail: string | null; state: Segment["state"] };
+export type DetailItem = { task: string; name: string; detail: string | null; state: Segment["state"]; facts: PullFact[] };
 export type BlockDetails = { got: DetailItem[]; left: DetailItem[] };
 
 export type BlockEvidence = {
@@ -467,13 +475,18 @@ function split(text: string) {
   return at < 0 ? { name: text.trim(), detail: null } : { name: text.slice(0, at).trim(), detail: text.slice(at + 3).trim() || null };
 }
 
-/**
- * A done step's PRs, each by number among those its task links, and whether all are in the release: a number no
- * linked PR has, or two of them share (another repository's), is not verified (R-38, the lead's rule).
- */
-function pullsOf(step: PlanStep, linked: readonly RequestPull[]) {
-  const found = step.prs.map((number) => linked.filter((pr) => pr.number === number));
-  return { prs: found.flatMap((matches) => (matches.length === 1 ? matches : [])), verified: found.every((m) => m.length === 1 && m[0].installed === true) };
+/** What is known of each PR a step names, by number among those its task links (R-38, the lead's rule). */
+function factsOf(step: PlanStep, linked: readonly RequestPull[]): PullFact[] {
+  return step.prs.map((number) => {
+    const matches = linked.filter((pr) => pr.number === number);
+    return matches.length === 1 ? { number, kind: "linked", pr: matches[0] } : { number, kind: matches.length ? "ambiguous" : "unlinked" };
+  });
+}
+
+/** A done step's state: merged only when each PR it names is one linked PR, merged; available when each is installed too. */
+function doneState(facts: readonly PullFact[]): Segment["state"] {
+  if (!facts.length || !facts.every((fact) => fact.kind === "linked" && fact.pr.state === "merged")) return "done";
+  return facts.every((fact) => fact.kind === "linked" && fact.pr.installed === true) ? "available" : "merged";
 }
 
 const TEAM_STATES = new Set(["queued", "starting", "running", "delivering"]);
@@ -492,19 +505,18 @@ function barOf(rows: readonly TaskRow[]): { now: BlockNow & { kind: "bar" }; sou
     let asking = row.asks.some(openAsk);
     return card.steps.map((step) => {
       const { name, detail } = split(step.text);
-      const { prs, verified } = pullsOf(step, row.prs);
-      const state: Segment["state"] = step.state !== "done" ? step.state : !step.prs.length ? "done" : verified ? "available" : "merged";
+      const facts = factsOf(step, row.prs);
+      const state: Segment["state"] = step.state === "done" ? doneState(facts) : step.state;
       const ask = asking && step.state !== "done";
       if (ask) asking = false;
       return { id: `${row.task.id}:${step.id}`, task: row.task.id, name: several ? `${shortOf(row)} · ${name}` : name, detail, state,
-        prs, namesPrs: step.prs.length > 0, asking: ask };
+        facts, asking: ask };
     });
   });
-  const usable = segments.filter((s) => s.state === "available" || s.state === "done").length;
-  const merged = segments.filter((s) => s.state === "merged").length;
-  const label = usable === 0 && merged > 0 ? "merged" : segments.some((s) => s.namesPrs) ? "available" : "done";
+  const count = (...states: Segment["state"][]) => segments.filter((s) => states.includes(s.state)).length;
   return {
-    now: { kind: "bar", label, count: label === "merged" ? merged : usable, total: segments.length, segments },
+    now: { kind: "bar", done: count("available", "merged", "done"), total: segments.length, available: count("available"), merged: count("merged"),
+      segments },
     sources: planned.map(({ card }) => card.section),
   };
 }
@@ -614,8 +626,8 @@ function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joine
     next: nextOf(state, own, joined, segments),
     details: bar
       ? {
-          got: segments.filter((s) => DONE_STATES.has(s.state)).map((s) => ({ task: s.task, name: s.name, detail: s.detail, state: s.state })),
-          left: segments.filter((s) => !DONE_STATES.has(s.state)).map((s) => ({ task: s.task, name: s.name, detail: s.detail, state: s.state })),
+          got: segments.filter((s) => DONE_STATES.has(s.state)).map(({ task, name, detail, state, facts }) => ({ task, name, detail, state, facts })),
+          left: segments.filter((s) => !DONE_STATES.has(s.state)).map(({ task, name, detail, state, facts }) => ({ task, name, detail, state, facts })),
         }
       : null,
     evidence: evidenceOf(request, rows),

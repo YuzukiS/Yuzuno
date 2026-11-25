@@ -469,7 +469,7 @@ test("R-38 a request whose design is final and whose implementation goes on: in 
   assert.equal(b.now.kind, "bar");
   assert.deepEqual(b.now.segments.map((s) => [s.name, s.detail, s.state, s.asking]), [
     ["S1 契约", "summary.progress 与步骤 prs", "merged", false], ["S2 Core", "任务进度与安装核实", "doing", false], ["S3 网页模型", null, "todo", false]]);
-  assert.deepEqual([b.now.label, b.now.count, b.now.total], ["merged", 1, 3], "none usable yet: merged, install not verified");
+  assert.deepEqual([b.now.done, b.now.total, b.now.available, b.now.merged], [1, 3, 0, 1], "done 1/3: merged, install not verified");
   assert.deepEqual(b.next, { kind: "step", text: "S2 Core", task: "YN-227", who: x227 });
   assert.deepEqual(b.details.got.map((i) => i.name), ["S1 契约"]);
   assert.deepEqual(b.details.left.map((i) => [i.name, i.state]), [["S2 Core", "doing"], ["S3 网页模型", "todo"]]);
@@ -479,10 +479,21 @@ test("R-38 a request whose design is final and whose implementation goes on: in 
   // Once Core keeps that #1121 is in the release, S1 is usable: 1 of 3.
   const installed = request(38, 300, "doing", [withTask(routed(card, "YN-227", "doing", x227), { prs: [pull(1121, true), pull(1122, null, "open")] })]);
   const now = block(pageBlocks([installed], [card]).blocks, 38).now;
-  assert.deepEqual([now.label, now.count, now.segments[0].state, now.segments[0].prs.map((p) => p.number)], ["available", 1, "available", [1121]]);
-  // A number two linked PRs share (another repository's) is not verified, whatever either says.
-  const twice = request(38, 300, "doing", [withTask(routed(card, "YN-227", "doing", x227), { prs: [pull(1121, true), pull(1121, true, "merged", "o/other")] })]);
-  assert.equal(block(pageBlocks([twice], [card]).blocks, 38).now.segments[0].state, "merged");
+  assert.deepEqual([now.done, now.available, now.merged, now.segments[0].state], [1, 1, 0, "available"]);
+  assert.deepEqual(now.segments[0].facts.map((f) => [f.number, f.kind, f.pr?.installed]), [[1121, "linked", true]]);
+  // Done by its author, but a PR it names is not one merged PR its task links: done as marked, with what is known.
+  const facts = (prs, steps = [{ ...R38_STEPS[0], prs: [1121, 1124] }]) => {
+    const marked = planCard("yn-227", "YN-227", steps, 3);
+    const req = request(38, 300, "doing", [withTask(routed(marked, "YN-227", "doing", x227), { prs })]);
+    return block(pageBlocks([req], [marked]).blocks, 38).now.segments[0];
+  };
+  const mixed = facts([pull(1121, true), pull(1124, null, "draft")]);
+  assert.deepEqual([mixed.state, mixed.facts.map((f) => [f.number, f.kind, f.pr?.state])], ["done", [[1121, "linked", "merged"], [1124, "linked", "draft"]]],
+    "a merged PR and a draft: neither merged nor usable as a whole");
+  const missing = facts([pull(1121, true)]);
+  assert.deepEqual([missing.state, missing.facts.map((f) => [f.number, f.kind])], ["done", [[1121, "linked"], [1124, "unlinked"]]], "a PR its task does not link");
+  const twice = facts([pull(1121, true), pull(1121, true, "merged", "o/other")], [R38_STEPS[0]]);
+  assert.deepEqual([twice.state, twice.facts.map((f) => f.kind)], ["done", ["ambiguous"]], "a number two linked PRs share");
   // The user's confirmation is asked only once the task itself ended.
   const ended = request(38, 300, "ended", [withTask(routed(card, "YN-227", "done", null), {})]);
   const settled = block(pageBlocks([ended], [card]).blocks, 38);
@@ -498,7 +509,7 @@ test("R-38 the progress card may be an Ask (R-31); without a Plan, the task's ow
   const r31 = request(31, 900, "doing", [withTask(routed(asked, "YN-221", "doing", lead), { prs: [pull(1105, true)] })]);
   const b = block(pageBlocks([r31], [asked]).blocks, 31);
   assert.deepEqual(b.now.segments.map((s) => s.state), ["available", "blocked"]);
-  assert.deepEqual([b.now.label, b.now.count, b.now.total], ["available", 1, 2]);
+  assert.deepEqual([b.now.done, b.now.total, b.now.available], [1, 2, 1]);
   assert.equal(b.evidence.answered, 1);
   // No card names a Plan: the first sentence of the task's progress, never a card's title.
   const plain = section("yn-228", "status", "某张卡的标题", 2, 10, lead, { status: status(10), card: binding("YN-228", "doing", x227) });
@@ -548,11 +559,11 @@ test("R-38 a progress written before later facts says which, at most three kinds
   const both = request(61, 300, "doing", [withTask(routed(a, "YN-232", "doing", x227)), withTask(routed(b2, "YN-233", "doing", x227))]);
   const bar = block(pageBlocks([both], [a, b2]).blocks, 61).now;
   assert.deepEqual(bar.segments.map((s) => s.name), ["契约 · 契约", "视图 · 视图"]);
-  assert.deepEqual([bar.label, bar.count, bar.total], ["done", 1, 2], "no step names a PR: done, not available");
+  assert.deepEqual([bar.done, bar.total, bar.available, bar.merged], [1, 2, 0, 0], "no step names a PR: done, never usable");
 });
 
 test("R-38 a bar of more than ten outcomes draws adjacent ones of one state as one cell, never one asking", () => {
-  const seg = (i, state, asking = false) => ({ id: `t:${i}`, task: "t", name: `第 ${i} 项`, detail: null, state, prs: [], namesPrs: false, asking });
+  const seg = (i, state, asking = false) => ({ id: `t:${i}`, task: "t", name: `第 ${i} 项`, detail: null, state, facts: [], asking });
   const few = Array.from({ length: 10 }, (_, i) => seg(i, "done"));
   assert.equal(barCells(few).length, 10, "ten: one cell each");
   const many = [...Array.from({ length: 6 }, (_, i) => seg(i, "done")), seg(6, "doing", true), seg(7, "doing"), ...Array.from({ length: 4 }, (_, i) => seg(8 + i, "todo"))];
