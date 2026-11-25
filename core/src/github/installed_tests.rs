@@ -33,6 +33,7 @@ static SECOND: AtomicU8 = AtomicU8::new(0);
 /// Each endpoint asked goes to the `.calls` file.
 fn fixture(dir: &std::path::Path) -> std::path::PathBuf {
     let script = dir.join("gh-fixture.py");
+    let next = "2".repeat(40);
     std::fs::write(&script, format!(r#"#!/usr/bin/python3
 import sys,json
 from pathlib import Path
@@ -45,7 +46,7 @@ elif '/compare/' in endpoint:
  assert sys.argv[sys.argv.index('--jq')+1] == '.status', sys.argv
  if Path(__file__).with_suffix(".limit").exists(): print("HTTP 403: API rate limit exceeded",file=sys.stderr); sys.exit(1)
  base,head=endpoint.split('/compare/')[1].split('?')[0].split('...')
- assert base=='{RELEASE}' or base=='{"2".repeat(40)}', endpoint
+ assert base=='{RELEASE}' or base=='{next}', endpoint
  if head=='{M3}': print("HTTP 404: Not Found",file=sys.stderr); sys.exit(1)
  print('behind' if head=='{M1}' else 'ahead')
 elif '/pulls/' in endpoint:
