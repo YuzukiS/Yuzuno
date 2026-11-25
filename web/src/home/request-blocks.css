@@ -526,7 +526,8 @@
 .request-state[data-state="accept"] {
   border-color: var(--home-attention);
   background: var(--home-attention);
-  color: var(--home-attention-ink, var(--ink));
+  /* Dark on the attention colour in either theme: the attention colour itself, mostly black. */
+  color: color-mix(in srgb, var(--home-attention) 18%, black);
   font-weight: 600;
 }
 .request-state[data-state="deliveryFailed"],
