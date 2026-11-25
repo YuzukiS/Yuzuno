@@ -60,18 +60,40 @@ export type Deliverable =
   | { kind: "release"; title: string; note: string | null; url: string; repository: string; tag: string }
   | { kind: "answer"; title: string | null; note: null; text: string };
 
+/**
+ * A pull request a card's task links (R-38 §2.6, github/installed.rs), as Core last read it. `installed` is true
+ * only once Core kept GitHub's compare saying its merge commit is in the release this Core runs, false once it kept
+ * that it is not; null otherwise: not merged, its merge commit not read, no compare kept, a repository without the
+ * release's commit, or a Core that runs no release. A milestone or version never decides it.
+ */
+export type RequestPull = {
+  number: number;
+  title: string | null;
+  url: string;
+  repository: string;
+  state: "open" | "draft" | "closed" | "merged" | "unknown";
+  mergedAt: string | null;
+  installed: boolean | null;
+};
+
 /** One card a request went to (progress.rs): as Home shows it, and who answers for it now. */
 export type RequestCard = {
   sectionId: number | null;
   key: string | null;
   title: string | null;
   live: boolean;
-  task: { id: string; status: string; archived: boolean };
+  /**
+   * `progress` and `blocker` (R-38): what its lead or executor wrote on the task, at most 280 characters each (a
+   * longer one ends in "…"), null when unset; absent from an older Core.
+   */
+  task: { id: string; status: string; archived: boolean; progress?: string | null; blocker?: string | null };
   responsible: { agentId: string; name: string; kind: "executor" | "lead" | "agent"; state: string } | null;
   /** The task's newest result (YN-208), or null without one; absent from an older Core. */
   result?: { id: string; status: string; reportedAt: string } | null;
   /** What the newest result that named deliverables named (YN-208), or null; absent from an older Core. */
   deliverables?: { resultId: string; reportedAt: string; items: Deliverable[] } | null;
+  /** The pull requests its task links, by repository and number (R-38); absent from an older Core. */
+  prs?: { items: RequestPull[] };
 };
 
 /** Core's line in the conversation (progress.rs): an Ask on one of its cards, or a card's task that ended. */
@@ -124,7 +146,20 @@ export type ProjectRequest = {
   lines: RequestLine[];
 };
 
-export type RequestPage = { requests: ProjectRequest[]; hasMore: boolean };
+/** The release this Core runs (R-38 §2.6): its manifest's id, version and full commit. */
+export type InstalledRelease = { releaseId: string; version: string; gitSha: string };
+
+export type RequestPage = {
+  requests: ProjectRequest[];
+  hasMore: boolean;
+  /** The release this Core runs; null for a source build, absent from an older Core. */
+  installedRelease?: InstalledRelease | null;
+  /**
+   * How many PRs linked to the Project's tasks are merged and kept as not in that release; null without a release
+   * or while any merged one is not known yet, absent from an older Core.
+   */
+  mergedAfterInstalled?: number | null;
+};
 
 const base = (projectId: string) => `/projects/${encodeURIComponent(projectId)}`;
 

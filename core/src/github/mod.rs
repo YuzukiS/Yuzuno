@@ -2,6 +2,7 @@
 //! reads are bounded and coalesced; task status and native sessions are untouched.
 pub(crate) mod activity;
 pub(crate) mod client;
+pub(crate) mod installed;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;

@@ -11,7 +11,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
       CREATE TABLE IF NOT EXISTS github_project_repos(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,repo_id INTEGER NOT NULL REFERENCES github_repositories(id),PRIMARY KEY(project_id,repo_id));
       CREATE TABLE IF NOT EXISTS github_objects(id TEXT PRIMARY KEY,repo_id INTEGER NOT NULL REFERENCES github_repositories(id),kind TEXT NOT NULL,number INTEGER NOT NULL,data TEXT NOT NULL,UNIQUE(repo_id,kind,number));
       CREATE TABLE IF NOT EXISTS github_task_links(task_id TEXT NOT NULL REFERENCES collaboration_tasks(id) ON DELETE CASCADE,object_id TEXT NOT NULL REFERENCES github_objects(id),PRIMARY KEY(task_id,object_id));")?;
-    Ok(())
+    super::installed::migrate(db)
 }
 fn repository(db: &Connection, id: i64) -> Result<Value> {
     let raw: String = db.query_row(
