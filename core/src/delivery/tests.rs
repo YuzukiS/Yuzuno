@@ -1378,3 +1378,29 @@ fn a_closed_ssh_owner_is_still_refused() {
         "{error}"
     );
 }
+/// R-39: however long ago its interest ended, a CI subscription a delivery
+/// flow that has not ended names stays in the main tables; once the flow
+/// ended it may move to the archive, and the flow reads its CI from there.
+#[test]
+fn an_unfinished_flow_keeps_its_ci_subscription_out_of_the_archive() {
+    let (_dir, s, t) = setup();
+    let f = enable(&s, &t);
+    s.collaboration_call(None, "task_submit_result", result(&s, &t, Some(f["candidate"].clone()), "result"))
+        .unwrap();
+    start(&s, &t, "review");
+    let (plan, sub) = subscribe_plan(&s, &t);
+    s.delivery_finish(&internal(&s, &t), &plan, Ok(sub.clone())).unwrap();
+    let ended = r#"json('{"reason":"expired","at":"2026-01-01T00:00:00Z"}')"#;
+    s.db.write().unwrap().execute_batch(&format!(
+        "UPDATE ci_interests SET active=0,data=json_set(data,'$.active',json('false'),'$.closure',{ended});
+         UPDATE ci_subscriptions SET active=0,data=json_set(data,'$.active',json('false'),'$.closure',{ended});"
+    )).unwrap();
+    let later = chrono::Utc::now().timestamp() + 30 * 86400;
+    assert_eq!(s.ci_archive_pass(0, later).unwrap().watches, 0, "the flow still uses it");
+    stopped(&s, &t, &f, "stop");
+    assert_eq!(s.ci_archive_pass(0, later).unwrap().watches, 1);
+    let flow = get(&s, &t);
+    assert_eq!(flow["ciEvidence"]["subscriptionId"], sub["id"]);
+    assert_eq!(flow["ciEvidence"]["active"], false);
+    assert_eq!(flow["ciEvidence"]["watch"]["id"], sub["watchId"]);
+}

@@ -4,19 +4,19 @@
 use super::*;
 use rusqlite::params;
 
-fn sha(n: u64) -> String {
+pub(super) fn sha(n: u64) -> String {
     format!("{n:040x}")
 }
-fn target(s: &Store, n: u64) -> anyhow::Result<Value> {
+pub(super) fn target(s: &Store, n: u64) -> anyhow::Result<Value> {
     let mut request = input(&format!("w{n}"));
     request.expected_sha = sha(n);
     s.ci_subscribe(Some("a"), request, crate::github::client::Repository { id: 123, full_name: "o/r".into() }, "pull", 7)
 }
-fn watch_of(n: u64) -> String {
+pub(super) fn watch_of(n: u64) -> String {
     format!("123:pull:7:{}", sha(n))
 }
 /// The watch of target `n` saw one finished run of its head.
-fn finish(s: &Store, n: u64) {
+pub(super) fn finish(s: &Store, n: u64) {
     let run = client::run(&json!({"id":n,"run_attempt":1,"head_sha":sha(n),"name":"CI","status":"completed","conclusion":"success",
         "repository":{"id":123},"created_at":"2026-10-15T00:00:00Z"}), 123, "o/r").unwrap();
     s.ci_observe(&watch_of(n), Ok(seen(vec![run], Some(sha(n))))).unwrap();
