@@ -390,7 +390,9 @@ export function ProjectHome({
     const onFold = (event: Event) => {
       const fold = (event.target as Element | null)?.closest?.(".home-fold");
       const card = document.getElementById(sectionDomId(id, key));
-      if (fold && card?.contains(fold) && fold.getAttribute("aria-expanded") === "true") foldedWhileLanding.current = { n, key };
+      if (!fold || !card?.contains(fold)) return;
+      // The user's last choice counts (review 63e8f668): a fold opened again is no fold to keep.
+      foldedWhileLanding.current = fold.getAttribute("aria-expanded") === "true" ? { n, key } : null;
     };
     page.addEventListener("click", onFold, true);
     return () => page.removeEventListener("click", onFold, true);
