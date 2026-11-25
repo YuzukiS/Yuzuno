@@ -1009,3 +1009,5 @@ mod route_confirm_tests;
 mod route_deliverable_tests;
 #[path = "route_join_tests.rs"]
 mod route_join_tests;
+#[path = "route_progress_tests.rs"]
+mod route_progress_tests;

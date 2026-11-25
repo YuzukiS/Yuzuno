@@ -20,6 +20,7 @@ pub(crate) use progress::handoffs;
 
 use crate::{
     collaboration_credentials::MessageNotSubmitted,
+    github::installed::Installed,
     message_content::TextBlock,
     model::{MessageInput, MessageReceipt},
     project_brief::{follow_up_turn, MAX_REPLY},
@@ -774,7 +775,7 @@ fn reply_view(db: &Connection, request: &str, reply: Reply) -> Result<Value> {
 /// and its follow-ups, oldest first; then what routing made of it
 /// (progress.rs): the front desk's notes, its routes, its cards and their
 /// progress, and Core's lines for the conversation.
-fn view(db: &Connection, project: &str, request: Request) -> Result<Value> {
+fn view(db: &Connection, project: &str, request: Request, installed: Option<&Installed>) -> Result<Value> {
     let replies = db
         .prepare_cached(&format!("SELECT {REPLY} FROM project_request_replies WHERE request_id=?1 ORDER BY n"))?
         .query_map([&request.id], reply_row)?
@@ -787,7 +788,7 @@ fn view(db: &Connection, project: &str, request: Request) -> Result<Value> {
         "createdAt":request.created_at,"frontAgentId":request.front_agent_id,"messageId":request.message_id,
         "delivery":delivery(db, &request.id, &request.front_agent_id, &request.message_id, None)?,"replies":replies,
     });
-    progress::show(db, project, &request.id, request.n, request.confirmed_at.as_deref(), &mut shown)?;
+    progress::show(db, project, &request.id, request.n, request.confirmed_at.as_deref(), installed, &mut shown)?;
     Ok(shown)
 }
 
@@ -818,7 +819,8 @@ pub(crate) async fn confirm(ws: &Arc<Workspace>, project: &str, n: i64, input: C
             .query_row(&format!("SELECT {REQUEST} FROM project_requests WHERE project_id=?1 AND n=?2"), params![id, n], request_row)
             .optional()?
             .with_context(|| format!("request_not_found: this Project has no request R-{n}. Nothing was confirmed."))?;
-        let shown = view(&tx, &id, request.clone())?;
+        let installed = Installed::current();
+        let shown = view(&tx, &id, request.clone(), installed.as_ref())?;
         match shown["state"].as_str().unwrap_or_default() {
             "done" => return Ok((shown, false)),
             "ended" | "answered" => {}
@@ -827,7 +829,7 @@ pub(crate) async fn confirm(ws: &Arc<Workspace>, project: &str, n: i64, input: C
         }
         let at = crate::model::now();
         tx.execute("UPDATE project_requests SET confirmed_at=?2 WHERE id=?1", params![request.id, at])?;
-        let shown = view(&tx, &id, Request { confirmed_at: Some(at), ..request })?;
+        let shown = view(&tx, &id, Request { confirmed_at: Some(at), ..request }, installed.as_ref())?;
         tx.commit()?;
         Ok((shown, true))
     }).await?;
@@ -839,8 +841,18 @@ pub(crate) async fn confirm(ws: &Arc<Workspace>, project: &str, n: i64, input: C
 
 /// `GET /api/projects/{id}/requests?before=&limit=`: the Project's requests,
 /// newest first, `limit` (at most 50, 20 by default) of those numbered
-/// below `before`.
+/// below `before`, against the release this Core runs (`page_for`).
 pub(crate) fn page(db: &Connection, project: &str, before: Option<i64>, limit: Option<usize>) -> Result<Value> {
+    page_for(db, project, before, limit, Installed::current().as_ref())
+}
+
+/// `page` against `installed` (R-38 §2.6): `installedRelease`, the release
+/// this Core runs (null for a source build), and `mergedAfterInstalled`, how
+/// many PRs linked to the Project's tasks are merged and kept as not in it
+/// (null without a release, or while any merged one is not known yet). Only
+/// what Core keeps is read: never the network.
+pub(crate) fn page_for(db: &Connection, project: &str, before: Option<i64>, limit: Option<usize>, installed: Option<&Installed>)
+    -> Result<Value> {
     crate::projects::ensure_exists(db, project)?;
     let limit = limit.unwrap_or(20).clamp(1, 50);
     let mut rows = db
@@ -849,8 +861,12 @@ pub(crate) fn page(db: &Connection, project: &str, before: Option<i64>, limit: O
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let more = rows.len() > limit;
     rows.truncate(limit);
-    let requests = rows.into_iter().map(|request| view(db, project, request)).collect::<Result<Vec<_>>>()?;
-    Ok(json!({"requests":requests,"hasMore":more}))
+    let requests = rows.into_iter().map(|request| view(db, project, request, installed)).collect::<Result<Vec<_>>>()?;
+    let after = match installed {
+        Some(installed) => crate::github::installed::merged_after(db, project, installed)?,
+        None => None,
+    };
+    Ok(json!({"requests":requests,"hasMore":more,"installedRelease":installed.map(Installed::json),"mergedAfterInstalled":after}))
 }
 
 /// The user's routes: on Core's own port and on the phone entry, as the rest

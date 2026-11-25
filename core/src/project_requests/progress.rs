@@ -6,6 +6,7 @@
 //! (`card.handoffs`). None of it carries the user's words: they stay on the
 //! request, shown only in the conversation.
 use super::routes::{self, RouteRow};
+use crate::github::installed::{self, Installed};
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -32,13 +33,33 @@ fn tasks(rows: &[RouteRow]) -> Vec<String> {
 }
 
 /// A task as a request's card shows it: its key, status, whether it ended
-/// (done, cancelled or archived, as cards.rs ends a card), and its newest
-/// result, if any (YN-208): which, its status then and when.
+/// (done, cancelled or archived, as cards.rs ends a card), its newest
+/// result, if any (YN-208): which, its status then and when, and the
+/// progress and blocker its lead or executor wrote (R-38), "" when unset.
 struct Task {
     key: String,
     status: String,
     archived_at: Option<String>,
     result: Option<Value>,
+    progress: String,
+    blocker: String,
+}
+
+/// At most this many characters of a task's progress or blocker on a request's card (R-38 §4): the card shows its
+/// first sentence; the whole stays on the task.
+pub(super) const TASK_TEXT_CHARS: usize = 280;
+
+/// `text` as a request's card shows it: trimmed, at most TASK_TEXT_CHARS characters, a longer one ending in "…";
+/// null when there is none.
+fn clipped(text: &str) -> Value {
+    let text = text.trim();
+    if text.is_empty() {
+        return Value::Null;
+    }
+    if text.chars().count() <= TASK_TEXT_CHARS {
+        return json!(text);
+    }
+    json!(text.chars().take(TASK_TEXT_CHARS - 1).collect::<String>() + "…")
 }
 
 impl Task {
@@ -48,22 +69,26 @@ impl Task {
 }
 
 fn task(db: &Connection, id: &str) -> Result<Option<Task>> {
-    let row: Option<(Option<String>, Option<String>, Option<String>)> = db
+    type Row = (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
+    let row: Option<Row> = db
         .query_row(
             "SELECT json_extract(data,'$.status'),json_extract(data,'$.archivedAt'),
              CASE WHEN json_type(data,'$.result')='object' THEN json_object('id',json_extract(data,'$.result.id'),
-             'status',json_extract(data,'$.result.status'),'reportedAt',json_extract(data,'$.result.reportedAt')) END
+             'status',json_extract(data,'$.result.status'),'reportedAt',json_extract(data,'$.result.reportedAt')) END,
+             json_extract(data,'$.progress'),json_extract(data,'$.blocker')
              FROM collaboration_tasks WHERE id=?1",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    row.map(|(status, archived_at, result)| -> Result<Task> {
+    row.map(|(status, archived_at, result, progress, blocker)| -> Result<Task> {
         Ok(Task {
             key: crate::collaboration_store::task_shown(db, id),
             status: status.unwrap_or_default(),
             archived_at,
             result: result.map(|raw| serde_json::from_str(&raw)).transpose()?,
+            progress: progress.unwrap_or_default(),
+            blocker: blocker.unwrap_or_default(),
         })
     })
     .transpose()
@@ -119,7 +144,10 @@ pub(super) const CONFIRM_FROM: &str = "requests.confirmFrom";
 /// - `cards`: one per task it went to, as Home shows the card and who
 ///   answers for it now, with its task's newest result (`result`) and what
 ///   its results named as delivered (`deliverables`, YN-208), each as it
-///   stands now; `progress`: how many of their tasks ended;
+///   stands now; its task's own progress and blocker, clipped (R-38), and the
+///   pull requests it links (`prs`), each with whether its merge commit is in
+///   `installed` as kept (github/installed.rs); `progress`: how many of
+///   their tasks ended;
 /// - `state`: waiting (no card yet), doing, ended (every card's task ended,
 ///   YN-184), answered (no card, the front desk answered it with an answer
 ///   route, and no follow-up came after its newest note; YN-136), or done:
@@ -130,7 +158,8 @@ pub(super) const CONFIRM_FROM: &str = "requests.confirmFrom";
 ///   one of its cards (`ask`, with its state), and each card's task that
 ///   ended (`done`). A card several requests went to has its lines on the
 ///   first of them only.
-pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, confirmed: Option<&str>, shown: &mut Value) -> Result<()> {
+pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, confirmed: Option<&str>, installed: Option<&Installed>,
+    shown: &mut Value) -> Result<()> {
     let notes = notes(db, request)?;
     // The request's newest change: a note, a follow-up, a route, a card's task that ended.
     let mut changed: Option<String> = None;
@@ -181,13 +210,15 @@ pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, confir
         cards.push(json!({
             "sectionId":section,"key":card.as_ref().map(|c| c.key.clone()),"title":card.as_ref().map(|c| c.title.clone()),
             "live":card.as_ref().is_some_and(|c| c.live),
-            "task":{"id":task.key,"status":task.status,"archived":task.archived_at.is_some()},
+            "task":{"id":task.key,"status":task.status,"archived":task.archived_at.is_some(),
+                "progress":clipped(&task.progress),"blocker":clipped(&task.blocker)},
             "responsible":crate::project_brief::responsible_json(db, id)?,
             // Done, readable and confirmed are three facts (YN-208): the task's
             // status above, its result and deliverables here, the request's
             // confirmedAt below; none is read from another.
             "result":task.result,
             "deliverables":crate::collaboration_store::deliverables::shown(db, project, id)?,
+            "prs":{"items":installed::task_pulls(db, id, installed)?},
         }));
         if first_request(db, id)? != Some(n) {
             continue;
