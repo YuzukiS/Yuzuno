@@ -149,7 +149,8 @@ export function AgentRailRow({
   agent: Agent;
   selected: boolean;
   statusLabel: string;
-  /** Its last Turn ended this way and this device hasn't shown it (T-42). */
+  /** Its last Turn ended this way and this device hasn't shown it (T-42);
+   * never an executor's (unseenEnd, YN-232). */
   unseen?: "finished" | "failed" | null;
   /** Only an Agent shown as plainly idle can show its unfinished Job/CI work; any
    * other state (working, waiting for you, compacting, closed…) comes first. */
@@ -173,7 +174,8 @@ export function AgentRailRow({
   const machine = agent.remote?.machine.name || t.host;
   const jobs = useAgentJobs(agent.id);
   const ci = useAgentCI(agent.id);
-  // Unfinished Job/CI work shows on a plainly idle Agent, not over a Turn end not seen yet.
+  // Unfinished Job/CI work shows on a plainly idle Agent, not over a Turn end
+  // not seen yet (a standing Agent's: an executor's is never unseen, YN-232).
   const waiting = idle && !unseen ? waitingSummary(jobs, ci, language) : null;
   const label = waiting?.label ?? statusLabel;
   // Two waits or checks at once ("Waiting · Job / CI") take their own line
@@ -205,10 +207,11 @@ export function AgentRailRow({
   // An executor's one state (T-43 S2): its row's second line says it, in
   // place of a runtime status and a lifecycle badge, and says it once.
   const pr = useExecutorPR(agent.id);
-  const executor = lifecycle ? executorView({ agent, lifecycle, unseen, waiting: waiting?.label ?? null, pr, waitingSince, asking }) : null;
+  const executor = lifecycle ? executorView({ agent, lifecycle, waiting: waiting?.label ?? null, pr, waitingSince, asking }) : null;
   // What it waits on (YN-51): while a Turn runs, the call it is stopped on,
-  // once that call has held it a moment; while none runs (plainly idle, its
-  // last end seen), what it started and left running. Its ring shows one.
+  // once that call has held it a moment; while none runs (plainly idle, and
+  // a standing Agent's last end seen), what it started and left running. Its
+  // ring shows one.
   const waits = useAgentWaits(agent.id);
   const call = useHeldCall(agent.turnWait);
   const turn = agent.status === "working" || agent.status === "uncertain";

@@ -162,7 +162,8 @@ export type IslandFacts = {
   /** An executor's one state (T-43 S2), and its lifecycle. */
   executor?: ExecutorView | null;
   lifecycle?: ExecutorLifecycle | null;
-  /** Its last Turn's end this device has not shown (T-42). */
+  /** Its last Turn's end this device has not shown (T-42): a standing
+   * Agent's; an executor's is never unseen (unseenEnd, YN-232). */
   unseen?: "finished" | "failed" | null;
   /** An idle Agent's unfinished Job or CI work, as the row reads it. */
   waiting?: string | null;

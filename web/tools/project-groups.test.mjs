@@ -57,4 +57,14 @@ test("a folded group tells what waits, what runs and what is unread; closed Agen
     ]),
     { needs: 2, working: 1, unread: 2 },
   );
+  // An executor's updates unread are not counted (YN-232): the user talks with its lead, and its row shows none.
+  // What it asks and that it works still count.
+  assert.deepEqual(
+    groupSummary([
+      agent("lead", "p1", { kind: "lead", unreadCount: 2 }),
+      agent("x1", "p1", { kind: "executor", unreadCount: 5 }),
+      agent("x2", "p1", { kind: "executor", status: "working", unreadCount: 1, pendingCount: 1 }),
+    ]),
+    { needs: 1, working: 1, unread: 1 },
+  );
 });

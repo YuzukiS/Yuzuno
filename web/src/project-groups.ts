@@ -65,11 +65,13 @@ export function groupAgents(
   return groups.length > 1 ? groups : null;
 }
 
-/** What a folded group still tells: requests waiting, work running, unread. */
+/** What a folded group still tells: requests waiting, work running, unread.
+ * An executor's updates unread are not counted (YN-232, the user: they talk
+ * with its lead, not with each executor), as its row shows none. */
 export function groupSummary(agents: Agent[]) {
   return {
     needs: agents.reduce((n, agent) => n + (agent.closedAt ? 0 : agent.pendingCount), 0),
     working: agents.filter((agent) => agent.status === "working").length,
-    unread: agents.filter((agent) => agent.unreadCount > 0).length,
+    unread: agents.filter((agent) => agent.kind !== "executor" && agent.unreadCount > 0).length,
   };
 }
