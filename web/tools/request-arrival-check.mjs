@@ -531,7 +531,31 @@ async function check(run) {
     assert.deepEqual([now.marks, now.animations.filter((a) => /^\d+$/.test(a.who))], [[], []]);
     pass("reading the page again lands nothing");
 
-    // 10. A phone's keyboard (simulated: the window shortened): sent with the top of the page under it.
+    // 10. The keyboard: Tab from the field reaches Send, which shows its focus and sends on Space. (A pointer's press of
+    // Send leaves the focus in the field; a keyboard's focus is its own.)
+    if (!run.phone) {
+      await d.open();
+      await d.say(said[0]);
+      let onSend = false;
+      for (let i = 0; i < 4 && !onSend; i++) {
+        await page.keyboard.press("Tab");
+        onSend = await page.evaluate(() => !!document.activeElement?.matches(".home-dock .project-talk-send"));
+      }
+      assert.ok(onSend, "Tab reaches Send");
+      const focus = await page.evaluate(() => {
+        const send = document.activeElement;
+        return { visible: send.matches(":focus-visible"), style: getComputedStyle(send).outlineStyle, width: getComputedStyle(send).outlineWidth };
+      });
+      assert.equal(focus.visible, true, "its focus shows");
+      assert.notEqual(focus.style, "none");
+      await page.keyboard.press("Space");
+      await d.landed(21);
+      await d.idle();
+      assert.deepEqual([state.posts.length, (await d.seen()).marks], [1, ["21"]], "sent once, landed once");
+      pass("Tab reaches Send, its focus shows, and Space sends it", { focus });
+    }
+
+    // 11. A phone's keyboard (simulated: the window shortened): sent with the top of the page under it.
     if (run.phone) {
       await d.open();
       await d.field.click();
