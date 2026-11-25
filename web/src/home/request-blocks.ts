@@ -212,10 +212,8 @@ export type BlockEvidence = {
   pending: RequestPull[];
   /** Open or draft. */
   open: RequestPull[];
-  /** Its tasks' Asks the user answered. */
+  /** Its tasks' Asks the user answered. The conversation is counted once, in the block's foot (R-45 §3.3). */
   answered: number;
-  /** The front desk's notes and the user's follow-ups. */
-  conversation: number;
 };
 
 /** A later fact Core knows than the progress (R-38 §2.5), at most three kinds. */
@@ -580,7 +578,7 @@ function nextOf(state: BlockState, own: readonly TaskRow[], joined: readonly Tas
 const DONE_STATES = new Set<Segment["state"]>(["available", "done", "merged"]);
 
 /** Each PR once, by repository and number, as its evidence counts it. */
-function evidenceOf(request: ProjectRequest, rows: readonly TaskRow[]): BlockEvidence {
+function evidenceOf(rows: readonly TaskRow[]): BlockEvidence {
   const seen = new Map<string, RequestPull>();
   for (const pr of rows.flatMap((row) => row.prs)) seen.set(`${pr.repository}#${pr.number}`, pr);
   const all = [...seen.values()];
@@ -589,7 +587,6 @@ function evidenceOf(request: ProjectRequest, rows: readonly TaskRow[]): BlockEvi
     pending: all.filter((pr) => pr.state === "merged" && pr.installed !== true),
     open: all.filter((pr) => pr.state === "open" || pr.state === "draft"),
     answered: rows.flatMap((row) => row.asks).filter((a) => a.kind === "ask" && a.ask && a.ask.state !== "open").length,
-    conversation: request.notes.length + request.replies.length,
   };
 }
 
@@ -645,7 +642,7 @@ function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joine
           left: segments.filter((s) => !DONE_STATES.has(s.state)).map(({ task, name, detail, state, facts }) => ({ task, name, detail, state, facts })),
         }
       : null,
-    evidence: evidenceOf(request, rows),
+    evidence: evidenceOf(rows),
     stale: staleOf(request, rows, bar?.sources ?? []),
   };
 }

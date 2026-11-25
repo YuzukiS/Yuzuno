@@ -31,7 +31,7 @@ import { KeptCardReplies, referableHistory } from "./CardReply";
 import {
   askUpFront, blockCounts, blockOfSection, openAsk, pageBlocks, projectCardsCount, projectLine, type BlockAction, type BlockGroup, type RequestBlock, commonTasks, relatedRequests,
 } from "./request-blocks";
-import { blockText, ProjectAsks, ProjectCards, RequestBlockView, useAsksUpFront, type BlockCommon } from "./RequestBlocks";
+import { blockText, ProjectAsks, ProjectCards, RequestBlockView, useAsksUpFront, type BlockCommon, type BlockView, type ThreadFocus } from "./RequestBlocks";
 import { ProjectNow } from "./ProjectNow";
 import type { OpenDeliveredReport } from "./DeliverableLine";
 import { projectUnseen } from "./unseen";
@@ -211,7 +211,20 @@ export function ProjectHome({
       return next;
     });
   const openBlock = (key: string) => choose(key, true);
-  const toggleBlock = (key: string) => choose(key, !isOpen(key));
+  // What each request's block shows unfolded (R-45 §3.4), as the user or a jump last chose it; its cards at first.
+  const [views, setViews] = useState<ReadonlyMap<string, BlockView>>(() => new Map());
+  const showView = (key: string, to: BlockView) => {
+    setViews((was) => (was.get(key) === to ? was : new Map(was).set(key, to)));
+    openBlock(key);
+  };
+  // The jump that landed in a request's conversation: its lines stay marked until that block folds or the next jump.
+  const [thread, setThread] = useState<(ThreadFocus & { block: string }) | null>(null);
+  // Each jump its own number, also after a fold cleared the last one: a block lands each once (RequestThread).
+  const jumps = useRef(0);
+  const toggleBlock = (key: string) => {
+    if (isOpen(key)) setThread((was) => (was?.block === key ? null : was));
+    choose(key, !isOpen(key));
+  };
   const editorIds = panel?.contentEditors?.editorAgentIds ?? null;
   // Where the project stands (R-27): the card the page leads with, and what the Project cards group holds beside it;
   // nothing there but that card, no group: the banner is the card's one place, with its own actions (ProjectNow).
@@ -298,7 +311,11 @@ export function ProjectHome({
     const block = blockOfSection(key, blocks, projectBlock);
     if (!block) return false;
     if (view !== "requests") setView("requests");
-    if (!askUpFront(key, blocks, projectBlock)) openBlock(block);
+    // A card of a request's task is in its block's cards view (R-45 §3.4).
+    if (!askUpFront(key, blocks, projectBlock)) {
+      if (block === "project") openBlock(block);
+      else showView(block, "cards");
+    }
     setLanding((was) => ({ key, block, seq: (was?.seq ?? 0) + 1, keepFolded }));
     return true;
   }
@@ -308,11 +325,20 @@ export function ProjectHome({
     openBlock("project");
     setLanding((was) => ({ key: null, block: "project", seq: (was?.seq ?? 0) + 1 }));
   }
-  /** Shows request `n`'s block, opened, at the top of the page. */
+  /** Shows request `n`'s block, opened at its cards, at the top of the page. */
   function showBlock(n: number) {
     if (view !== "requests") setView("requests");
-    openBlock(`r${n}`);
+    showView(`r${n}`, "cards");
     setLanding((was) => ({ key: null, block: `r${n}`, seq: (was?.seq ?? 0) + 1 }));
+  }
+  /**
+   * Shows request `n`'s conversation (R-45 §3.4): the requests shown, its block opened at its conversation; with
+   * `focus`, landed on that follow-up (RequestThread), it and the lines named with it marked.
+   */
+  function showThread(n: number, focus?: Omit<ThreadFocus, "seq">) {
+    if (view !== "requests") setView("requests");
+    showView(`r${n}`, "thread");
+    if (focus) setThread({ ...focus, block: `r${n}`, seq: ++jumps.current });
   }
   /** A card a request went to: shown in its block; where it is no longer here, its task, which keeps its result. */
   function showCard(key: string | null, task?: string | null) {
@@ -496,7 +522,11 @@ export function ProjectHome({
       key={block.key}
       block={block}
       open={isOpen(block.key)}
+      view={views.get(block.key)}
       onToggle={() => toggleBlock(block.key)}
+      onView={(to) => showView(block.key, to)}
+      focus={thread?.block === block.key ? thread : null}
+      onShowThread={showThread}
       onAction={blockAction}
       onShowBlock={showBlock}
       busy={!!busy && (busy.confirming.has(block.request.n) || busy.resending.has(block.request.n))}

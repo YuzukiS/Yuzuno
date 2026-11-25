@@ -43,12 +43,21 @@ window.calls=[];
 function Page({requests, sections, readOnly}) {
   const {blocks, project} = pageBlocks(requests, sections);
   const [open, setOpen] = useState(new Set(window.opened || []));
-  const toggle = (key) => setOpen((was) => { const next = new Set(was); if (!next.delete(key)) next.add(key); return next; });
+  // As ProjectHome keeps them (R-45 §3.4): each block's view, and the jump whose lines stay marked until it folds.
+  const [views, setViews] = useState(new Map());
+  const [focus, setFocus] = useState(null);
+  const toggle = (key) => {
+    if (open.has(key)) setFocus((was) => (was?.block === key ? null : was));
+    setOpen((was) => { const next = new Set(was); if (!next.delete(key)) next.add(key); return next; });
+  };
+  const show = (key, to) => { setViews((was) => new Map(was).set(key, to)); setOpen((was) => new Set(was).add(key)); };
+  window.jump = (n, at) => flushSync(() => { show('r' + n, 'thread'); setFocus({ ...at, block: 'r' + n, seq: (window.jumps = (window.jumps ?? 0) + 1) }); });
   const choose = (key, on) => setOpen((was) => { if (was.has(key) === on) return was; const next = new Set(was); if (on) next.add(key); else next.delete(key); return next; });
   const upFront = useAsksUpFront([...blocks.flatMap((block) => block.asks), ...(project?.asks ?? [])]);
   const common = {projectId: 'p1', workspaceId: 'ws', agents: window.agents, readOnly: !!readOnly, onSeen: async () => {}, onChanged: () => {},
     onReport: (link) => window.calls.push({report: link}), upFront};
   return <div>{blocks.map((block) => <RequestBlockView key={block.key} block={block} open={open.has(block.key)} onToggle={() => toggle(block.key)}
+    view={views.get(block.key)} onView={(to) => show(block.key, to)} focus={focus?.block === block.key ? focus : null}
     onAction={(action, n, key) => window.calls.push({action, n, key: key ?? null})} onShowBlock={(n) => window.calls.push({show: n})} common={common}/>)}
     {project && <div className="needs"><ProjectAsks block={project} common={common}/></div>}
     {project && <ProjectCards block={project} count={projectCardsCount(project, project.asks.filter((ask) => !upFront(ask)).length, null)}
@@ -138,6 +147,8 @@ function mount({ lang = "en", readOnly = false, opened = [] } = {}) {
   window.Range.prototype.getClientRects ||= () => [];
   window.Range.prototype.getBoundingClientRect ||= () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 });
   window.HTMLElement.prototype.scrollTo = function () {};
+  window.scrolled = [];
+  window.HTMLElement.prototype.scrollIntoView = function (options) { window.scrolled.push([this.dataset.threadItem ?? this.className, options?.block]); };
   window.matchMedia = (query) => ({ media: query, matches: false, addEventListener() {}, removeEventListener() {} });
   window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang === "zh" ? "zh-Hans" : "en" }));
   window.agents = agents;
@@ -169,7 +180,8 @@ test("each request's first look: its one fact, its one action and what it delive
   assert.equal(action(8).dataset.action, "confirm");
   // R-38 §2.2: what it delivered is evidence, under its line, folded; the first look is its state and progress.
   assert.equal(page.block(8).querySelectorAll(".request-block-delivered li").length, 0);
-  assert.equal(page.text(page.block(8).querySelector(".request-block-more[data-evidence]")), "Evidence: delivered 2 · conversation 1");
+  assert.equal(page.text(page.block(8).querySelector(".request-block-more[data-evidence]")), "Evidence: delivered 2",
+    "the conversation is counted once, in its foot (R-45 §3.3)");
   const state = (n) => page.text(page.block(n).querySelector(".request-state"));
   assert.deepEqual([7, 8, 9, 11].map(state), ["Your decision", "For you to accept", "Team on it", "Done"]);
   // No progress summary: Core's own count, never its card's title (R-31); Follow up is a quiet line, not the action.
@@ -181,7 +193,9 @@ test("each request's first look: its one fact, its one action and what it delive
   assert.equal(page.text(page.block(9).querySelector(".request-block-follow")), "↩ Follow up");
   assert.match(stats(10), /^YN-93 · /, "a joined request reads its task's count");
   assert.equal(page.block(11).querySelector(".request-block-action"), null, "a confirmed request has nothing to do");
-  assert.equal(page.text(page.block(7).querySelector(".request-block-more")), "1 task · 3 in the conversation");
+  // R-45 §3.4: its tasks and its conversation, each its own way in.
+  assert.deepEqual([...page.block(7).querySelectorAll(".request-block-foot > .request-block-more:not([data-evidence])")].map((b) => [b.dataset.view, page.text(b)]),
+    [["cards", "1 task"], ["thread", "Conversation 3"]]);
   assert.deepEqual(page.errors, []);
 });
 
@@ -195,8 +209,8 @@ test("the same in Chinese", () => {
   assert.equal(page.text(page.block(9).querySelector(".request-block-follow")), "↩ 追问");
   assert.equal(page.text(page.block(9).querySelector(".request-state")), "团队在办");
   assert.match(page.text(page.block(9).querySelector(".request-stats")), /^YN-93 · YN-91 · Design · 0 个 PR · 最后变化 .+还没有进度摘要，上一行由 Core 统计$/);
-  assert.equal(page.text(page.block(8).querySelector(".request-block-more[data-evidence]")), "依据：交付 2 · 对话 1");
-  assert.equal(page.text(page.block(7).querySelector(".request-block-more")), "1 个任务 · 对话 3 条");
+  assert.equal(page.text(page.block(8).querySelector(".request-block-more[data-evidence]")), "依据：交付 2");
+  assert.deepEqual([...page.block(7).querySelectorAll(".request-block-foot > .request-block-more:not([data-evidence])")].map(page.text), ["1 个任务", "对话 3"]);
   const group = page.document.querySelector("[data-project-block] > summary");
   assert.equal(page.text(group.querySelector(".request-group-note")), "不属于任何请求");
   assert.equal(page.text(group), "项目卡 1新不属于任何请求", "its card not read yet: 新");
@@ -271,7 +285,10 @@ test("unfolded: open Asks first, then the task's one card, the answered Asks, jo
   line.click();
   await tick(40);
   assert.equal(r7.querySelector('[data-section-key="yn-91/copy"]'), null, "closed again: the line");
-  assert.equal(page.text(r7.querySelector(".request-thread > summary")), "Conversation 3");
+  // R-45 §3.4: its cards and its conversation are two views; the cards first, the conversation not drawn under them.
+  assert.deepEqual([...r7.querySelectorAll('.request-block-tabs [role="tab"]')].map((tab) => [page.text(tab), tab.getAttribute("aria-selected")]),
+    [["Cards and deliverables 1", "true"], ["Conversation 3", "false"]]);
+  assert.equal(r7.querySelector(".request-thread"), null);
   // R-10 joined R-9's task: one line, which shows R-9.
   const joined = page.block(10).querySelector(".request-block-joined");
   assert.match(page.text(joined), /^Joined YN-93 “Halfway through the export” · its card is under R-9/);
@@ -283,6 +300,99 @@ test("unfolded: open Asks first, then the task's one card, the answered Asks, jo
   r7.querySelector(".request-block-more").click();
   await tick();
   assert.equal(page.block(7).querySelector(".request-block-body"), null);
+});
+
+// R-45 §3.4: unfolded, a request's block shows its cards or its conversation, one view at a time. Its foot opens
+// each; the one shown folds it again; its tabs switch between them, by pointer or by the arrow keys. A request with no
+// task has its conversation only, with no tabs. The conversation is unfolded in its view, each line named.
+test("R-45 two views: its foot opens each, its tabs switch them, the one shown folds it; with no task, its conversation only", async () => {
+  const page = mount();
+  const b = () => page.block(7);
+  const foot = (view) => b().querySelector(`.request-block-foot > .request-block-more[data-view="${view}"]`);
+  const tabs = () => [...b().querySelectorAll('.request-block-tabs [role="tab"]')];
+  foot("thread").click();
+  await tick();
+  assert.equal(b().querySelector(".request-block-body").dataset.view, "thread");
+  assert.deepEqual([...b().querySelectorAll(".request-thread > li")].map((li) => li.dataset.threadItem), ["mine", "note:1", "line:0"]);
+  assert.equal(b().querySelector(".request-thread details, .request-thread summary"), null, "unfolded in its view");
+  assert.equal(b().querySelector(".request-task"), null, "its cards are the other view");
+  assert.deepEqual([foot("cards").getAttribute("aria-expanded"), foot("thread").getAttribute("aria-expanded")], ["false", "true"]);
+  assert.deepEqual(tabs().map((tab) => [tab.getAttribute("aria-selected"), tab.tabIndex]), [["false", -1], ["true", 0]]);
+  const panel = b().querySelector('.request-block-view[role="tabpanel"]');
+  assert.equal(panel.getAttribute("aria-labelledby"), tabs()[1].id);
+  assert.equal(tabs()[1].getAttribute("aria-controls"), panel.id);
+  tabs()[0].click();
+  await tick();
+  assert.ok(b().querySelector('.request-task[data-task="YN-91"]'), "the cards view: R-38's unfolded part as it was");
+  assert.equal(b().querySelector(".request-thread"), null);
+  assert.deepEqual([foot("cards").getAttribute("aria-expanded"), foot("thread").getAttribute("aria-expanded")], ["true", "false"]);
+  // The arrow keys move between the tabs, and the focus with them.
+  b().querySelector(".request-block-tabs").dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  await tick();
+  assert.equal(tabs()[1].getAttribute("aria-selected"), "true");
+  assert.equal(page.document.activeElement, tabs()[1]);
+  assert.ok(b().querySelector(".request-thread"));
+  // The one shown, pressed again in the foot, folds it; so does Fold at the end of what it shows.
+  foot("thread").click();
+  await tick();
+  assert.equal(b().querySelector(".request-block-body"), null);
+  foot("cards").click();
+  await tick();
+  assert.equal(page.text(b().querySelector(".request-block-fold")), "Fold");
+  b().querySelector(".request-block-fold").click();
+  await tick();
+  assert.equal(b().querySelector(".request-block-body"), null);
+  // No task: only its conversation, in the foot and unfolded, with no tabs.
+  const { requests, sections } = fixtures();
+  page.window.renderPage({ requests: [...requests, request(12, 10, "waiting", [])], sections });
+  await tick();
+  const r12 = page.block(12);
+  assert.deepEqual([...r12.querySelectorAll(".request-block-foot > .request-block-more")].map((el) => [el.dataset.view, page.text(el)]),
+    [["thread", "Conversation 2"]]);
+  r12.querySelector('.request-block-more[data-view="thread"]').click();
+  await tick();
+  assert.equal(page.block(12).querySelector(".request-block-tabs"), null);
+  assert.equal(page.block(12).querySelector(".request-block-view").getAttribute("role"), null);
+  assert.deepEqual([...page.block(12).querySelectorAll(".request-thread > li")].map((li) => li.dataset.threadItem), ["mine", "note:1"]);
+  const zh = mount({ lang: "zh", opened: ["r7"] });
+  assert.deepEqual([...zh.block(7).querySelectorAll('.request-block-tabs [role="tab"]')].map(zh.text), ["卡片与交付 1", "对话 3"]);
+  assert.equal(zh.block(7).querySelector(".request-block-tabs").getAttribute("aria-label"), "「Request 7」显示的内容");
+  assert.equal(zh.text(zh.block(7).querySelector(".request-block-fold")), "收起");
+  assert.deepEqual([...page.errors, ...zh.errors], []);
+});
+
+// R-45 §3.4: a jump into a request's conversation opens its block there and lands on the follow-up, in the middle of
+// the scroller with the focus; that line and the lines named with it are marked, and stay so across the views until
+// the block folds. A follow-up the conversation does not have lands on the conversation itself.
+test("R-45 a jump lands on its follow-up in the conversation, with the focus; it and the lines named with it stay marked", async () => {
+  const page = mount();
+  const b = () => page.block(9);
+  const marked = () => [...b().querySelectorAll(".request-thread > li[data-focus]")].map((li) => li.dataset.threadItem);
+  page.window.jump(9, { reply: 1, with: ["note:1"] });
+  await tick();
+  assert.equal(b().querySelector(".request-block-body").dataset.view, "thread");
+  const reply = b().querySelector('.request-thread > li[data-reply="1"]');
+  assert.equal(page.document.activeElement, reply, "the focus on the follow-up");
+  assert.deepEqual(marked(), ["note:1", "reply:1"]);
+  assert.deepEqual(page.window.scrolled, [["reply:1", "center"]], "in the middle of the scroller");
+  // Its cards and back: the marks stay, and it does not land again.
+  b().querySelector('.request-block-tabs [data-view="cards"]').click();
+  await tick();
+  b().querySelector('.request-block-tabs [data-view="thread"]').click();
+  await tick();
+  assert.deepEqual(marked(), ["note:1", "reply:1"]);
+  assert.equal(page.window.scrolled.length, 1);
+  // Folded, the marks go; the next jump marks again.
+  b().querySelector('.request-block-foot > .request-block-more[data-view="thread"]').click();
+  await tick();
+  b().querySelector('.request-block-foot > .request-block-more[data-view="thread"]').click();
+  await tick();
+  assert.deepEqual(marked(), []);
+  page.window.jump(9, { reply: 5 });
+  await tick();
+  assert.equal(page.document.activeElement, b().querySelector(".request-thread"), "no such follow-up: the conversation itself");
+  assert.deepEqual(marked(), []);
+  assert.deepEqual(page.errors, []);
 });
 
 // PR 1089 R1 (P3): a task's other statuses and reports, from before one task had one card, fold under its card; a
@@ -765,7 +875,7 @@ test("R-38 the first look: its state, its bar by outcome, the outcome a segment 
   assert.match(page.text(b.querySelector(".request-block-by")), /^YN-91 · Design, /);
   assert.equal(page.text(b.querySelector(".request-block-more")), "Details: 1 got · 2 left");
   const evidence = b.querySelector(".request-block-more[data-evidence]");
-  assert.equal(page.text(evidence), "Evidence: PRs 2 · conversation 1");
+  assert.equal(page.text(evidence), "Evidence: PRs 2");
   evidence.click();
   await tick();
   assert.deepEqual([...b.querySelectorAll(".request-evidence section")].map((s) => [s.dataset.evidence, page.text(s.querySelector("h4"))]),

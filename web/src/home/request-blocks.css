@@ -284,8 +284,69 @@
   border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--home-soft) 45%, transparent);
 }
-.request-block-body > .request-block-more {
-  display: none;
+/* R-45 §3.4: its two views, one at a time, under a tab list; the fold at the end of what is shown. */
+.request-block-tabs {
+  display: inline-flex;
+  justify-self: start;
+  gap: 2px;
+  max-width: 100%;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.request-block-tabs button {
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--home-ink-2);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.request-block-tabs button:hover {
+  color: var(--ink);
+}
+.request-block-tabs button[aria-selected="true"] {
+  background: var(--home-surface);
+  color: var(--ink);
+  font-weight: 600;
+}
+.request-block-tabs button:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 1px;
+}
+.app.phone .request-block-tabs button {
+  min-height: 36px;
+}
+.request-block-view {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.request-block-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 5px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--home-ink-2);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.request-block-fold svg {
+  transform: rotate(180deg);
+}
+.request-block-fold:hover {
+  color: var(--ink);
 }
 
 /* One task: who answers for it, then its one card. */
@@ -410,8 +471,7 @@
   color: var(--home-ink-2);
   font-size: calc(9px + var(--font-adjust, 3px));
 }
-.request-task-earlier > summary,
-.request-thread > summary {
+.request-task-earlier > summary {
   color: var(--home-ink-2);
   font-size: calc(9px + var(--font-adjust, 3px));
   cursor: pointer;
@@ -429,36 +489,76 @@
   font-size: calc(9px + var(--font-adjust, 3px));
 }
 
-/* A request's own conversation, folded at the block's end. */
-.request-thread ol {
+/* A request's own conversation, its block's other view (R-45 §3.4), unfolded. */
+.request-thread {
   display: grid;
-  gap: 6px;
-  margin: 8px 0 0;
+  gap: 2px;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
-.request-thread li {
+.request-thread > li {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 2px 8px;
   align-items: baseline;
+  padding: 6px 8px;
+  border-radius: 8px;
   font-size: calc(9.5px + var(--font-adjust, 3px));
 }
-.request-thread li[data-who="core"] {
+.request-thread > li[data-who="core"] {
   grid-template-columns: minmax(0, 1fr) auto;
   color: var(--home-ink-2);
 }
-.request-thread li > b {
+.request-thread > li > b {
   font-weight: 600;
   white-space: nowrap;
 }
-.request-thread li > time {
+.request-thread > li > time {
   color: var(--home-ink-2);
   font-size: calc(8.5px + var(--font-adjust, 3px));
 }
 .request-thread .message-content,
 .request-thread .prose {
   min-width: 0;
+}
+/* Where a jump landed (R-45 §3.4): the follow-up and the lines named with it, a light ground and a thin edge all
+   round (never a side bar, R-38 §2.7), until the block folds or the next jump; the focus is on the follow-up, which the
+   mark already shows. As it lands, the mark flashes once over settle; under reduced motion it is only there. */
+.request-thread:focus,
+.request-thread > li:focus {
+  outline: none;
+}
+.request-thread > li[data-focus] {
+  background: color-mix(in srgb, var(--accent-ink, var(--green)) 12%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--accent-ink, var(--green)) 45%, transparent);
+  outline-offset: -1px;
+}
+.request-thread[data-flash] > li[data-focus] {
+  animation: request-thread-flash var(--motion-settle) ease-out;
+}
+@keyframes request-thread-flash {
+  0% {
+    background: color-mix(in srgb, var(--accent-ink, var(--green)) 40%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .request-thread[data-flash] > li[data-focus] {
+    animation: none;
+  }
+}
+/* A phone: who and when on one line, the words under them at the whole width. */
+@media (max-width: 640px) {
+  .request-thread > li:not([data-who="core"]) {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .request-thread > li:not([data-who="core"]) > time {
+    grid-row: 1;
+    grid-column: 2;
+  }
+  .request-thread > li:not([data-who="core"]) > :not(b, time) {
+    grid-column: 1 / -1;
+  }
 }
 
 /* The Project's cards, opened in their group (R-27): its deck (home.css .home-brief), sized by the group's own width. */

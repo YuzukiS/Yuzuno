@@ -1,8 +1,9 @@
-import { useContext, useId, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useId, useRef, useState, type KeyboardEvent, type MutableRefObject, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, CircleCheck, CircleDot, Hourglass, LoaderCircle, MessageSquare, PackageCheck, Reply, Send, TriangleAlert } from "lucide-react";
 import { strings, useLanguage } from "../i18n";
 import { MessageContent } from "../MessageContent";
 import { Tip, TipText } from "../Tip";
+import { settleWhenLanded } from "../settle";
 import { useTimeDisplay } from "../time-preferences";
 import type { Agent } from "../types";
 import { changedSinceSeen, requestDomId } from "./brief-layout";
@@ -12,6 +13,7 @@ import { DeckSizes } from "./card-sizes";
 import { absolute, relative } from "./format";
 import type { SeenMark } from "./home-api";
 import { homeText } from "./home-text";
+import { scrollWithinHome } from "./HomeJumps";
 import { conversation, untitledHint } from "./project-talk";
 import type { ProjectRequest } from "./project-talk-api";
 import { deckCard, deckItems, useDeckPacking } from "./deck-packing";
@@ -49,7 +51,10 @@ export const blockText = strings(
     /** Beside Confirm done (R-30): not done enough, add to the same request. */
     followOn: "Follow up",
     actionLabel: (action: string, n: number) => `${action}: R-${n}`,
-    more: (tasks: number, said: number) => `${tasks ? `${tasks} ${tasks === 1 ? "task" : "tasks"} · ` : ""}${said} in the conversation`,
+    /** The foot's way to the block's cards view (R-45 §3.4), and its tab. */
+    tasks: (n: number) => `${n} ${n === 1 ? "task" : "tasks"}`,
+    cardsTab: "Cards and deliverables",
+    blockViews: (title: string) => `What “${title}” shows`,
     less: "Fold",
     fact: {
       unconfirmed: "Not confirmed delivered",
@@ -108,7 +113,9 @@ export const blockText = strings(
     actions: { answer: "回答", resend: "再发一次", confirm: "确认完成", follow: "追问" },
     followOn: "继续跟进",
     actionLabel: (action, n) => `${action}：R-${n}`,
-    more: (tasks, said) => `${tasks ? `${tasks} 个任务 · ` : ""}对话 ${said} 条`,
+    tasks: (n) => `${n} 个任务`,
+    cardsTab: "卡片与交付",
+    blockViews: (title) => `「${title}」显示的内容`,
     less: "收起",
     fact: {
       unconfirmed: "没确认送达",
@@ -188,6 +195,28 @@ const FACT_ICON: Record<BlockFact["kind"], ReactNode> = {
   card: <CircleDot size={14} aria-hidden="true" />,
   working: <LoaderCircle size={14} aria-hidden="true" />,
   waiting: <Hourglass size={14} aria-hidden="true" />,
+};
+
+/**
+ * What a request's block shows unfolded (R-45 §3.4), one view at a time: its cards and what they delivered (R-38's
+ * unfolded part, as it was), or its own conversation, unfolded. A request with no task has only its conversation.
+ */
+export type BlockView = "cards" | "thread";
+
+/**
+ * A jump into a request's conversation (R-45 §3.4): the follow-up `reply` it lands on, with the focus, and the other
+ * lines it marks with it (`with`, by `threadItem`); `seq` is the jump, so the same one again is another. The marks
+ * stay until the block folds or the next jump.
+ */
+export type ThreadFocus = { reply: number; with?: readonly string[]; seq: number };
+
+/** A line of a request's conversation, as a jump names it: its words, a follow-up by its number, a note by its place. */
+export const threadItem = {
+  mine: "mine",
+  reply: (n: number) => `reply:${n}`,
+  /** The front desk's notes are numbered from 1 in the order Core lists them (progress.rs `notes`, by its n). */
+  note: (n: number) => `note:${n}`,
+  line: (index: number) => `line:${index}`,
 };
 
 /** A request's title, else the first of its words while the front desk has given none (§4.1). */
@@ -364,13 +393,16 @@ function AskCard({ section, common }: { section: Section; common: BlockCommon })
 /**
  * One request (YN-212 §3.2): its number and title; one latest fact and one
  * action, or its open Asks, each answerable in the first look (W5); what its
- * tasks delivered, each openable; folded, its tasks (one card each), the
- * tasks it joined, and its own conversation.
+ * tasks delivered, each openable; folded, its tasks (one card each) and the
+ * tasks it joined in one view, its own conversation in the other (R-45 §3.4).
  */
 export function RequestBlockView({
   block,
   open,
+  view = "cards",
   onToggle,
+  onView,
+  focus = null,
   onAction,
   onShowBlock,
   busy = false,
@@ -379,7 +411,15 @@ export function RequestBlockView({
 }: {
   block: RequestBlock;
   open: boolean;
+  /** What it shows unfolded; a request with no task shows its conversation whatever this says. */
+  view?: BlockView;
   onToggle: () => void;
+  /** Unfolds it showing `view`, or shows `view` in it unfolded (its foot, its tabs). */
+  onView: (view: BlockView) => void;
+  /** The jump that landed in its conversation, whose lines stay marked; none since it folded. */
+  focus?: ThreadFocus | null;
+  /** Shows request `n`'s conversation, landed on a follow-up (R-45 §3.4): the follow-up zone's way there (S1a). */
+  onShowThread?: (n: number, focus?: Omit<ThreadFocus, "seq">) => void;
   /** The block's action; `focusKey` names the Ask an answer goes to. */
   onAction: (action: BlockAction, n: number, focusKey?: string) => void;
   /** A joined task's line: shows the block its card is under. */
@@ -395,8 +435,15 @@ export function RequestBlockView({
   const timeDisplay = useTimeDisplay();
   const { request, fact, action } = block;
   const title = requestTitle(request, t.untitled);
-  const said = conversation([request]).length;
+  // The lines its conversation view shows, counted once, in its foot (R-45 §3.3).
+  const said = conversation([request]).filter((item) => item.kind !== "looking").length;
   const tasks = block.tasks.length + block.joined.length;
+  const shown: BlockView = tasks ? view : "thread";
+  const viewsId = useId();
+  // The jump its conversation landed last: once each, however often the view is shown again.
+  const landed = useRef(0);
+  // Its foot's two ways in: each unfolds the block at its view; the one shown folds it again.
+  const toView = (to: BlockView) => (open && shown === to ? onToggle() : onView(to));
   const label = action ? t.actions[action] : "";
   const asks = block.asks.filter(common.upFront);
   // Its own open Ask is the fact, shown whole below: no line repeats its question.
@@ -510,9 +557,16 @@ export function RequestBlockView({
             {p.followUp}
           </button>
         )}
-        <button type="button" className="request-block-more" aria-expanded={open} onClick={onToggle}>
+        {/* R-45 §3.4: its tasks (R-38's Details with a bar) and its conversation, each its own way in. */}
+        {tasks > 0 && (
+          <button type="button" className="request-block-more" data-view="cards" aria-expanded={open && shown === "cards"} onClick={() => toView("cards")}>
+            <ChevronDown size={13} aria-hidden="true" />
+            {block.details ? p.details(block.details.got.length, block.details.left.length) : t.tasks(tasks)}
+          </button>
+        )}
+        <button type="button" className="request-block-more" data-view="thread" aria-expanded={open && shown === "thread"} onClick={() => toView("thread")}>
           <ChevronDown size={13} aria-hidden="true" />
-          {open ? t.less : block.details ? p.details(block.details.got.length, block.details.left.length) : t.more(tasks, said)}
+          {t.thread(said)}
         </button>
         {(prs > 0 || delivered > 0) && (
           <button type="button" className="request-block-more" data-evidence="" aria-expanded={evidenceOpen} onClick={() => setEvidenceOpen(!evidenceOpen)}>
@@ -521,7 +575,6 @@ export function RequestBlockView({
               prs ? p.evidencePart.prs(prs) : null,
               delivered ? p.evidencePart.delivered(delivered) : null,
               block.evidence.answered ? p.evidencePart.answered(block.evidence.answered) : null,
-              block.evidence.conversation ? p.evidencePart.said(block.evidence.conversation) : null,
             ].filter((part): part is string => !!part))}
           </button>
         )}
@@ -555,23 +608,78 @@ export function RequestBlockView({
         </div>
       )}
       {open && (
-        <div className="request-block-body">
-          <DetailLists block={block} />
-          {block.tasks.map((row) => (
-            <TaskRowView key={row.task.id} row={row} common={common} />
-          ))}
-          {block.joined.map((row) => (
-            <p key={row.task.id} className="request-block-joined">
-              <span>{t.joined(row.task.id, row.title, row.home)}</span>
-              <button type="button" className="talk-link" onClick={() => onShowBlock(row.home)}>
-                {t.show}
-              </button>
-            </p>
-          ))}
-          <RequestThread request={request} />
+        <div className="request-block-body" data-view={shown}>
+          {tasks > 0 && <ViewTabs id={viewsId} label={t.blockViews(title)} shown={shown} tasks={tasks} said={said} onView={onView} />}
+          <div
+            className="request-block-view"
+            {...(tasks > 0 ? { role: "tabpanel", id: `${viewsId}-${shown}`, "aria-labelledby": `${viewsId}-${shown}-tab` } : {})}
+          >
+            {shown === "cards" ? (
+              <>
+                <DetailLists block={block} />
+                {block.tasks.map((row) => (
+                  <TaskRowView key={row.task.id} row={row} common={common} />
+                ))}
+                {block.joined.map((row) => (
+                  <p key={row.task.id} className="request-block-joined">
+                    <span>{t.joined(row.task.id, row.title, row.home)}</span>
+                    <button type="button" className="talk-link" onClick={() => onShowBlock(row.home)}>
+                      {t.show}
+                    </button>
+                  </p>
+                ))}
+              </>
+            ) : (
+              <RequestThread request={request} focus={focus} landed={landed} />
+            )}
+          </div>
+          <button type="button" className="request-block-fold" aria-expanded="true" onClick={onToggle}>
+            <ChevronDown size={13} aria-hidden="true" />
+            {t.less}
+          </button>
         </div>
       )}
     </article>
+  );
+}
+
+/**
+ * The two views of an unfolded block (R-45 §3.4) as tabs: its cards and what they delivered, and its conversation;
+ * the arrow keys, Home and End move between them, as a tab list's do.
+ */
+function ViewTabs({ id, label, shown, tasks, said, onView }: {
+  id: string; label: string; shown: BlockView; tasks: number; said: number; onView: (view: BlockView) => void;
+}) {
+  const t = blockText(useLanguage());
+  const list = useRef<HTMLDivElement>(null);
+  const views: BlockView[] = ["cards", "thread"];
+  const move = (event: KeyboardEvent<HTMLDivElement>) => {
+    const at = views.indexOf(shown);
+    const to = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: views.length - 1 }[event.key];
+    if (to === undefined) return;
+    event.preventDefault();
+    const next = views[(to + views.length) % views.length];
+    onView(next);
+    list.current?.querySelector<HTMLElement>(`[data-view="${next}"]`)?.focus();
+  };
+  return (
+    <div ref={list} className="request-block-tabs" role="tablist" aria-label={label} onKeyDown={move}>
+      {views.map((view) => (
+        <button
+          key={view}
+          type="button"
+          role="tab"
+          id={`${id}-${view}-tab`}
+          data-view={view}
+          aria-selected={shown === view}
+          aria-controls={shown === view ? `${id}-${view}` : undefined}
+          tabIndex={shown === view ? 0 : -1}
+          onClick={() => onView(view)}
+        >
+          {view === "cards" ? `${t.cardsTab} ${tasks}` : t.thread(said)}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -693,55 +801,82 @@ function CardVersions({ section, onReport }: { section: Section; onReport: OpenD
   );
 }
 
-/** A request's own conversation, oldest first, folded: its words, the project's notes, follow-ups and Core's lines. */
-function RequestThread({ request }: { request: ProjectRequest }) {
+const reducedMotion = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * A request's own conversation, oldest first, unfolded in its view (R-45 §3.4): its words, the project's notes,
+ * follow-ups and Core's lines. A jump (`focus`) lands once on its follow-up, in the middle of Home's scroller clear of
+ * the dock, with the focus; that line and the ones it names stay marked, and flash once as it lands (not under reduced
+ * motion). A follow-up it does not have lands on the conversation itself.
+ */
+function RequestThread({ request, focus, landed }: { request: ProjectRequest; focus: ThreadFocus | null; landed: MutableRefObject<number> }) {
   const language = useLanguage();
   const t = blockText(language);
+  const list = useRef<HTMLOListElement>(null);
+  const flash = useRef<(() => void) | null>(null);
   const items = conversation([request]).filter((item) => item.kind !== "looking");
+  const marked = new Set(focus ? [threadItem.reply(focus.reply), ...(focus.with ?? [])] : []);
+  // Each jump lands once; its flash ends with the conversation's view.
+  useEffect(() => () => flash.current?.(), []);
+  useEffect(() => {
+    const ol = list.current;
+    if (!focus || !ol || landed.current === focus.seq) return;
+    landed.current = focus.seq;
+    const target = ol.querySelector<HTMLElement>(`:scope > li[data-reply="${focus.reply}"]`) ?? ol;
+    const smooth = !reducedMotion();
+    scrollWithinHome(target, "center", smooth);
+    target.focus({ preventScroll: true });
+    flash.current = settleWhenLanded(ol, "data-flash", smooth, "animation");
+  }, [focus, landed]);
+  // A note by its place among the request's notes, a line by its place among Core's lines: as Core lists them.
+  const keyOf = (item: (typeof items)[number]) =>
+    item.kind === "reply" ? threadItem.reply(item.reply.n)
+      : item.kind === "note" ? threadItem.note(request.notes.indexOf(item.note) + 1)
+        : item.kind === "line" ? threadItem.line(request.lines.indexOf(item.line))
+          : threadItem.mine;
   return (
-    <details className="request-thread">
-      <summary>{t.thread(items.length)}</summary>
-      <ol>
-        {items.map((item, index) => {
-          const at = new Date(item.at).toISOString();
-          switch (item.kind) {
-            case "mine":
-              return (
-                <li key={index} data-who="you">
-                  <b>{t.you}</b>
-                  <MessageContent text={request.text} blocks={request.textBlocks ?? undefined} />
-                  <When at={at} />
-                </li>
-              );
-            case "reply":
-              return (
-                <li key={index} data-who="you">
-                  <b>{t.followUp}</b>
-                  <MessageContent text={item.reply.text} blocks={item.reply.textBlocks ?? undefined} />
-                  <When at={at} />
-                </li>
-              );
-            case "note":
-              return (
-                <li key={index} data-who="project">
-                  <b>{t.projectSaid}</b>
-                  <span>{item.note.note}</span>
-                  <When at={at} />
-                </li>
-              );
-            case "line":
-              return (
-                <li key={index} data-who="core">
-                  <span>{item.line.kind === "ask" ? t.line.ask(item.line.title) : t.line.done(item.line.title || item.line.task)}</span>
-                  <When at={at} />
-                </li>
-              );
-            default:
-              return null;
-          }
-        })}
-      </ol>
-    </details>
+    <ol ref={list} className="request-thread" tabIndex={-1}>
+      {items.map((item, index) => {
+        const at = new Date(item.at).toISOString();
+        const key = keyOf(item);
+        const mark = { "data-thread-item": key, "data-focus": marked.has(key) ? "" : undefined };
+        switch (item.kind) {
+          case "mine":
+            return (
+              <li key={index} data-who="you" {...mark}>
+                <b>{t.you}</b>
+                <MessageContent text={request.text} blocks={request.textBlocks ?? undefined} />
+                <When at={at} />
+              </li>
+            );
+          case "reply":
+            return (
+              <li key={index} data-who="you" data-reply={item.reply.n} tabIndex={-1} {...mark}>
+                <b>{t.followUp}</b>
+                <MessageContent text={item.reply.text} blocks={item.reply.textBlocks ?? undefined} />
+                <When at={at} />
+              </li>
+            );
+          case "note":
+            return (
+              <li key={index} data-who="project" data-note={request.notes.indexOf(item.note) + 1} {...mark}>
+                <b>{t.projectSaid}</b>
+                <span>{item.note.note}</span>
+                <When at={at} />
+              </li>
+            );
+          case "line":
+            return (
+              <li key={index} data-who="core" {...mark}>
+                <span>{item.line.kind === "ask" ? t.line.ask(item.line.title) : t.line.done(item.line.title || item.line.task)}</span>
+                <When at={at} />
+              </li>
+            );
+          default:
+            return null;
+        }
+      })}
+    </ol>
   );
 }
 
