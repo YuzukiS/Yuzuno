@@ -799,3 +799,25 @@ export function projectCardsCount(block: ProjectBlock | null, answered: number, 
   const others = count - (lead && block.sections.some((section) => section.key === lead.key) ? 1 : 0);
   return others > 0 ? count : 0;
 }
+
+/**
+ * The tasks a project card names as its common items (R-38 §2.4): its LiveRefs' task items, by key, in order. Only
+ * these relate the card to requests: never a task or request named in its words.
+ */
+export function commonTasks(section: Section | null): string[] {
+  const elements = (section?.body as Body)?.elements;
+  if (!elements) return [];
+  const tasks = Object.values(elements).flatMap((node) =>
+    node?.type === "LiveRefs" && Array.isArray(node.props?.items)
+      ? (node.props.items as { kind?: unknown; id?: unknown }[]).filter((item) => item?.kind === "task" && typeof item.id === "string").map((item) => item.id as string)
+      : []);
+  return [...new Set(tasks)];
+}
+
+/** The requests a project card's common items serve (R-38 §2.4): each task once, with the request it is shown under. */
+export function relatedRequests(section: Section | null, blocks: readonly RequestBlock[]): { task: string; n: number }[] {
+  return commonTasks(section).flatMap((task) => {
+    const block = blocks.find((b) => b.tasks.some((row) => row.task.id === task));
+    return block ? [{ task, n: block.request.n }] : [];
+  });
+}

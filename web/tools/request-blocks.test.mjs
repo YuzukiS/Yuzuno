@@ -5,7 +5,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  askUpFront, authorOf, barCells, blockCounts, blockOfSection, forYouTodo, isPlaceholder, pageBlocks, projectCardsCount, projectLine, splitLead,
+  askUpFront, authorOf, barCells, blockCounts, blockOfSection, commonTasks, forYouTodo, isPlaceholder, pageBlocks, projectCardsCount, projectLine,
+  relatedRequests, splitLead,
 } from "../src/home/request-blocks.ts";
 import { summaryOf } from "../src/home/report/report-model.ts";
 
@@ -568,4 +569,22 @@ test("R-38 a bar of more than ten outcomes draws adjacent ones of one state as o
   assert.equal(barCells(few).length, 10, "ten: one cell each");
   const many = [...Array.from({ length: 6 }, (_, i) => seg(i, "done")), seg(6, "doing", true), seg(7, "doing"), ...Array.from({ length: 4 }, (_, i) => seg(8 + i, "todo"))];
   assert.deepEqual(barCells(many).map((cell) => [cell.state, cell.segments.length]), [["done", 6], ["doing", 1], ["doing", 1], ["todo", 4]]);
+});
+
+test("R-38 §2.4 a project card relates to requests only by the tasks its LiveRefs name, each request once", () => {
+  ids = 900;
+  const card = planCard("yn-227", "YN-227", [{ id: "a", text: "a", state: "doing" }], 10);
+  const r38 = request(38, 300, "doing", [withTask(routed(card, "YN-227", "doing", x227))]);
+  const dev = section("development", "status", "R-31 和 R-38 都在等 core.40", 3, 5, lead, {
+    status: status(5),
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["lead", "refs"] },
+      lead: { type: "Markdown", props: { text: "R-31 和 R-38 都在等 core.40（YN-221）。" } },
+      refs: { type: "LiveRefs", props: { items: [{ kind: "task", id: "YN-227" }, { kind: "pr", id: "o/r#7" }, { kind: "task", id: "YN-999" }, { kind: "task", id: "YN-227" }] } },
+    } },
+  });
+  assert.deepEqual(commonTasks(dev), ["YN-227", "YN-999"], "tasks only, each once; R-31 and YN-221 in its words are not read");
+  const { blocks } = pageBlocks([r38], [card, dev]);
+  assert.deepEqual(relatedRequests(dev, blocks), [{ task: "YN-227", n: 38 }], "a task no request has relates to none");
+  assert.deepEqual(commonTasks(null), []);
 });

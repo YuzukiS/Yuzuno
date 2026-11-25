@@ -3,7 +3,8 @@ import { strings, useLanguage } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import { CardAgents } from "./card-responsible";
 import { absolute, relative } from "./format";
-import type { RequestPull } from "./project-talk-api";
+import type { InstalledRelease, RequestPull } from "./project-talk-api";
+import type { BlockCommon } from "./RequestBlocks";
 import {
   barCells, type BarCell, type BlockNext, type BlockNow, type BlockStale, type BlockState, type PullFact, type RequestBlock, type Segment, type Who,
 } from "./request-blocks";
@@ -47,6 +48,10 @@ export const progressText = strings(
     nextAccept: "Confirm it done, or follow up",
     nextElsewhere: (task: string, home: number) => `${task} has one for you ↑ under R-${home}`,
     show: "Show →",
+    common: "depends on a project-wide item ↗",
+    installedRelease: (release: string) => `Installed ${release}`,
+    mergedAfter: (n: number) => `${n} merged on main since, install not verified`,
+    related: "Related requests",
     stale: (time: string, facts: string[]) => `Summary written ${time}${facts.length ? `; since then ${facts.join(", ")}` : ""}: what follows may be out of date`,
     expired: "Summary past its validity",
     fact: {
@@ -103,6 +108,10 @@ export const progressText = strings(
     nextAccept: "你确认完成，或继续跟进",
     nextElsewhere: (task, home) => `${task}有一项等你 ↑ 在 R-${home} 下`,
     show: "查看 →",
+    common: "依赖共同事项 ↗",
+    installedRelease: (release) => `已装 ${release}`,
+    mergedAfter: (n) => `之后 main 又合入 ${n} 个，安装待核实`,
+    related: "相关请求",
     stale: (time, facts) => `摘要写于 ${time}${facts.length ? `；之后${facts.join("、")}` : ""}，下面可能已不准`,
     expired: "摘要已过有效期",
     fact: {
@@ -201,7 +210,7 @@ export function ProgressBar({ now, dim }: { now: BlockNow & { kind: "bar" }; dim
 }
 
 /** The one next step (§2.3); an open Ask is the first look itself, so it has no line. */
-export function NextLine({ next, onShowBlock }: { next: BlockNext; onShowBlock: (n: number) => void }) {
+export function NextLine({ next, onShowBlock, common }: { next: BlockNext; onShowBlock: (n: number) => void; common?: BlockCommon }) {
   const t = progressText(useLanguage());
   const agents = useContext(CardAgents);
   const name = (who: Who | null) => (who ? agents.get(who.agentId)?.name || who.name : "");
@@ -228,6 +237,12 @@ export function NextLine({ next, onShowBlock }: { next: BlockNext; onShowBlock: 
       {next.kind === "elsewhere" && (
         <button type="button" className="talk-link" onClick={() => onShowBlock(next.home)}>
           {t.show}
+        </button>
+      )}
+      {/* R-38 §2.2: the condition is one of the project's common items, said once in the lead's card. */}
+      {next.kind === "condition" && common?.commonTasks?.has(next.task) && common.onShowNow && (
+        <button type="button" className="talk-link request-next-common" onClick={common.onShowNow}>
+          {t.common}
         </button>
       )}
     </p>
@@ -338,4 +353,34 @@ export function NowLine({ block }: { block: RequestBlock }) {
       </p>
     );
   return <StatsLine block={block} />;
+}
+
+/**
+ * Core's line about the release (R-38 §2.6): the release this Core runs, by its version, and how many PRs linked to
+ * the Project's tasks merged after it, by commit, while their install is not verified; only what Core could count.
+ */
+export function InstalledLine({ release, mergedAfter }: { release: InstalledRelease; mergedAfter: number | null }) {
+  const t = progressText(useLanguage());
+  return (
+    <p className="project-installed" title={`${release.releaseId} · ${release.gitSha.slice(0, 12)}`}>
+      <span>{t.installedRelease(release.version || release.releaseId)}</span>
+      {mergedAfter ? <span>{t.mergedAfter(mergedAfter)}</span> : null}
+    </p>
+  );
+}
+
+/** The requests the lead's card names among its common items (R-38 §2.4), each a way to its block. */
+export function RelatedRequests({ related, onShowBlock }: { related: readonly { task: string; n: number }[]; onShowBlock: (n: number) => void }) {
+  const t = progressText(useLanguage());
+  if (!related.length) return null;
+  return (
+    <p className="now-related">
+      <span className="now-related-label">{t.related}</span>
+      {related.map(({ task, n }) => (
+        <button key={task} type="button" className="home-chip now-related-chip" title={task} onClick={(event) => { event.stopPropagation(); onShowBlock(n); }}>
+          R-{n}
+        </button>
+      ))}
+    </p>
+  );
 }

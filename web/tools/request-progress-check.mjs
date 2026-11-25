@@ -83,7 +83,15 @@ const r40Ask = { id: id++, key: "yn-230/pick", kind: "ask", title: "选哪种读
   ask: { question: "选哪种读数？", state: "open", reply: { options: [{ id: "a", label: "完成 n/m" }, { id: "b", label: "可用 n/m" }], freeText: true } },
   card: bind("YN-230", executor) };
 const r41Card = planned("yn-231", "status", "导出", "YN-231", [{ id: "a", text: "导出 CSV", state: "doing", prs: [1130] }], 60, status(60));
-const sections = [r38Card, r31Ask, r14Card, r36Card, r40Ask, r41Card];
+// The lead's status, bound to no task (the page leads with it, R-27): its common item is YN-221's condition (R-38 S5).
+const devCard = { id: id++, key: "development", kind: "status", title: "开发状态", version: 4, owner: lead, updatedAt: at(15), updatedTurnId: "t1",
+  status: { asOf: at(15), validFor: 86_400, stale: false },
+  body: { root: "body", elements: {
+    body: node("BriefBody", { summary: { lead: "lead", size: "wide" } }, ["lead", "refs"]),
+    lead: md("**等含分步计量的版本发布并安装。** 发布后请安装。"),
+    refs: node("LiveRefs", { items: [{ kind: "task", id: "YN-221", label: "YN-221" }] }),
+  } }, attachments: [], refs: {}, seen: null, history: false };
+const sections = [r38Card, r31Ask, r14Card, r36Card, r40Ask, r41Card, devCard];
 // The design's report, delivered and marked seen: in Home's History, opened from R-38's evidence at its version.
 const designReport = { id: 619, key: "yn-227-design", kind: "report", title: "R-38 · 请求卡定稿", version: 6, owner: lead, updatedAt: at(200),
   updatedTurnId: "t0", body: { root: "body", elements: { body: node("BriefBody", {}, ["a"]), a: md("① 分段成果条定稿。") } },
@@ -138,7 +146,8 @@ const words = {
     r38: "Done 2/6 · usable 1 · 1 merged · install not verified",
     r31: "Done 3/4 · usable 2 · 1 merged · install not verified",
     s1: "S1 契约 — merged · install not verified: summary.progress 与步骤 prs; #1121 merged · install not verified",
-    next38: "NextYN-227 · 按批准的设计实现: S3 网页模型", next31: "Next等含分步计量的版本发布并安装",
+    next38: "NextYN-227 · 按批准的设计实现: S3 网页模型", next31: "Next等含分步计量的版本发布并安装depends on a project-wide item ↗",
+    installed: ["Installed 0.39.0", "3 merged on main since, install not verified"],
     r14: "Progress查明了两个原因：轮询和重复读取。", stale: /^Summary written .+; since then #1130 merged, you followed up once: what follows may be out of date$/,
     evidence: "Evidence: PRs 4 · delivered 1 · conversation 1",
   },
@@ -147,7 +156,8 @@ const words = {
     r38: "完成 2/6 · 可用 1 · 1 项已合入 · 安装待核实",
     r31: "完成 3/4 · 可用 2 · 1 项已合入 · 安装待核实",
     s1: "S1 契约 — 已合入 · 安装待核实：summary.progress 与步骤 prs；#1121 已合入 · 安装待核实",
-    next38: "下一步YN-227 · 按批准的设计实现：S3 网页模型", next31: "下一步等含分步计量的版本发布并安装",
+    next38: "下一步YN-227 · 按批准的设计实现：S3 网页模型", next31: "下一步等含分步计量的版本发布并安装依赖共同事项 ↗",
+    installed: ["已装 0.39.0", "之后 main 又合入 3 个，安装待核实"],
     r14: "进度查明了两个原因：轮询和重复读取。", stale: /^摘要写于 .+；之后#1130 合入、你追问了 1 次，下面可能已不准$/,
     evidence: "依据：PR 4 · 交付 1 · 对话 1",
   },
@@ -272,6 +282,14 @@ async function check(run) {
       for (let i = 1; i < rows.length; i++) assert.ok(rows[i].top >= rows[i - 1].bottom - 1, `R-${n}: ${JSON.stringify(rows)}`);
     }
     pass("each first look's parts stack, none over another");
+    // S5: Core's line about the release; the lead's common item names YN-221, so R-31 is a related request and its
+    // condition points to that card; Needs you holds R-40's Ask and R-36, so it says no "none".
+    assert.deepEqual(await page.locator(".project-installed span").allTextContents(), w.installed);
+    assert.deepEqual(await page.locator(".now-hero .now-related-chip").allTextContents(), ["R-31"]);
+    assert.equal(await block(31).locator(".request-next-common").count(), 1);
+    assert.equal(await block(38).locator(".request-next-common").count(), 0, "not a common item: no pointer");
+    assert.equal(await page.locator(".request-group-none").count(), 0);
+    pass("the release Core runs and what merged after it; the lead's common item points to its request and back");
     await shot("page", page);
     await shot("r38", r38);
 

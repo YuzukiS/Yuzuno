@@ -87,6 +87,7 @@ export const blockText = strings(
     line: { ask: (title: string) => `Asked: ${title}`, done: (title: string) => `Done: ${title}` },
     delivered: (title: string) => `What “${title}” delivered`,
     olderRequests: "Read older requests",
+    needsNone: "Needs you · none",
   },
   {
     groups: { needs: "等你", doing: "进行中", done: "已完成" },
@@ -145,6 +146,7 @@ export const blockText = strings(
     line: { ask: (title) => `提问：${title}`, done: (title) => `完成：${title}` },
     delivered: (title) => `「${title}」交付的结果`,
     olderRequests: "读更早的请求",
+    needsNone: "等你 · 无",
   },
 );
 
@@ -170,6 +172,10 @@ export type BlockCommon = {
    * this visit, where it was until the next visit. Each Ask is drawn there only, never again in the folded part.
    */
   upFront: (section: Section) => boolean;
+  /** The tasks the lead's card names as common items (R-38 §2.4): a request waiting on one points to that card. */
+  commonTasks?: ReadonlySet<string>;
+  /** Shows the card the project's page leads with, its common items. */
+  onShowNow?: () => void;
 };
 
 const FACT_ICON: Record<BlockFact["kind"], ReactNode> = {
@@ -451,7 +457,7 @@ export function RequestBlockView({
         <div className="request-block-now">
           {block.stale && <StaleLine stale={block.stale} />}
           <NowLine block={block} />
-          {block.next && <NextLine next={block.next} onShowBlock={onShowBlock} />}
+          {block.next && <NextLine next={block.next} onShowBlock={onShowBlock} common={common} />}
         </div>
       )}
       {action && action !== "follow" && !common.readOnly && (
