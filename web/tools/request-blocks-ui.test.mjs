@@ -167,12 +167,19 @@ test("each request's first look: its one fact, its one action and what it delive
   assert.equal(page.document.activeElement, page.document.body, "shown, nothing takes the focus");
   assert.equal(fact(8), "YN-92 is done · delivered 2 items");
   assert.equal(action(8).dataset.action, "confirm");
-  assert.equal(page.block(8).querySelectorAll(".request-block-delivered li").length, 2);
-  assert.equal(fact(9), "Halfway through the export");
-  assert.match(meta(9), /^Card past its validity · by YN-93 · Export · /, "the author named for its task says which task");
-  assert.equal(action(9).dataset.action, "follow");
-  assert.ok(!action(9).classList.contains("is-primary"));
-  assert.equal(fact(10), "Halfway through the export", "a joined request reads its task's fact");
+  // R-38 §2.2: what it delivered is evidence, under its line, folded; the first look is its state and progress.
+  assert.equal(page.block(8).querySelectorAll(".request-block-delivered li").length, 0);
+  assert.equal(page.text(page.block(8).querySelector(".request-block-more[data-evidence]")), "Evidence: delivered 2 · conversation 1");
+  const state = (n) => page.text(page.block(n).querySelector(".request-state"));
+  assert.deepEqual([7, 8, 9, 11].map(state), ["Your decision", "For you to accept", "Team on it", "Done"]);
+  // No progress summary: Core's own count, never its card's title (R-31); Follow up is a quiet line, not the action.
+  const stats = (n) => page.text(page.block(n).querySelector(".request-stats"));
+  assert.match(stats(9), /^YN-93 · YN-91 · Design · 0 PRs · last change .+No progress summary yet; the line above is Core's count$/);
+  assert.equal(fact(9), "", "the card's title is no first look");
+  assert.equal(meta(9), "");
+  assert.equal(action(9), null);
+  assert.equal(page.text(page.block(9).querySelector(".request-block-follow")), "↩ Follow up");
+  assert.match(stats(10), /^YN-93 · /, "a joined request reads its task's count");
   assert.equal(page.block(11).querySelector(".request-block-action"), null, "a confirmed request has nothing to do");
   assert.equal(page.text(page.block(7).querySelector(".request-block-more")), "1 task · 3 in the conversation");
   assert.deepEqual(page.errors, []);
@@ -185,22 +192,28 @@ test("the same in Chinese", () => {
   assert.equal(page.block(7).querySelector(".request-block-action"), null, "no 回答 before the Ask: it is there");
   assert.equal(fact(8), "YN-92 已完成 · 交付 2 项");
   assert.equal(page.text(page.block(8).querySelector(".request-block-action")), "确认完成");
-  assert.equal(page.text(page.block(9).querySelector(".request-block-action")), "追问");
-  assert.match(page.text(page.block(9).querySelector(".request-block-fact-meta")), /^卡片已过有效期 · YN-93 · Export 写 · /);
+  assert.equal(page.text(page.block(9).querySelector(".request-block-follow")), "↩ 追问");
+  assert.equal(page.text(page.block(9).querySelector(".request-state")), "团队在办");
+  assert.match(page.text(page.block(9).querySelector(".request-stats")), /^YN-93 · YN-91 · Design · 0 个 PR · 最后变化 .+还没有进度摘要，以上由 Core 统计$/);
+  assert.equal(page.text(page.block(8).querySelector(".request-block-more[data-evidence]")), "依据：交付 2 · 对话 1");
   assert.equal(page.text(page.block(7).querySelector(".request-block-more")), "1 个任务 · 对话 3 条");
   const group = page.document.querySelector("[data-project-block] > summary");
   assert.equal(page.text(group.querySelector(".request-group-note")), "不属于任何请求");
   assert.equal(page.text(group), "项目卡 1新不属于任何请求", "its card not read yet: 新");
 });
 
-test("an action says which request it is for; a deliverable opens its version", () => {
+test("an action says which request it is for; a deliverable opens its version", async () => {
   const page = mount();
-  for (const n of [8, 9]) page.block(n).querySelector(".request-block-action").click();
+  page.block(8).querySelector(".request-block-action").click();
+  page.block(9).querySelector(".request-block-follow").click();
   assert.deepEqual(page.calls(), [
     { action: "confirm", n: 8, key: null },
     { action: "follow", n: 9, key: null },
   ]);
   assert.equal(page.block(8).querySelector(".request-block-action").getAttribute("aria-label"), "Confirm done: R-8");
+  assert.equal(page.block(9).querySelector(".request-block-follow").getAttribute("aria-label"), "Follow up: R-9");
+  page.block(8).querySelector(".request-block-more[data-evidence]").click();
+  await tick();
   page.block(8).querySelector('.request-deliverable[data-kind="report"]').click();
   assert.deepEqual(page.calls().at(-1), { report: { key: "yn-92", version: 3, sectionId: 999 } });
 });
@@ -214,7 +227,8 @@ test("Confirm done has Follow up beside it; waiting for you and confirmed by you
     ["confirm", "Confirm done", "Confirm done: R-8", true],
     ["follow", "Follow up", "Follow up: R-8", false],
   ]);
-  assert.deepEqual(actions(9).map((b) => b.dataset.action), ["follow"], "in progress: Follow up alone");
+  assert.deepEqual(actions(9).map((b) => b.dataset.action), [], "in progress: no action; Follow up is in its line (R-38 §2.7)");
+  assert.equal(page.block(9).querySelector(".request-block-follow").dataset.action, "follow");
   actions(8)[1].click();
   assert.deepEqual(page.calls(), [{ action: "follow", n: 8, key: null }], "Follow up confirms nothing");
   assert.match(page.text(page.block(8).querySelector(".request-block-fact-meta")), /^Waiting for you to confirm · /);
@@ -286,8 +300,9 @@ test("a task's earlier cards fold under its one card; its task is said unless it
   assert.equal(fold.open, false, "folded");
   assert.ok(fold.querySelector('[data-section-key="yn-91/lead"]'), "the earlier card, in the fold");
   assert.equal(page.block(7).querySelector('.request-task-card [data-section-key]').dataset.sectionKey, "yn-91", "the newest is its one card");
-  assert.match(page.text(page.block(12).querySelector(".request-block-fact-meta")), /^YN-9 · by YN-93 · Export/);
-  assert.match(page.text(page.block(9).querySelector(".request-block-fact-meta")), /^Card past its validity · by YN-93 · Export/);
+  // R-38: a card's title and author are no first look; its task is still said, in Core's count.
+  assert.equal(page.block(12).querySelector(".request-block-fact-meta"), null);
+  assert.match(page.text(page.block(12).querySelector(".request-stats")), /^YN-9 · /);
   assert.deepEqual(page.errors, []);
 });
 
@@ -429,9 +444,11 @@ test("an Ask answered in this visit, resolved and asked again under its key, giv
   assert.deepEqual(page.errors, []);
 });
 
-test("read only: no action, the first look and what was delivered stay", () => {
+test("read only: no action, the first look and what was delivered stay", async () => {
   const page = mount({ readOnly: true });
-  assert.equal(page.document.querySelectorAll(".request-block-action").length, 0);
+  assert.equal(page.document.querySelectorAll(".request-block-action, .request-block-follow").length, 0);
+  page.block(8).querySelector(".request-block-more[data-evidence]").click();
+  await tick();
   assert.equal(page.block(8).querySelectorAll(".request-deliverable").length, 2);
 });
 
@@ -705,5 +722,53 @@ test("an answered Ask in Home's history index opens from its line to its card re
   assert.equal(reading.querySelector("strong")?.textContent, "Which tone?");
   assert.equal(page.block(7).querySelector('[data-answered="yn-91/tone"] .home-section'), null, "no card from the index row");
   assert.deepEqual(reads, [`/api/projects/p1/brief/history?entries=${kept.id}:2`]);
+  assert.deepEqual(page.errors, []);
+});
+
+// R-38 §2.2, §3: a request's first look by outcome. R-38 itself: its design delivered and kept as evidence, the same
+// task implementing; each outcome a segment, a button that says it under the bar and says it again no more.
+test("R-38 the first look: its state, its bar by outcome, the outcome a segment opens, one next step and its evidence", async () => {
+  const page = mount();
+  const plan = (steps) => ({ root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", progress: "plan", size: "wide" } }, children: ["lead", "plan"] },
+    lead: { type: "Markdown", props: { text: "Implementing." } }, plan: { type: "Plan", props: { steps } } } });
+  const card = section("yn-227", "status", "R-38 in progress", 4, { status: { asOf: ago(4), validFor: 3600, stale: false }, card: bind("YN-227"),
+    author: { agentId: "x", name: "YN-91 · Design" }, body: plan([
+      { id: "s1", text: "Contract — summary.progress", state: "done", prs: [1121] },
+      { id: "s2", text: "Core — progress and installs", state: "doing", prs: [1122] },
+      { id: "s3", text: "View", state: "todo" }]) });
+  const pull = (number, state, installed) => ({ number, title: `PR ${number}`, url: `https://example.test/pull/${number}`, repository: "o/r", state,
+    mergedAt: state === "merged" ? ago(30) : null, installed });
+  const routedCard = { ...routed(card, "YN-227"), prs: { items: [pull(1121, "merged", false), pull(1122, "open", null)] } };
+  page.window.renderPage({ requests: [request(38, 300, "doing", [routedCard])], sections: [card] });
+  await tick();
+  const b = page.block(38);
+  assert.equal(page.text(b.querySelector(".request-state")), "Team on it", "a design delivered is no request done");
+  assert.equal(page.text(b.querySelector(".request-bar-label")), "Done 1/3 · 1 merged · install not verified");
+  const segs = [...b.querySelectorAll(".request-bar-seg")];
+  assert.deepEqual(segs.map((s) => [s.dataset.state, s.getAttribute("aria-label")]), [
+    ["merged", "Contract: merged · install not verified"], ["doing", "Core: in progress"], ["todo", "View: not started"]]);
+  assert.equal(b.querySelector(".request-bar-cells").getAttribute("aria-label"),
+    "Done 1/3 · 1 merged · install not verified. Contract: merged · install not verified; Core: in progress; View: not started");
+  assert.equal(page.text(b.querySelector(".request-bar-detail")), "");
+  segs[0].click();
+  await tick();
+  assert.equal(segs[0].getAttribute("aria-pressed"), "true");
+  assert.equal(page.text(b.querySelector(".request-bar-detail")), "Contract — merged · install not verified: summary.progress; #1121 merged · install not verified");
+  segs[1].click();
+  await tick();
+  assert.deepEqual(segs.map((s) => s.getAttribute("aria-pressed")), ["false", "true", "false"], "one at a time");
+  segs[1].click();
+  await tick();
+  assert.equal(page.text(b.querySelector(".request-bar-detail")), "", "pressed again: hidden");
+  assert.equal(page.text(b.querySelector(".request-next")), "NextYN-91 · Design: Core");
+  assert.match(page.text(b.querySelector(".request-block-by")), /^YN-91 · Design, /);
+  assert.equal(page.text(b.querySelector(".request-block-more")), "Details: 1 got · 2 left");
+  const evidence = b.querySelector(".request-block-more[data-evidence]");
+  assert.equal(page.text(evidence), "Evidence: PRs 2 · conversation 1");
+  evidence.click();
+  await tick();
+  assert.deepEqual([...b.querySelectorAll(".request-evidence section")].map((s) => [s.dataset.evidence, page.text(s.querySelector("h4"))]),
+    [["pending", "Merged · install not verified 1"], ["open", "Not merged yet 1"]]);
   assert.deepEqual(page.errors, []);
 });

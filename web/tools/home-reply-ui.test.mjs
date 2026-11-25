@@ -605,12 +605,17 @@ test("on Home, the section answered from the team is shown: in Needs you, unfold
       await focused(page, () => shown(page));
     }],
   ]);
-  // Opened again after the user folded the card and the block: shown again.
+  // Opened again after the user folded the card and the block: shown again. The user folds it once the page has
+  // landed on it (the landing waits for the page's requests, after its first render): before, a late landing could
+  // unfold it again (YN-227, the lead's comment 12398). Folded, it stays folded: nothing lands after.
   const page = await arrive(team(4), askReply);
   t.after(page.close);
+  await focused(page, () => shown(page), "landed before the user folds it");
   shown(page).querySelector(".home-fold").click();
   await tick(40);
   assert.ok(shown(page).querySelector(".home-card-body").hidden, "folded by the user");
+  await tick(200);
+  assert.ok(shown(page).querySelector(".home-card-body").hidden, "and still folded: no landing comes after it");
   // The Project's one other card is the banner alone (R-27): no Project cards group, nothing to open for the Ask.
   assert.equal(group(page), null);
   assert.equal(page.document.querySelector(".now-hero")?.dataset.sectionKey, "other");
@@ -620,6 +625,34 @@ test("on Home, the section answered from the team is shown: in Needs you, unfold
   await tick(40);
   assert.equal(page.document.activeElement, shown(page));
   assert.ok(note(page).closest('[data-section-key="export-paging"]'));
+  assert.deepEqual(page.errors, []);
+});
+
+// YN-227 (the lead's comment 12405): a reply's landing waits for the page's requests, and the card it lands on may be
+// drawn before then; a fold the user makes meanwhile is theirs, and the landing that comes keeps it. Another Open on
+// Home is another landing: it unfolds the card.
+test("on Home, a card the user folds while its landing waits for the requests stays folded; Open on Home again unfolds it", async (t) => {
+  const team = homeData([section("other", 40, 1)], [], [ask("export-paging", 10, 4)]);
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const page = mount({ respond: async (url) => {
+    if (/\/requests(\?|$)/.test(url)) await held;
+    return { body: url === "/api/home" ? team : url === "/api/machine-load" ? machine : { repositories: [], links: [] } };
+  } });
+  t.after(page.close);
+  const shown = () => page.document.querySelector('[data-section-key="export-paging"]');
+  page.window.renderHome({ origin: askReply, back, n: 1 });
+  await until(() => shown() && page.requests.some((r) => /\/requests/.test(r.url)), "the Ask drawn while the requests are read");
+  assert.notEqual(page.document.activeElement, shown(), "not landed yet: the requests are not read");
+  shown().querySelector(".home-fold").click();
+  await tick(40);
+  assert.ok(shown().querySelector(".home-card-body").hidden, "folded by the user");
+  release();
+  await focused(page, () => shown(), "the landing comes once the requests are read");
+  await tick(200);
+  assert.ok(shown().querySelector(".home-card-body").hidden, "and keeps the user's fold");
+  page.window.renderHome({ origin: askReply, back, n: 2 });
+  await until(() => shown() && !shown().querySelector(".home-card-body").hidden, "Open on Home again unfolds it");
   assert.deepEqual(page.errors, []);
 });
 
