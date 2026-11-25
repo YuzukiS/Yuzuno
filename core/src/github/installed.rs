@@ -221,7 +221,11 @@ fn rate_limited(error: &anyhow::Error) -> bool {
 pub(crate) async fn check(ws: &Workspace, repo: i64, full_name: &str, merge: &str, installed: &Installed) -> Result<()> {
     let contained = ws.github.client.contains(full_name, &installed.git_sha, merge).await?;
     let (merge, sha) = (merge.to_owned(), installed.git_sha.clone());
-    ws.stored(move |store| record(&store.db.write()?, repo, &merge, &sha, contained)).await
+    ws.stored(move |store| {
+        let db = store.db.write()?;
+        record(&db, repo, &merge, &sha, contained)
+    })
+    .await
 }
 
 /// One pass over the merged PRs whose answer against the release this Core
