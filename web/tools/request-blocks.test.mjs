@@ -588,3 +588,32 @@ test("R-38 §2.4 a project card relates to requests only by the tasks its LiveRe
   assert.deepEqual(relatedRequests(dev, blocks), [{ task: "YN-227", n: 38 }], "a task no request has relates to none");
   assert.deepEqual(commonTasks(null), []);
 });
+
+test("R-43 with no progress yet, the front desk's newest reply is in the first look, unless a card came after it", () => {
+  ids = 900;
+  const said = "我会把规则写进 Agent 提交 Job 时看到的说明，并核实主线是否允许直接快进。";
+  const notes = [{ note: "好，交给执行者。", by: desk, at: at(5) }, { note: ` ${said} `, by: desk, at: at(3) }];
+  // R-42: routed to a task the lead answers for, which has no card and no progress yet.
+  const r42 = request(42, 6, "doing", [withTask(routed(null, "YN-230", "doing", lead))], { notes });
+  const b = block(pageBlocks([r42], []).blocks, 42);
+  assert.equal(b.fact.kind, "working");
+  assert.deepEqual([b.now, b.reply], [null, { text: said, by: desk, at: at(3) }], "its newest note, trimmed");
+  // A card written after the reply: the card's line stands, and the reply is in the conversation.
+  const later = section("yn-230", "status", "规则已写好", 2, 1, lead, { status: status(1), card: binding("YN-230", "doing", lead) });
+  const r42b = request(42, 6, "doing", [withTask(routed(later, "YN-230", "doing", lead))], { notes });
+  assert.equal(block(pageBlocks([r42b], [later]).blocks, 42).reply, null);
+  // A card older than the reply: the reply is newer, so it is in the first look.
+  const earlier = section("yn-230", "status", "开始写规则", 2, 4, lead, { status: status(4), card: binding("YN-230", "doing", lead) });
+  const r42c = request(42, 6, "doing", [withTask(routed(earlier, "YN-230", "doing", lead))], { notes });
+  assert.equal(block(pageBlocks([r42c], [earlier]).blocks, 42).reply?.text, said);
+  // Its task's own progress is the first look: no reply beside it.
+  const r42d = request(42, 6, "doing", [withTask(routed(null, "YN-230", "doing", lead), { progress: "规则已写进说明。" })], { notes });
+  assert.equal(block(pageBlocks([r42d], []).blocks, 42).reply, null);
+  // No task yet: the reply is its fact already, not said twice.
+  const r43 = request(43, 6, "doing", [], { notes });
+  const none = block(pageBlocks([r43], []).blocks, 43);
+  assert.deepEqual([none.fact.kind, none.fact.note, none.reply], ["waiting", ` ${said} `, null]);
+  // No note, or a blank one: nothing.
+  const r44 = request(44, 6, "doing", [withTask(routed(null, "YN-231", "doing", lead))], { notes: [{ note: "  ", by: desk, at: at(3) }] });
+  assert.equal(block(pageBlocks([r44], []).blocks, 44).reply, null);
+});

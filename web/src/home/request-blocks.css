@@ -650,6 +650,7 @@
 }
 .request-progress,
 .request-next,
+.request-reply,
 .request-stats {
   display: flex;
   flex-wrap: wrap;
@@ -664,6 +665,22 @@
 }
 .request-stats {
   color: var(--home-ink-2);
+}
+/* The front desk's newest reply (R-43): at most three lines; the whole of it is in the conversation. */
+.request-reply-text {
+  display: -webkit-box;
+  flex: 1 1 12em;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+.request-reply-at {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  white-space: nowrap;
 }
 .request-stats-note {
   width: 100%;

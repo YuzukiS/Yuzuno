@@ -7,6 +7,7 @@
 //  - R-36: every outcome done and its task ended: for the user to accept, Confirm done and Follow up;
 //  - R-40: an open Ask of its own, answered in its first look;
 //  - R-41: a progress written before a PR merged and a follow-up: said so, above it;
+//  - R-42 (R-43): a task with no card and no progress yet: the front desk's reply in its first look, not folded;
 //  - a segment opens its outcome under the bar by click and by keyboard (Tab to it, its focus shown, Enter, Enter
 //    again hides it), one at a time; Evidence opens the PRs by whether the release has them;
 //  - at 1180 px and on a 390 px phone, and in Chinese at 1180; nothing wider than the window; nothing is sent.
@@ -108,7 +109,12 @@ const request = (n, title, minutes, state, cards, extra = {}) => ({
   routes: [], cards, state, confirmedAt: null, progress: { cards: cards.length, ended: cards.filter((c) => c.task.status === "done").length }, lines: [], ...extra,
 });
 const design = { kind: "report", title: "R-38 · 请求卡定稿", note: "定稿 v5", key: "yn-227-design", version: 6, sectionId: 619, state: "history", currentVersion: 6 };
+const said42 = "我会把规则写进 Agent 提交 Job 时看到的说明，并核实主线是否允许直接快进。";
 const requests = [
+  request(42, "在 Job 提交说明写清 GPU 暂停时的处理", 4, "doing", [{
+    sectionId: null, key: null, title: null, live: false, responsible: leadWho, result: null, deliverables: null, prs: { items: [] },
+    task: { id: "YN-232", status: "doing", archived: false, progress: null, blocker: null },
+  }], { notes: [{ note: said42, by: { agentId: "l", name: "Dev Lead" }, at: at(3) }] }),
   request(41, "导出设置", 200, "doing", [card(r41Card, "YN-231", "doing", executor, { prs: [pull(1130, "merged", null, 10)] })], {
     replies: [{ n: 1, text: "还要 JSON", textBlocks: null, images: [], files: [], at: at(5), messageId: "m41-1", deliveredTo: [] }],
   }),
@@ -142,7 +148,7 @@ const home = () => ({
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
   en: {
-    states: { 41: "Team on it", 40: "Your decision", 38: "Team on it", 36: "For you to accept", 31: "Waiting on a condition", 14: "Team on it" },
+    states: { 42: "Team on it", 41: "Team on it", 40: "Your decision", 38: "Team on it", 36: "For you to accept", 31: "Waiting on a condition", 14: "Team on it" },
     r38: "Done 2/6 · usable 1 · 1 merged · install not verified",
     r31: "Done 3/4 · usable 2 · 1 merged · install not verified",
     s1: "S1 契约 — merged · install not verified: summary.progress 与步骤 prs; #1121 merged · install not verified",
@@ -150,9 +156,10 @@ const words = {
     installed: ["Installed 0.39.0", "3 merged PRs linked to this project are not in this version"],
     r14: "Progress查明了两个原因：轮询和重复读取。", stale: /^Summary written .+; since then #1130 merged, you followed up once: what follows may be out of date$/,
     evidence: "Evidence: PRs 4 · delivered 1 · conversation 1",
+    replied: "Dev Lead replied",
   },
   "zh-Hans": {
-    states: { 41: "团队在办", 40: "等你决定", 38: "团队在办", 36: "等你验收", 31: "等条件", 14: "团队在办" },
+    states: { 42: "团队在办", 41: "团队在办", 40: "等你决定", 38: "团队在办", 36: "等你验收", 31: "等条件", 14: "团队在办" },
     r38: "完成 2/6 · 可用 1 · 1 项已合入 · 安装待核实",
     r31: "完成 3/4 · 可用 2 · 1 项已合入 · 安装待核实",
     s1: "S1 契约 — 已合入 · 安装待核实：summary.progress 与步骤 prs；#1121 已合入 · 安装待核实",
@@ -160,6 +167,7 @@ const words = {
     installed: ["已装 0.39.0", "当前版本未包含本项目关联的 3 个已合并 PR"],
     r14: "进度查明了两个原因：轮询和重复读取。", stale: /^摘要写于 .+；之后#1130 合入、你追问了 1 次，下面可能已不准$/,
     evidence: "依据：PR 4 · 交付 1 · 对话 1",
+    replied: "Dev Lead 回复",
   },
 };
 
@@ -271,9 +279,15 @@ async function check(run) {
     assert.equal(await block(36).locator('.request-block-action[data-action="confirm"]').count(), 1);
     assert.equal(await block(40).locator(".request-block-asks [data-section-key]").count(), 1, "its own Ask, answered in its first look");
     assert.match(await text(block(41).locator(".request-stale")), w.stale);
-    pass("R-38 in progress by outcome; R-31's Ask names the Plan; an investigation, a settled one, an Ask and a stale summary each read as they are");
+    // R-43: no card and no progress yet: the front desk's newest reply is in R-42's first look, its fold still closed.
+    const reply42 = block(42).locator(".request-block-now .request-reply");
+    assert.ok(await reply42.isVisible(), "R-42's reply is in its first look");
+    assert.equal(await text(reply42.locator(".request-bar-label")), w.replied);
+    assert.equal(await text(reply42.locator(".request-reply-text")), said42);
+    assert.equal(await block(42).locator(".request-block-more").first().getAttribute("aria-expanded"), "false");
+    pass("R-38 in progress by outcome; R-31's Ask names the Plan; an investigation, a settled one, an Ask, a stale summary and a reply with no progress yet each read as they are");
     // Each part of a first look below the one before, never over it (a phone's grid once put them in one cell).
-    for (const n of [38, 31, 36, 41]) {
+    for (const n of [42, 38, 31, 36, 41]) {
       const rows = await block(n).evaluate((el) => [".request-block-head", ".request-block-fact", ".request-block-now", ".request-block-foot"]
         .map((selector) => el.querySelector(selector)).filter(Boolean).map((part) => {
           const box = part.getBoundingClientRect();
@@ -308,6 +322,7 @@ async function check(run) {
     pass("the release Core runs and what merged after it; the lead's common item points to its request and back");
     await shot("page", page);
     await shot("r38", r38);
+    await shot("r42", block(42));
 
     // A segment by click: its outcome under the bar; another replaces it; pressed again, nothing.
     const segs = r38.locator(".request-bar-seg");

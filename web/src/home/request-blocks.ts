@@ -1,7 +1,7 @@
 import { changedSinceSeen } from "./brief-layout.ts";
 import { runsText, visibleRuns } from "./card-face.ts";
 import { summaryOf } from "./report/report-model.ts";
-import type { Deliverable, Delivery, ProjectRequest, RequestCard, RequestPull } from "./project-talk-api";
+import type { Deliverable, Delivery, ProjectRequest, RequestCard, RequestPull, RouteAgent } from "./project-talk-api";
 import type { Section } from "./types";
 
 /**
@@ -137,6 +137,11 @@ export type RequestBlock = {
   stale: BlockStale | null;
   /** Who wrote the card its bar is read from, and when (the newest, with several); none without a bar. */
   by: { author: string; at: string } | null;
+  /**
+   * The front desk's newest reply, shown in its first look (R-43): only with tasks and no progress (no bar, no
+   * task's own progress), and newer than every card of its tasks; none otherwise. Without a task, its fact says it.
+   */
+  reply: { text: string; by: RouteAgent; at: string } | null;
 };
 
 /**
@@ -623,8 +628,14 @@ function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joine
   }
   const segments = bar?.now.segments ?? [];
   const newest = bar?.sources.reduce((a, b) => (time(b.updatedAt) > time(a.updatedAt) ? b : a));
+  const note = request.notes.at(-1);
+  const reply =
+    !now && rows.length && note?.note.trim() && rows.every((row) => !row.card || time(row.card.updatedAt) < time(note.at))
+      ? { text: note.note.trim(), by: note.by, at: note.at }
+      : null;
   return {
     by: newest ? { author: authorOf(newest), at: newest.updatedAt } : null,
+    reply,
     state,
     now,
     next: nextOf(state, own, joined, segments),
