@@ -82,6 +82,12 @@ export const askKey = (item: NeedsYouItem) => JSON.stringify([item.projectId, it
  * user's own press; nothing here scrolls on its own. With nothing to go to,
  * a jump says why and does nothing. Its measured height is what Home keeps
  * clear above a target.
+ *
+ * A Project's page puts its Requests | Conversation switch (`views`) in this
+ * same bar, after the jumps (R-36): one row at the top that stays as the page
+ * scrolls. The jumps keep their own navigation landmark; the switch is beside
+ * it, not in it. The whole of Home has no such switch and keeps its bar as it
+ * was.
  */
 export function HomeJumps({
   asks,
@@ -90,6 +96,7 @@ export function HomeJumps({
   onAsk,
   onReport,
   onWidgets,
+  views,
 }: {
   asks: number;
   report: { title: string; projectName: string; opens?: boolean } | null;
@@ -100,9 +107,11 @@ export function HomeJumps({
   /** With the button pressed, which a report opened over Home gives the focus back to. */
   onReport: (from: HTMLElement) => void;
   onWidgets?: () => void;
+  /** A Project's page only: its view switch, drawn after the jumps in the same bar (R-36). */
+  views?: ReactNode;
 }) {
   const t = useStrings(homeText);
-  const bar = useRef<HTMLElement>(null);
+  const bar = useRef<HTMLDivElement>(null);
   // The room Home keeps clear above a jump's target (scroll-padding), from the
   // bar's height as drawn, which wraps and follows the font size.
   useLayoutEffect(() => {
@@ -119,8 +128,8 @@ export function HomeJumps({
       view.style.removeProperty("--home-jumps-height");
     };
   }, []);
-  return (
-    <nav ref={bar} className="home-jumps" aria-label={t.jumps}>
+  const jumps = (
+    <>
       <Jump
         icon={<MessageCircleQuestion size={14} />}
         label={t.jumpAsks}
@@ -150,7 +159,23 @@ export function HomeJumps({
           kind="widgets"
         />
       )}
-    </nav>
+    </>
+  );
+  if (!views) {
+    return (
+      <nav ref={bar} className="home-jumps" aria-label={t.jumps}>
+        {jumps}
+      </nav>
+    );
+  }
+  return (
+    <div ref={bar} className="home-jumps has-views">
+      <nav className="home-jumps-group" aria-label={t.jumps}>
+        {jumps}
+      </nav>
+      <span className="home-jumps-divider" aria-hidden="true" />
+      {views}
+    </div>
   );
 }
 
