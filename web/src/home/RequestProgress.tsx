@@ -1,6 +1,7 @@
 import { useContext, useId, useState } from "react";
 import { strings, useLanguage } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
+import { Tip, TipText } from "../Tip";
 import { CardAgents } from "./card-responsible";
 import { absolute, relative } from "./format";
 import type { InstalledRelease, RequestPull } from "./project-talk-api";
@@ -267,9 +268,9 @@ export function StaleLine({ stale }: { stale: BlockStale }) {
     }
   });
   return (
-    <p className="request-stale" title={absolute(stale.at, time)}>
-      {facts.length ? t.stale(relative(stale.at, language), facts) : t.expired}
-    </p>
+    <Tip content={<TipText title={absolute(stale.at, time)} />} describe={false}>
+      <p className="request-stale">{facts.length ? t.stale(relative(stale.at, language), facts) : t.expired}</p>
+    </Tip>
   );
 }
 
