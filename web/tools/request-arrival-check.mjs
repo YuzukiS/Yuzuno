@@ -31,7 +31,7 @@ assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 const frames = join(output, "frames");
 await mkdir(frames, { recursive: true });
-const report = { task: "YN-226", engine, keyboard: "simulated (window shortened)", runs: [], unexpected: [], errors: [] };
+const report = { task: "YN-226", engine, keyboard: "simulated (window shortened)", runs: [], unexpected: [], errors: [], console: [] };
 const HOST = "localhost:47399";
 const PROJECT = "p-next";
 const NOW = Date.now();
@@ -225,6 +225,10 @@ async function stage(run, contextOptions = {}) {
   });
   const page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(`${run.name}: ${error.message}`));
+  // What the page said went wrong, kept to tell a failed step's cause (an error boundary catches render errors).
+  page.on("console", (message) => {
+    if (message.type() === "error") report.console.push(`${run.name}: ${message.text()}`);
+  });
   return { context, page, state };
 }
 
@@ -305,7 +309,8 @@ async function check(run) {
     assert.deepEqual(pressed, reduced ? [] : ["talk-send-press"], "Return presses the button");
     const sending = await page.evaluate(() => {
       const slot = document.querySelector(".home-dock .project-talk-arrival");
-      return { shown: getComputedStyle(slot).display !== "none", text: slot.textContent, opacity: getComputedStyle(document.querySelector(".home-dock .home-composer")).opacity };
+      const pill = slot.querySelector(".project-talk-notice");
+      return { shown: !!pill && getComputedStyle(pill).display !== "none", text: slot.textContent, opacity: getComputedStyle(document.querySelector(".home-dock .home-composer")).opacity };
     });
     assert.equal(sending.shown, reduced, reduced ? "Sending… said where the spinner stands still" : "the spinner says it");
     assert.equal(sending.text, d.w.sending);
@@ -532,6 +537,7 @@ async function check(run) {
     }
   } catch (error) {
     await page.screenshot({ path: join(output, `${engine}-${run.name}-failed.png`) }).catch(() => {});
+    for (const line of report.console.filter((entry) => entry.startsWith(`${run.name}:`))) console.error(`console ${line}`);
     throw error;
   } finally {
     await context.close();

@@ -315,7 +315,9 @@ p.request-deliverable:hover {
   }
 }
 /* Above the field, over the page's end, so the dock keeps its height (YN-226): where what was just sent went, while
-   its block is not in sight; under reduced motion, where the spinner stands still, that the words are going. */
+   its block is not in sight; under reduced motion, where the spinner stands still, that the words are going. The
+   status region itself is always there (a region that appears with its words is not reliably announced); empty,
+   it has no size. */
 .project-talk-arrival {
   position: absolute;
   bottom: calc(100% + 8px);
@@ -323,13 +325,12 @@ p.request-deliverable:hover {
   z-index: 5;
   max-width: 100%;
 }
-.project-talk-arrival:empty,
-.project-talk-arrival[data-sending] {
+.project-talk-arrival[data-sending] > .project-talk-notice {
   display: none;
 }
 @media (prefers-reduced-motion: reduce) {
-  .project-talk-arrival[data-sending] {
-    display: block;
+  .project-talk-arrival[data-sending] > .project-talk-notice {
+    display: inline-flex;
   }
 }
 .project-talk-notice {
