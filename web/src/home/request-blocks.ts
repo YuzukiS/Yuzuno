@@ -135,6 +135,8 @@ export type RequestBlock = {
   evidence: BlockEvidence;
   /** When its progress was written before later facts Core knows (R-38 §2.5); none otherwise. */
   stale: BlockStale | null;
+  /** Who wrote the card its bar is read from, and when (the newest, with several); none without a bar. */
+  by: { author: string; at: string } | null;
 };
 
 /**
@@ -620,7 +622,9 @@ function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joine
     if (row && head) now = { kind: "progress", text: head, task: row.task.id };
   }
   const segments = bar?.now.segments ?? [];
+  const newest = bar?.sources.reduce((a, b) => (time(b.updatedAt) > time(a.updatedAt) ? b : a));
   return {
+    by: newest ? { author: authorOf(newest), at: newest.updatedAt } : null,
     state,
     now,
     next: nextOf(state, own, joined, segments),

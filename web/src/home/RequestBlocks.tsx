@@ -22,6 +22,7 @@ import { SectionCard } from "./SectionCard";
 import { withoutFormIds } from "./AskReply";
 import { HistoryBodyState } from "./HistoryBodyState";
 import { SummaryCard } from "./SummaryCard";
+import { DetailLists, EvidenceList, NextLine, NowLine, StaleLine, StateMark, progressText } from "./RequestProgress";
 import type { Section } from "./types";
 import "./project-talk.css";
 import "./request-blocks.css";
@@ -396,6 +397,14 @@ export function RequestBlockView({
   const askedHere = fact.kind === "ask" && fact.home === null && asks.length > 0;
   const elsewhere = block.askedElsewhere;
   const settle: Settle | null = action === "confirm" ? "waiting" : block.group === "done" ? "confirmed" : null;
+  const p = progressText(language);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  // R-38 §2.2: the first look is its progress and one next step. Without a summary, Core's own facts stand (an
+  // answer, a delivery, an ending, the user's reply); a card's title is never taken for its progress.
+  const factFirst = !block.now && fact.kind !== "card" && fact.kind !== "working";
+  const prs = block.evidence.installed.length + block.evidence.pending.length + block.evidence.open.length;
+  const delivered = block.delivered.reduce((n, group) => n + group.items.length, 0);
+  const follow = action === "follow" && !common.readOnly;
   return (
     <article
       className="request-block"
@@ -412,7 +421,8 @@ export function RequestBlockView({
         <button type="button" className="request-block-title" data-untitled={request.title ? undefined : ""} aria-expanded={open} onClick={onToggle}>
           {title}
         </button>
-        {block.unread && <span className="home-chip is-new">{t.newMark}</span>}
+        {block.unread && <span className="request-updated">{p.updated}</span>}
+        <StateMark state={block.state} />
         <span className="request-block-time"><When at={request.createdAt} /></span>
       </header>
       {asks.length > 0 && (
@@ -431,24 +441,31 @@ export function RequestBlockView({
           )}
         </div>
       )}
-      {!askedHere && (
+      {!askedHere && factFirst && (
         <div className="request-block-fact">
           <span className="request-block-fact-icon" data-kind={fact.kind}>{FACT_ICON[fact.kind]}</span>
           <FactLines fact={fact} settle={settle} confirmedAt={request.confirmedAt} />
         </div>
       )}
-      {action && !common.readOnly && (
+      {!factFirst && (
+        <div className="request-block-now">
+          {block.stale && <StaleLine stale={block.stale} />}
+          <NowLine block={block} />
+          {block.next && <NextLine next={block.next} onShowBlock={onShowBlock} />}
+        </div>
+      )}
+      {action && action !== "follow" && !common.readOnly && (
         <div className="request-block-act">
           <span className="request-block-actions">
             <button
               type="button"
-              className={action === "follow" ? "request-block-action" : "request-block-action is-primary"}
+              className="request-block-action is-primary"
               data-action={action}
               aria-label={t.actionLabel(label, request.n)}
               disabled={busy}
               onClick={() => onAction(action, request.n, fact.kind === "ask" ? fact.key : undefined)}
             >
-              {busy ? <LoaderCircle size={12} className="spin" aria-hidden="true" /> : action === "follow" ? <Send size={12} aria-hidden="true" /> : null}
+              {busy ? <LoaderCircle size={12} className="spin" aria-hidden="true" /> : null}
               {label}
             </button>
             {/* Not done enough (R-30): the same request's follow-up in the composer; it confirms nothing, and the
@@ -474,7 +491,45 @@ export function RequestBlockView({
           )}
         </div>
       )}
-      {block.delivered.length > 0 && (
+      <div className="request-block-foot">
+        {follow && (
+          <button
+            type="button"
+            className="request-block-follow"
+            data-action="follow"
+            aria-label={t.actionLabel(t.actions.follow, request.n)}
+            disabled={busy}
+            onClick={() => onAction("follow", request.n)}
+          >
+            {p.followUp}
+          </button>
+        )}
+        <button type="button" className="request-block-more" aria-expanded={open} onClick={onToggle}>
+          <ChevronDown size={13} aria-hidden="true" />
+          {open ? t.less : block.details ? p.details(block.details.got.length, block.details.left.length) : t.more(tasks, said)}
+        </button>
+        {(prs > 0 || delivered > 0) && (
+          <button type="button" className="request-block-more" data-evidence="" aria-expanded={evidenceOpen} onClick={() => setEvidenceOpen(!evidenceOpen)}>
+            <ChevronDown size={13} aria-hidden="true" />
+            {p.evidence([
+              prs ? p.evidencePart.prs(prs) : null,
+              delivered ? p.evidencePart.delivered(delivered) : null,
+              block.evidence.answered ? p.evidencePart.answered(block.evidence.answered) : null,
+              block.evidence.conversation ? p.evidencePart.said(block.evidence.conversation) : null,
+            ].filter((part): part is string => !!part))}
+          </button>
+        )}
+        {block.by && <span className="request-block-by">{p.by(block.by.author, relative(block.by.at, language))}</span>}
+      </div>
+      {follow && error && (
+        <p className="inline-error request-block-error" role="alert">
+          {error}
+        </p>
+      )}
+      {evidenceOpen && (
+        <div className="request-block-evidence">
+          <EvidenceList block={block} />
+          {block.delivered.length > 0 && (
         <ul className="request-block-delivered" aria-label={t.delivered(title)}>
           {block.delivered.flatMap((group) =>
             group.items.map((item, index) => (
@@ -490,13 +545,12 @@ export function RequestBlockView({
             )),
           )}
         </ul>
+          )}
+        </div>
       )}
-      <button type="button" className="request-block-more" aria-expanded={open} onClick={onToggle}>
-        <ChevronDown size={13} aria-hidden="true" />
-        {open ? t.less : t.more(tasks, said)}
-      </button>
       {open && (
         <div className="request-block-body">
+          <DetailLists block={block} />
           {block.tasks.map((row) => (
             <TaskRowView key={row.task.id} row={row} common={common} />
           ))}

@@ -166,9 +166,14 @@ function mount({ lang = "en" } = {}) {
   // A request's block; what one of its tasks delivered, under the block's fact; that task's row, in the block opened.
   const cardOf = (n) => document.querySelector(`[data-request-block="${n}"]`);
   const delivered = (n, task) => [...(cardOf(n)?.querySelectorAll(`.request-block-delivered > li[data-task="${task}"] .request-deliverable`) ?? [])];
+  // R-38: what it delivered is the block's evidence, folded under its line: opened, then drawn.
+  const evidence = async (n) => {
+    cardOf(n)?.querySelector('.request-block-more[data-evidence][aria-expanded="false"]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  };
   const lines = (n, task) => (unfoldBlocks(document), cardOf(n)?.querySelector(`.request-task[data-task="${task}"]`) ?? null);
   const posts = () => calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/github_repositories"));
-  return { window, document, errors, calls, cardOf, delivered, lines, posts, close: () => window.close() };
+  return { window, document, errors, calls, cardOf, delivered, evidence, lines, posts, close: () => window.close() };
 }
 
 async function talk(options) {
@@ -265,6 +270,7 @@ test("older requests are read from the requests side, and a done one's report st
   assert.deepEqual(done(), [10, 6, 3, 2], "the new one on top; the rest where they were");
   const fold = page.document.querySelector(".request-done");
   fold.open = true;
+  await page.evidence(3);
   const [open] = page.delivered(3, "YN-70");
   assert.equal(open.getAttribute("aria-label"), "打开报告「Older review」第 4 版");
   assert.match(open.textContent, /报告 · 第 4 版 · 在 History/);

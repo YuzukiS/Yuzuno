@@ -70,8 +70,9 @@
     "head head"
     "asks asks"
     "fact act"
-    "delivered delivered"
-    "more more"
+    "now now"
+    "foot foot"
+    "evidence evidence"
     "body body";
   min-width: 0;
   border: 1px solid var(--line);
@@ -84,7 +85,8 @@
   outline: none;
 }
 .request-block[data-group="needs"] {
-  border-color: color-mix(in srgb, var(--home-attention) 55%, var(--line));
+  /* R-38 §2.7: a real to-do is the solid mark, its whole edge; no side bar. */
+  border-color: var(--home-attention);
 }
 /* The request the user just sent (YN-226): its edge in the send button's colour while it comes into place (the first
    26% of settle, the rise's 310 ms of its 1200), then back to its own over the rest. Its edge only, a light stroke:
@@ -489,5 +491,267 @@
   }
   .request-block-delivered {
     padding-left: 14px;
+  }
+}
+
+/* R-38 §2.2: the first look by outcome — the status label, the bar or one line of progress, the one next step, and the
+   line under them. Colours are the theme's state tokens; only the user's to-do is solid. */
+.request-state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.request-state[data-state="team"]::before,
+.request-state[data-state="going"]::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--state-working, var(--home-ink-2));
+}
+.request-state[data-state="condition"] {
+  border-style: dashed;
+  border-color: var(--state-idle, var(--line));
+}
+.request-state[data-state="decide"],
+.request-state[data-state="accept"] {
+  border-color: var(--home-attention);
+  background: var(--home-attention);
+  color: var(--home-attention-ink, var(--ink));
+  font-weight: 600;
+}
+.request-state[data-state="deliveryFailed"],
+.request-state[data-state="unconfirmed"] {
+  border-color: var(--home-error);
+  color: var(--home-error);
+}
+.request-state[data-state="done"] {
+  color: var(--home-ink-2);
+}
+/* Updated since the user saw it: quiet, never counted (§2.7). */
+.request-updated {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.request-updated::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--home-ink-2);
+}
+.request-block-now {
+  grid-area: now;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 14px 4px;
+}
+.request-bar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 2px 10px;
+}
+.request-bar[data-dim],
+.request-progress[data-dim] {
+  opacity: 0.75;
+}
+.request-bar-label {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.request-bar-cells {
+  display: flex;
+  gap: 3px;
+  min-width: 0;
+}
+.request-bar-cell {
+  flex: 1 1 0;
+  display: grid;
+  gap: 3px;
+  min-width: 10px;
+}
+.request-bar-seg {
+  position: relative;
+  height: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--home-soft);
+  cursor: pointer;
+}
+.request-bar-seg[data-state="available"],
+.request-bar-seg[data-state="done"] {
+  background: var(--state-done, var(--green));
+}
+.request-bar-seg[data-state="merged"] {
+  background: repeating-linear-gradient(135deg, var(--state-done, var(--green)) 0 3px,
+    color-mix(in srgb, var(--state-done, var(--green)) 30%, var(--home-surface)) 3px 6px);
+}
+.request-bar-seg[data-state="doing"] {
+  background: color-mix(in srgb, var(--state-working, var(--green)) 80%, var(--home-surface));
+}
+.request-bar-seg[data-state="blocked"] {
+  background: transparent;
+  border: 1.5px dashed var(--state-idle, var(--line));
+}
+.request-bar-seg[data-asking] {
+  box-shadow: 0 0 0 2px var(--home-attention);
+}
+.request-bar-seg[aria-pressed="true"] {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+.request-bar-seg:focus-visible {
+  outline: 2px solid var(--home-focus, var(--ink));
+  outline-offset: 2px;
+}
+.request-bar-count {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  font-size: 9px;
+  line-height: 1;
+}
+.request-bar-name {
+  overflow: hidden;
+  color: var(--home-ink-2);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.request-bar-detail {
+  grid-column: 2;
+  display: grid;
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.request-bar-detail:empty {
+  display: none;
+}
+.request-progress,
+.request-next,
+.request-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  margin: 0;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.request-next-label {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.request-stats {
+  color: var(--home-ink-2);
+}
+.request-stats-note {
+  width: 100%;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.request-stale {
+  justify-self: start;
+  margin: 0;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--home-error) 14%, var(--home-soft));
+  color: var(--home-error-ink, var(--ink));
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.request-block-foot {
+  grid-area: foot;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 14px;
+  min-width: 0;
+  margin-top: 4px;
+  padding: 2px 14px 4px;
+}
+/* The line under the first look (§2.2): the foot's own top rule, its toggles inline, not full-width bars. */
+.request-block-foot {
+  border-top: 1px solid var(--line);
+}
+.request-block-foot > .request-block-more {
+  width: auto;
+  padding: 4px 0;
+  border-top: 0;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.request-block-evidence .request-block-delivered {
+  margin: 0;
+  padding: 0;
+}
+.request-block-follow {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--home-ink-2);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.request-block-follow:hover {
+  color: var(--ink);
+}
+.request-block-by {
+  margin-left: auto;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.request-block-evidence {
+  grid-area: evidence;
+  display: grid;
+  gap: 8px;
+  padding: 0 14px 10px;
+}
+.request-evidence,
+.request-details {
+  display: grid;
+  gap: 6px;
+}
+.request-evidence h4,
+.request-details h4 {
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.request-evidence ul,
+.request-details ul {
+  margin: 2px 0 0;
+  padding-left: 16px;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.request-evidence-at {
+  color: var(--home-ink-2);
+}
+@media (max-width: 640px) {
+  .request-bar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .request-bar-detail {
+    grid-column: 1;
+  }
+  .request-block-by {
+    width: 100%;
+    margin-left: 0;
   }
 }

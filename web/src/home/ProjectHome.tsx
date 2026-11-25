@@ -258,8 +258,11 @@ export function ProjectHome({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  /** Scrolls to `target`, opens the card or fold that holds it, and settles once it has landed. */
-  function jumpTo(target: HTMLElement | null, block: ScrollLogicalPosition = "center") {
+  /**
+   * Scrolls to `target`, opens the card or fold that holds it, and settles once it has landed. `keepFolded`: the
+   * user folded it while this landing waited, and it stays as they left it (YN-227, the lead's comment 12405).
+   */
+  function jumpTo(target: HTMLElement | null, block: ScrollLogicalPosition = "center", keepFolded = false) {
     if (!target) return;
     const smooth = !reducedMotion();
     const show = () => {
@@ -267,11 +270,11 @@ export function ProjectHome({
       target.focus({ preventScroll: true });
       settleWhenLanded(target, "data-home-highlight", smooth);
     };
-    if (unfoldAround(target)) requestAnimationFrame(show);
+    if (!keepFolded && unfoldAround(target)) requestAnimationFrame(show);
     else show();
   }
   // A jump into a block (§3.4): the requests shown, the block opened, then the jump once it is drawn.
-  const [landing, setLanding] = useState<{ key: string | null; block: string; seq: number } | null>(null);
+  const [landing, setLanding] = useState<{ key: string | null; block: string; seq: number; keepFolded?: boolean } | null>(null);
   const landed = useRef(0);
   useEffect(() => {
     if (!landing || landed.current === landing.seq) return;
@@ -279,7 +282,7 @@ export function ProjectHome({
     const target = landing.key
       ? document.getElementById(sectionDomId(id, landing.key))
       : root.current?.querySelector<HTMLElement>(`[data-block-key="${landing.block}"]`) ?? null;
-    jumpTo(target, landing.key ? "center" : "start");
+    jumpTo(target, landing.key ? "center" : "start", landing.keepFolded);
     // Run once the block it opened is drawn.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [landing, chosen, view]);
@@ -287,14 +290,14 @@ export function ProjectHome({
    * Shows the block a section is in, opened, and lands on the section; false when no block holds it. An open Ask is
    * in its block's first look (W5): the jump lands on it and opens nothing.
    */
-  function showSection(key: string) {
+  function showSection(key: string, keepFolded = false) {
     // The banner's card with no group to hold it is the banner: the caller lands there by its id (R-27 §3.8).
     if (line?.key === key && cardsCount === 0) return false;
     const block = blockOfSection(key, blocks, projectBlock);
     if (!block) return false;
     if (view !== "requests") setView("requests");
     if (!askUpFront(key, blocks, projectBlock)) openBlock(block);
-    setLanding((was) => ({ key, block, seq: (was?.seq ?? 0) + 1 }));
+    setLanding((was) => ({ key, block, seq: (was?.seq ?? 0) + 1, keepFolded }));
     return true;
   }
   /** The banner's "Project cards N": the requests shown and the Project cards group opened, at its top (R-27 §3.8). */
@@ -374,14 +377,31 @@ export function ProjectHome({
     page.querySelector<HTMLElement>(".project-home-head h1")?.focus({ preventScroll: true });
   }
   const jumped = useRef(0);
+  // A card a landing waits for (the requests not read yet) may already be drawn (W5), and the user may fold it
+  // meanwhile: that fold is theirs, and the landing that comes later keeps it (YN-227, the lead's comment 12405).
+  // Another "Open on Home" is another landing, and unfolds it.
+  const foldedWhileLanding = useRef<{ n: number; key: string } | null>(null);
+  useEffect(() => {
+    const page = root.current;
+    if (!focus?.key || jumped.current === focus.n || !page) return;
+    const { n, key } = focus;
+    const onFold = (event: Event) => {
+      const fold = (event.target as Element | null)?.closest?.(".home-fold");
+      const card = document.getElementById(sectionDomId(id, key));
+      if (fold && card?.contains(fold) && fold.getAttribute("aria-expanded") === "true") foldedWhileLanding.current = { n, key };
+    };
+    page.addEventListener("click", onFold, true);
+    return () => page.removeEventListener("click", onFold, true);
+  }, [focus, id]);
   useEffect(() => {
     if (!focus || jumped.current === focus.n) return;
     // A card is in its request's block: wait until the requests are read to know which.
     if (focus.key && talkRequests === null) return;
     jumped.current = focus.n;
     if (!focus.key) return toTop();
-    if (showSection(focus.key)) return;
-    jumpTo(document.getElementById(sectionDomId(id, focus.key)));
+    const keepFolded = foldedWhileLanding.current?.n === focus.n && foldedWhileLanding.current.key === focus.key;
+    if (showSection(focus.key, keepFolded)) return;
+    jumpTo(document.getElementById(sectionDomId(id, focus.key)), "center", keepFolded);
     // The page is drawn by the time this runs, its read or its first render; a card in a block waits for the requests.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus, talkRequests]);
