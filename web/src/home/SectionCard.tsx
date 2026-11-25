@@ -32,7 +32,7 @@ import { homeImageUrl } from "./home-images";
 import { homeFileUrl } from "./home-files";
 import { homeReplyText, useCopy, Words } from "../home-reply/HomeReply";
 import { answerText, unanswered } from "../home-reply/home-reply-model";
-import { answerLine, answerShown, fieldAnswer, otherOptions, questionParts } from "./answer-card";
+import { answerLine, answerShown, bodyShown, fieldAnswer, otherOptions, questionParts } from "./answer-card";
 
 /** When a status's data is from, and whether it is past its validity. */
 export function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
@@ -207,6 +207,23 @@ export function PinButton({ section, projectId, anchor }: { section: Section; pr
   );
 }
 
+/** An answer card's one line of what was chosen (YN-230), at most two lines, saying whether it is cut where it is
+ * drawn now (a narrow card, a larger text size): then the whole is in its record, one toggle away. */
+function ClampedLine({ text, onLong }: { text: string; onLong: (long: boolean) => void }) {
+  const line = useRef<HTMLParagraphElement>(null);
+  useLayoutEffect(() => {
+    const element = line.current;
+    if (!element) return;
+    const measure = () => onLong(element.scrollHeight > element.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [text, onLong]);
+  return <p ref={line} className="home-answer-picks">{text}</p>;
+}
+
 /** Drawn again only when its section (kept as the same object while it is
  * unchanged, see keepUnchanged) or its props change. */
 export const SectionCard = memo(function SectionCard({
@@ -220,6 +237,7 @@ export const SectionCard = memo(function SectionCard({
   onChanged,
   notice,
   answer = false,
+  record = false,
 }: {
   section: Section;
   projectId: string;
@@ -234,6 +252,8 @@ export const SectionCard = memo(function SectionCard({
   notice?: ReactNode;
   /** An answered Ask drawn as its answer card wherever it is, as a request's line opened to it (YN-223), resolved too. */
   answer?: boolean;
+  /** Its answer record open from the first (YN-230): what the user opened was that record, as a request's line. */
+  record?: boolean;
 }) {
   const time = useTimeDisplay();
   const language = useLanguage();
@@ -285,9 +305,10 @@ export const SectionCard = memo(function SectionCard({
   // Its body shown: the Ask as its owner keeps it, and Reply again's controls.
   const opened = rowOpen;
   // Its answer record shown (YN-230, R-41's design): the whole answer as given, the options not chosen, the user's
-  // notes and files, and its owner's update since; and whether the user's words are longer than its one line.
-  const [recordOpen, setRecordOpen] = useState(false);
-  const [wordsLong, setWordsLong] = useState(false);
+  // notes and files, then the Ask's own explanation; and whether its one line is cut where it is drawn (several
+  // paragraphs, a narrow card, a larger text size), so that the whole is one toggle away.
+  const [recordOpen, setRecordOpen] = useState(record);
+  const [lineLong, setLineLong] = useState(false);
   const replyWords = useStrings(homeReplyText);
   const [answerCopy, copyAnswer] = useCopy();
   const collapsed = short ? !opened : chosenFold;
@@ -356,8 +377,6 @@ export const SectionCard = memo(function SectionCard({
   // Answered, waiting for its owner: no longer the user's to decide, so it
   // shows in short, with the record of the answer one toggle away.
   const updatedSinceReply = replied && repliedThenUpdated(section);
-  // What its owner says now, after the reply: the body's opening, on the answer card.
-  const update = useMemo(() => (short && updatedSinceReply ? sectionSummary(section) : null), [short, updatedSinceReply, section]);
   const deferred =
     !replied && section.ask?.deferredUntil && Date.parse(section.ask.deferredUntil) > Date.now()
       ? section.ask.deferredUntil
@@ -451,12 +470,14 @@ export const SectionCard = memo(function SectionCard({
     // R-41's two states (YN-230, the design the user approved): the question whole and one line of what the user
     // decided; the record of the answer as they gave it one toggle away, only when it holds more than that line.
     const line = snapshot ? answerLine(snapshot, { list: t.listJoin, fields: t.fieldJoin }) : { text: replyText, words: true, notes: 0 };
-    const others = snapshot ? otherOptions(snapshot, section.ask?.reply.form, !updatedSinceReply) : [];
+    const others = snapshot ? otherOptions(snapshot) : [];
     const images = section.ask?.replyImages ?? [];
     const files = section.ask?.replyFiles ?? [];
+    // The Ask's own explanation, in the record after the answer, so a card read only shows it too (the lead's 12496).
+    const hasBody = bodyShown(section.body);
     const hasRecord =
       !!snapshot?.form || line.notes > 0 || others.length > 0 || images.length > 0 || files.length > 0 || updatedSinceReply ||
-      (line.words && wordsLong);
+      hasBody || lineLong;
     const showRecord = recordOpen && hasRecord;
     const copyButton = copied ? (
       <button type="button" className={`home-reply-action home-answer-copy${answerCopy === "copied" ? " done" : ""}`} onClick={() => copyAnswer(copied)}>
@@ -528,9 +549,9 @@ export const SectionCard = memo(function SectionCard({
                 {!line.text ? (
                   <p className="home-answer-picks" data-empty="">{t.skipped}</p>
                 ) : line.words ? (
-                  <Words text={line.text} lines={2} onLong={setWordsLong} />
+                  <Words text={line.text} lines={2} onLong={setLineLong} />
                 ) : (
-                  <p className="home-answer-picks">{line.text}</p>
+                  <ClampedLine text={line.text} onLong={setLineLong} />
                 )}
                 {line.notes > 0 && <span className="home-answer-notes">{t.moreNotes(line.notes)}</span>}
               </div>
@@ -598,12 +619,23 @@ export const SectionCard = memo(function SectionCard({
             </section>
           )}
           </div>
-          {/* What its owner says now, after the reply: apart from the record, never as part of it. */}
-          {showRecord && updatedSinceReply && (
-            <div className="home-answer-update">
-              <p className="home-answer-update-head">{t.updatedAfterReply(section.owner.name, relative(section.updatedAt, language))}</p>
-              {update && <BriefMarkdown text={update} />}
-            </div>
+          {/* The Ask's own explanation, after the answer and apart from it: as answered, or, changed by its owner since
+              the reply, said so (the lead's 12496). */}
+          {showRecord && (hasBody || updatedSinceReply) && (
+            <section className={`home-answer-body${updatedSinceReply ? " home-answer-update" : ""}`}
+              aria-label={updatedSinceReply ? t.bodyAfterReply : t.bodyThisVersion}>
+              <p className="home-answer-body-head">
+                <strong>{updatedSinceReply ? t.bodyAfterReply : t.bodyThisVersion}</strong>
+                {updatedSinceReply && (
+                  <span className="home-answer-update-head">{t.updatedAfterReply(section.owner.name, relative(section.updatedAt, language))}</span>
+                )}
+              </p>
+              {hasBody && (
+                <div className="home-section-body">
+                  <SectionBody section={section} projectId={projectId} changes={blocks} />
+                </div>
+              )}
+            </section>
           )}
           <footer className="home-answer-bar">
             {hasRecord ? (
@@ -643,9 +675,12 @@ export const SectionCard = memo(function SectionCard({
               {t.notMaintainedNote(section.owner.name, gone, t.kindInSentence[section.kind])}
             </p>
           )}
-          <div className="home-section-body">
-            <SectionBody section={section} projectId={projectId} changes={blocks} />
-          </div>
+          {/* Beside the reply's controls, unless its record shows it already. */}
+          {!(showRecord && hasBody) && (
+            <div className="home-section-body">
+              <SectionBody section={section} projectId={projectId} changes={blocks} />
+            </div>
+          )}
           {!resolved && <div className="home-ask">
             <AskReply
               key={section.key}

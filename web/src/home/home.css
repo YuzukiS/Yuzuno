@@ -2060,20 +2060,27 @@ fieldset.home-ask-options {
 .home-answer-tools > .home-reply-action:first-child {
   margin-left: -0.5rem;
 }
-/* What its owner says now, after the reply: apart from the record. */
-.home-answer-update {
+/* The Ask's own explanation, after the answer and apart from it, under a dashed rule; changed by its owner since the
+   reply, it says so and when. */
+.home-answer-body {
   margin-top: 12px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--home-soft);
-  font-size: calc(10.5px + var(--font-adjust, 3px));
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
   overflow-wrap: anywhere;
 }
-.home-answer-update > * {
-  margin: 0;
-}
-.home-answer-update-head {
+.home-answer-body-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  margin: 0 0 6px;
   color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-answer-body-head strong {
+  color: var(--ink);
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  font-weight: 600;
 }
 /* The one toggle, and Reply again at the row's end. */
 .home-answer-bar {

@@ -291,6 +291,9 @@ export const homeText = strings({
   moreNotes: (n: number) => (n === 1 ? "1 more note" : `${n} more notes`),
   listJoin: ", ",
   fieldJoin: "; ",
+  // The Ask's own explanation, after the answer in its record: as answered, or as its owner changed it since.
+  bodyThisVersion: "This version of the Ask",
+  bodyAfterReply: "The Ask since your reply",
   replyOptions: "Reply options",
   chooseOne: "Choose one",
   choose: (side: string) => `Choose ${side}`,
@@ -710,6 +713,8 @@ export const homeText = strings({
   moreNotes: (n) => `另有 ${n} 条补充`,
   listJoin: "、",
   fieldJoin: "；",
+  bodyThisVersion: "这版 Ask 的说明",
+  bodyAfterReply: "回复后的说明",
   replyOptions: "回复选项",
   chooseOne: "选择一项",
   choose: (side) => `选择 ${side}`,

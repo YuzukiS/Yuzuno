@@ -263,10 +263,17 @@ test("unfolded: open Asks first, then the task's one card, the answered Asks, jo
   assert.equal(answered.querySelector(".home-kind").textContent.trim(), "Resolved by Dev Lead");
   assert.notEqual(answered.querySelector(".home-changed")?.textContent, "New", "answered and resolved: never New");
   assert.equal(answered.querySelector(".home-answer-ask").textContent, "Casual copy?");
-  assert.equal(answered.querySelector(".home-reply-words").textContent.trim(), "Yes");
   assert.ok(answered.querySelector(".home-answer-unkept"), "an earlier reply, said so");
-  assert.deepEqual([...answered.querySelectorAll(".home-answer-bar button")].map((b) => b.textContent.trim()), ["Copy answer"],
-    "resolved: nothing more is sent from it; its words whole on its line, no record to open");
+  // YN-230: opened from its line, its record is what was asked for: the reply as sent, then the Ask's explanation.
+  assert.equal(answered.querySelector(".home-answer-toggle").getAttribute("aria-expanded"), "true");
+  assert.equal(answered.querySelector(".home-answer-record .home-reply-words").textContent.trim(), "Yes");
+  assert.equal(answered.querySelector(".home-answer-body .home-answer-body-head").textContent, "This version of the Ask");
+  assert.ok(answered.querySelector(".home-answer-body .home-section-body"), "read here, with nothing to reply");
+  assert.deepEqual([...answered.querySelectorAll(".home-answer-bar button")].map((b) => b.textContent.trim()), ["Hide record"],
+    "resolved: nothing more is sent from it");
+  answered.querySelector(".home-answer-toggle").click();
+  await tick(40);
+  assert.equal(answered.querySelector(".home-answer-line .home-reply-words").textContent.trim(), "Yes", "closed: its one line");
   assert.equal(answered.querySelector(".home-ask"), null, "no reply controls under it");
   line.click();
   await tick(40);
@@ -531,6 +538,9 @@ test("the Project's cards: an answered Ask as R-41 settled it, a form's answers 
   assert.equal(record.querySelector(".home-answer-others"), null, "the form offers none to show as not chosen");
   assert.equal(record.querySelector(".home-answer-tools button").textContent.trim(), "复制回答");
   assert.equal(card.querySelector(".home-answer-line"), null);
+  // Read only: the Ask's explanation is read here, after the answer.
+  assert.equal(card.querySelector(".home-answer-body .home-answer-body-head").textContent, "这版 Ask 的说明");
+  assert.ok(card.querySelector(".home-answer-body .home-section-body"));
   toggle.click();
   await tick(40);
   assert.equal(card.querySelector(".home-answer-record"), null, "closed again");

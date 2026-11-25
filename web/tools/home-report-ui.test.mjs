@@ -615,6 +615,32 @@ test("a reply's Open on Home while a report is open lands on its card once the r
   assert.deepEqual(page.errors, []);
 });
 
+// YN-230 (the lead's 12496): Home opened as usual shows an answered Ask closed; a reply's Open on Home, a way to that
+// very answer, lands on its card with its answer record open (the answer as given, the options not chosen, then the
+// Ask's explanation), the card focused.
+test("a reply's Open on Home opens its answered Ask's record, the card focused; Home opened as usual shows it closed (YN-230)", async (t) => {
+  const options = [{ id: "fifty", label: "50" }, { id: "hundred", label: "100" }];
+  const answered = section("paging", 10, 2, { kind: "ask", title: "Rows per page?", updatedAt: "2026-11-02T10:00:00Z",
+    body: { root: "b", elements: { b: { type: "BriefBody", props: {}, children: ["t"] }, t: { type: "Markdown", props: { text: "Fifty keeps one screen." } } } },
+    ask: { question: "How many rows per page?", reply: { options, freeText: true }, state: "replied", repliedAt: "2026-11-02T10:10:00Z", replyText: "50",
+      replySnapshot: { format: 1, projectName: "atlas-notes", sectionKind: "ask", title: "Rows per page?", question: "How many rows per page?",
+        options, choice: options[0], text: null, form: null } } });
+  const page = await openHome(() => homeData([answered]));
+  t.after(page.close);
+  const toggle = () => page.card("paging")?.querySelector(".home-answer-toggle");
+  await until(toggle, "its answer card");
+  assert.equal(toggle().getAttribute("aria-expanded"), "false", "Home opened as usual: closed");
+  assert.equal(page.card("paging").querySelector(".home-answer-record"), null);
+  const origin = { workspaceId: "ws-1", projectId: "p1", key: "paging", version: 2, sectionId: 10 };
+  page.window.renderHome(null, 0, "ws-1", 1, { origin, back, n: 1 });
+  await until(() => page.card("paging")?.hasAttribute("data-home-highlight"), "the arrival lands on its card");
+  assert.equal(toggle().getAttribute("aria-expanded"), "true", "what the user went to: its record");
+  assert.deepEqual([...page.card("paging").querySelectorAll(".home-answer-others li")].map((li) => li.textContent), ["–100"]);
+  assert.match(page.card("paging").querySelector(".home-answer-body").textContent, /Fifty keeps one screen\./);
+  assert.equal(page.document.activeElement, page.card("paging"), "the card has focus");
+  assert.deepEqual(page.errors, []);
+});
+
 // YN-7 item 8: a card's conditions box is named by its Checklist's own title, and its open items come first, each
 // group in the author's order, so a fold hides what is done first. (The fold and its count need layout: the browser
 // check home-desk-cards-check.mjs.) The report page keeps the author's order under "Conditions".

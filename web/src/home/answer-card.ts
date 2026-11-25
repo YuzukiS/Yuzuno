@@ -82,44 +82,29 @@ export function answerLine(snapshot: HomeReplySnapshot, join: { list: string; fi
   return { text: snapshot.text ?? "", words: true, notes: 0 };
 }
 
-/** A form as an Ask's reply offers it, as far as its options go. */
-type FormNow = { id: string; fields: { id: string; type: string; label: string; options: { label: string }[] }[] };
-function formNow(form: unknown): FormNow | null {
-  if (!form || typeof form !== "object") return null;
-  const { id, fields } = form as { id?: unknown; fields?: unknown };
-  if (typeof id !== "string" || !Array.isArray(fields)) return null;
-  return {
-    id,
-    fields: fields.flatMap((field) => {
-      const { id, type, label, options } = (field ?? {}) as { id?: unknown; type?: unknown; label?: unknown; options?: unknown };
-      if (typeof id !== "string" || typeof type !== "string" || typeof label !== "string") return [];
-      const labels = Array.isArray(options)
-        ? options.flatMap((option) => (typeof option?.label === "string" ? [{ label: option.label as string }] : []))
-        : [];
-      return [{ id, type, label, options: labels }];
-    }),
-  };
-}
-
 /**
- * The options the user saw and did not choose (YN-230), for the record: the Ask's own options from the snapshot; and
- * a form's choice fields' other options, which the snapshot does not keep, read from the Ask's form only while it
- * is provably the one answered (`sameVersion`: its owner has not changed the Ask since the reply; the same form and
- * field), so nothing its owner wrote later is shown as what the user saw. `field`: the field they belong to.
+ * The options the user saw and did not choose (YN-230), for the record, only as the reply was kept: the Ask's own
+ * options, and each of a form's choice fields' options, from the snapshot Core kept with the reply (Core reads a
+ * field's options into an earlier snapshot only from the very version answered, home.rs `with_options`). Never from
+ * the Ask as it is now, whose form may have the same id and other options. `field`: the field they belong to.
  */
-export function otherOptions(snapshot: HomeReplySnapshot, form: unknown, sameVersion: boolean): { field: string | null; labels: string[] }[] {
+export function otherOptions(snapshot: HomeReplySnapshot): { field: string | null; labels: string[] }[] {
   const groups: { field: string | null; labels: string[] }[] = [];
   const own = (snapshot.options ?? []).filter((option) => option.id !== snapshot.choice?.id).map((option) => option.label);
   if (own.length) groups.push({ field: null, labels: own });
-  const now = sameVersion && snapshot.form ? formNow(form) : null;
-  if (!snapshot.form || !now || now.id !== snapshot.form.id) return groups;
-  for (const field of snapshot.form.fields) {
-    if (field.type === "text") continue;
-    const offered = now.fields.find((f) => f.id === field.id && f.type === field.type && f.label === field.label);
-    if (!offered) continue;
+  for (const field of snapshot.form?.fields ?? []) {
+    if (field.type === "text" || !Array.isArray(field.options)) continue;
     const chosen = [field.answer].flat();
-    const labels = offered.options.map((option) => option.label).filter((label) => !chosen.includes(label));
+    const labels = field.options.filter((label) => typeof label === "string" && !chosen.includes(label));
     if (labels.length) groups.push({ field: field.label, labels });
   }
   return groups;
+}
+
+/** Whether a section's body has anything to show: its root names at least one block. */
+export function bodyShown(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const { root, elements } = body as { root?: unknown; elements?: Record<string, { children?: unknown }> };
+  const children = typeof root === "string" ? elements?.[root]?.children : undefined;
+  return Array.isArray(children) && children.length > 0;
 }

@@ -532,7 +532,7 @@ async function check(run) {
     assert.equal(answers.draft.reply, "Yes, once main CI is green.");
     assert.equal(answers.draft.update, null, "its owner's update is in its record");
     assert.ok(answers.draft.toggle, "so its record has a toggle");
-    assert.equal(answers.tokenizer.toggle, null, "a reply whole on its line, nothing else: no toggle");
+    assert.ok(answers.tokenizer.toggle, "its reply whole on its line; the Ask's explanation in its record (YN-230)");
     const draft = card("draft");
     await draft.locator(":scope > .home-answer .home-answer-toggle").click();
     await draft.locator(":scope > .home-answer .home-answer-update").waitFor({ timeout: 10_000 });

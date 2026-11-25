@@ -5,8 +5,10 @@
 //    other words counted; words alone at most two lines; an earlier reply (no snapshot) said so, nothing read back
 //    from its text as chosen;
 //  - one toggle, only where its record holds more than that line, opens the record: the answer field by field as
-//    given (a field left empty said so), the user's words whole, the options not chosen, Copy answer; its owner's
-//    update after the reply apart, after it; a one-line reply has no toggle, Copy answer and Reply again instead;
+//    given (a field left empty said so), the user's words whole, the options not chosen as the reply kept them, Copy
+//    answer; then, apart, the Ask's explanation as answered, or as its owner changed it since, said so; a one-line
+//    reply to an Ask with nothing to explain has no toggle, Copy answer and Reply again instead;
+//  - opened from its request's line (a way to that answer), its record is open; the request seen as usual, closed;
 //  - R-40's form (yn-229/ask, the design's own sample) on the real page, closed and open, measured beside the design;
 //  - a long question and a long unbroken word are never cut, and nothing is wider than the window, at desktop
 //    (1440), 390 and 320 px, in Chinese and English;
@@ -138,10 +140,11 @@ function fixture() {
       updatedAt: at(16),
       ask: { question: r40Question, state: "replied", repliedAt: at(6), replyText: "Answers to “Windows 客户端实测（第 2 轮）”: …", reply: { form: r40Form },
         replySnapshot: kept(r40Title, r40Question, [], { form: { id: "sample2", title: r40Form.title, fields: [
-          { id: "how", type: "single", label: "补样本的方式", answer: r40Options[1] },
+          { id: "how", type: "single", label: "补样本的方式", answer: r40Options[1], options: r40Options },
           { id: "doing", type: "text", label: "开着 Yuzuno 时你一般在做什么？（可选）", answer: "" }] } }) },
     }),
-    section("simple", "ask", "简答示例", spec(["a"], { a: md("确认版本。") }), {
+    // Nothing to explain beside its question: its body is empty.
+    section("simple", "ask", "简答示例", spec([], {}), {
       updatedAt: at(4),
       ask: { question: "你用的是哪个桌面版本？", state: "replied", repliedAt: at(2), replyText: simpleWords, reply: { freeText: true },
         replySnapshot: kept("简答示例", "你用的是哪个桌面版本？", [], { text: simpleWords }) },
@@ -228,10 +231,12 @@ async function check(run) {
   const words = zh
     ? { then: "当时的问题", now: "问题", label: "你的回复", wait: "等 Dev Lead 跟进", updated: "Dev Lead 已更新", show: "查看回答记录", hide: "收起记录",
       record: "回答记录", choice: "你的选择", note: "你的补充", skipped: "已跳过", others: "当时的其他选项", oneNote: "另有 1 条补充",
+      thisVersion: "这版 Ask 的说明", sinceReply: "回复后的说明",
       again: "补充回复", copy: "复制回答", copied: "已复制" }
     : { then: "The question as you answered it", now: "Question", label: "Your reply", wait: "Waiting for Dev Lead", updated: "Dev Lead updated it",
       show: "Show answer record", hide: "Hide record", record: "Answer record", choice: "Your choice", note: "Your note", skipped: "Skipped",
-      others: "The other options then", oneNote: "1 more note", again: "Reply again", copy: "Copy answer", copied: "Copied" };
+      others: "The other options then", oneNote: "1 more note", thisVersion: "This version of the Ask", sinceReply: "The Ask since your reply",
+      again: "Reply again", copy: "Copy answer", copied: "Copied" };
   state = fixture();
   const result = { run: run.name, checks: [], shots: [] };
   report.runs.push(result);
@@ -360,6 +365,11 @@ async function check(run) {
         showAll: record.querySelectorAll(".home-reply-action.more").length,
       },
       update: one(".home-answer-update")?.textContent ?? null,
+      body: one(".home-answer-body") && {
+        head: one(".home-answer-body-head strong")?.textContent ?? null,
+        text: one(".home-answer-body .home-section-body")?.textContent.trim() ?? null,
+        afterRecord: !!one(".home-answer-body")?.previousElementSibling?.querySelector(".home-answer-record"),
+      },
       order: [top(".home-answer-ask"), top(".home-answer-label"), top(".home-answer-value")],
       actions: [...(answer?.querySelectorAll(".home-answer-bar > button") ?? [])].map((b) => b.textContent.trim()),
     };
@@ -422,15 +432,20 @@ async function check(run) {
       await page.waitForFunction(() => document.querySelector('[data-request-block="29"] .request-task-answered-card .home-section[data-section-key="yn-220/ask"]'), null, { timeout: 10_000 });
       assert.equal(await line.getAttribute("aria-expanded"), "true");
       assert.equal(await page.locator('.home-section[data-section-key="yn-220/ask"]').count(), 1, `${tag}: drawn once`);
-      const again = await read("yn-220/ask");
-      assert.deepEqual({ ...again, order: null }, { ...now, order: null }, `${tag}: the same card as when it was answered`);
+      // What the line leads to is that answer: its record open, then the Ask's explanation as answered.
+      await settled();
+      const opened = await read("yn-220/ask");
+      assert.deepEqual(opened.record?.fields, [[words.choice, "还要改，我来指出位置"], [words.note, r29Words]], `${tag}: its record open`);
+      assert.deepEqual(opened.body, { head: words.thisVersion, text: "五种排法见附图；选择只定设计。", afterRecord: true });
       await nothingCut();
       await shot(tag, block().locator(".request-task-answered-card"));
+      const again = await setRecord("yn-220/ask", false);
+      assert.deepEqual({ ...again, order: null }, { ...now, order: null }, `${tag}: closed, the same card as when it was answered`);
       return again;
     };
     await page.reload();
     const reloaded = await secondEntry("request-second-entry");
-    pass("reloaded, the request's line opens in place to the same card: the question whole, the option and the words, drawn once", { reloaded });
+    pass("reloaded, the request's line opens in place to the same card, its record open: the option and the words, then the Ask's explanation; drawn once", { reloaded });
     // Leaving for the whole of Home and coming back: the same.
     await page.goto(`http://${HOST}/#/home?w=ws-next`);
     await page.locator('[data-glance-project="p-next"]').waitFor({ timeout: 15_000 });
@@ -449,19 +464,23 @@ async function check(run) {
     const readingText = (await reading.innerText()).trim();
     await shot("history-request-reading", block().locator('[data-answered="yn-220/first"]'));
     await page.waitForFunction(() => document.querySelector('[data-answered="yn-220/first"] .home-section[data-section-key="yn-220/first"]'), null, { timeout: 10_000 });
+    await settled();
     const first = await read("yn-220/first");
     assert.equal(first.ask, "第一轮先看哪种排法？");
     assert.equal(first.hint, "三种都在附图里。");
-    assert.equal(first.line, "会话同款");
-    assert.equal(first.notes, words.oneNote);
     assert.equal(first.kind, zh ? "已由 Dev Lead 解决" : "Resolved by Dev Lead");
     assert.notEqual(await card("yn-220/first").evaluate((el) => el.querySelector(".home-changed")?.textContent ?? null), zh ? "新" : "New",
       "answered and resolved: never New");
-    assert.deepEqual(first.actions, [words.show], "resolved: nothing more is sent from it");
-    const firstRecord = (await setRecord("yn-220/first", true)).record;
-    assert.deepEqual(firstRecord.fields, [[words.choice, "会话同款"], [words.note, "再加上问题本身"]]);
-    const firstOptions = firstRecord.others;
+    // Opened from its line: its record, then the Ask's explanation, read here though nothing more is sent from it.
+    assert.deepEqual(first.actions, [words.hide], "resolved: nothing more is sent from it");
+    assert.deepEqual(first.record.fields, [[words.choice, "会话同款"], [words.note, "再加上问题本身"]]);
+    const firstOptions = first.record.others;
     assert.deepEqual(firstOptions, state.firstOptions.filter((option) => option.id !== "a").map((option) => option.label), "the options not chosen");
+    assert.deepEqual(first.body, { head: words.thisVersion, text: "第一轮的三种排法。", afterRecord: true });
+    const firstClosed = await setRecord("yn-220/first", false);
+    assert.equal(firstClosed.line, "会话同款");
+    assert.equal(firstClosed.notes, words.oneNote);
+    await setRecord("yn-220/first", true);
     assert.ok(report.entryReads.some((read) => read.run === run.name && read.wanted.some(([id]) => id === state.first.id)), "its entry read whole");
     await nothingCut();
     await shot("history-request", block().locator('[data-answered="yn-220/first"]'));
@@ -521,6 +540,7 @@ async function check(run) {
     assert.deepEqual(updatedOpen.record.fields, [[words.choice, "可以"]]);
     assert.deepEqual(updatedOpen.record.others, ["下周再说"], "the Ask's own options are the snapshot's, whatever changed since");
     assert.match(updatedOpen.update, /已排进周五的发布/);
+    assert.equal(updatedOpen.body.head, words.sinceReply, "changed by its owner since the reply: said so");
     await setRecord("updated", false);
     const long = await read("long");
     assert.equal(long.ask, longQuestion, "the long question whole, word for word");
@@ -551,6 +571,8 @@ async function check(run) {
     assert.deepEqual(r40Open.record.fields, [["补样本的方式", r40Options[1]], ["开着 Yuzuno 时你一般在做什么？（可选）", words.skipped]]);
     assert.deepEqual(r40Open.record.others, [r40Options[0], r40Options[2], r40Options[3]], "the field's other options, as the form answered offered them");
     assert.deepEqual(r40Open.actions, [words.hide, words.again]);
+    assert.deepEqual(r40Open.body, { head: words.thisVersion, text: "为什么又问：Core 拒绝了 Windows Job。", afterRecord: true },
+      "then the Ask's explanation, as answered");
     const openBox = await box(r40);
     await nothingCut();
     await shot("r40-record", card(r40));
