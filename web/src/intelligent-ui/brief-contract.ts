@@ -358,9 +358,17 @@ export const briefComponentProps = {
     // the user via Lead 2457). Optional in schema 1, so a summary kept from
     // before still takes every edit; one without it is advised (brief-advice.ts).
     // forYou (R-27): the Checklist of what the user is asked to do, which the
-    // project's page lists beside the card it leads with.
+    // project's page lists beside the card it leads with. progress (R-38): the
+    // Plan of what the card's task delivers, step by step, for its request.
     summary: z
-      .strictObject({ lead: id, visual: id.optional(), conditions: id.optional(), forYou: id.optional(), size: z.enum(CARD_SIZES).optional() })
+      .strictObject({
+        lead: id,
+        visual: id.optional(),
+        conditions: id.optional(),
+        forYou: id.optional(),
+        progress: id.optional(),
+        size: z.enum(CARD_SIZES).optional(),
+      })
       .optional(),
     details: z.array(id).min(1).max(L.bodyChildren).optional(),
   }),
@@ -378,7 +386,16 @@ export const briefComponentProps = {
   Plan: z.strictObject({
     title: short.optional(),
     steps: z
-      .array(z.strictObject({ id, text: line, state: z.enum(["todo", "doing", "done", "blocked"]) }))
+      .array(
+        z.strictObject({
+          id,
+          text: line,
+          state: z.enum(["todo", "doing", "done", "blocked"]),
+          // R-38: the pull requests that deliver this step, by number, so its
+          // request can tell merged from installed for it alone.
+          prs: z.array(z.number().int().min(1)).min(1).max(L.listItems).optional(),
+        }),
+      )
       .min(1)
       .max(L.listItems),
   }),
@@ -604,7 +621,7 @@ export const BRIEF_COMPONENT_DESCRIPTIONS = {
   Markdown: "GitHub-flavoured Markdown: paragraphs, lists, links, tables and fenced code or log excerpts. HTML written in it is sanitized: scripts, event handlers, images, forms, buttons, frames and styles are removed, so write Markdown, not HTML.",
   Math: "A KaTeX formula; display:true sets it on its own line.",
   Checklist: "Items with done flags.",
-  Plan: "Ordered steps, each todo, doing, done or blocked.",
+  Plan: "Ordered steps, each todo, doing, done or blocked; a step's prs name the pull requests that deliver it.",
   Findings: "Review or analysis findings, each with its source (file, tool or reviewer) and severity.",
   Metrics: "Key numbers with optional unit; give previous (the value in your last version) to show the change when both are numbers.",
   Table: "A searchable sortable table; every row has a cell for every column key.",
@@ -751,7 +768,7 @@ export const BRIEF_PROBLEM_CODES = {
   missing_component: "A child names a missing element.",
   extra_root: "More than one BriefBody.",
   unused_component: "An element not reachable from the root.",
-  summary: "A BriefBody summary whose lead, visual, conditions or forYou is not one of the root's own children of the right type, or names a block twice.",
+  summary: "A BriefBody summary whose lead, visual, conditions, forYou or progress is not one of the root's own children of the right type, or names a block twice.",
   details: "A BriefBody details entry that is not a titled Group among the root's own children, is named twice or is part of the summary.",
   columns_widths: "Columns widths that do not match its children.",
   duplicate_id: "Two items, rows, columns, series or components share an id.",
@@ -1584,7 +1601,7 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
   };
   const at = `body.elements.${spec.root}.props`;
   const named = rootProps.summary;
-  const slots = named ? (["lead", "visual", "conditions", "forYou"] as const).flatMap((slot) => (named[slot] === undefined ? [] : [[slot, named[slot]] as const])) : [];
+  const slots = named ? (["lead", "visual", "conditions", "forYou", "progress"] as const).flatMap((slot) => (named[slot] === undefined ? [] : [[slot, named[slot]] as const])) : [];
   const SLOT_RULE = {
     lead: ["a Markdown", (key: string) => typeOf(key) === "Markdown"],
     visual: ["a chart, Metrics, Calc, Diagram, Figure, Steps, Timeline, Table, ResearchDesk, Collection, Attachments with one image file, or a Group of inputs", (key: string) => {
@@ -1599,6 +1616,7 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
     }],
     conditions: ["a Markdown or Checklist", (key: string) => typeOf(key) === "Markdown" || typeOf(key) === "Checklist"],
     forYou: ["a Checklist", (key: string) => typeOf(key) === "Checklist"],
+    progress: ["a Plan", (key: string) => typeOf(key) === "Plan"],
   } as const;
   slots.forEach(([slot, key], index) => {
     const path = `${at}.summary.${slot}`;
@@ -1610,7 +1628,7 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
     else if (slots.findIndex(([, other]) => other === key) < index)
       add(problem("summary", path, `summary.${slot} "${key}" is already named in summary; each block is shown once.`, "content"));
     else if (!fits(key) && typeOf(key) === "Tabs")
-      add(problem("summary", path, `summary.${slot} "${key}" is a Tabs, which a card's summary never shows; name ${slot === "visual" ? "one figure" : `a ${slot === "lead" ? "Markdown" : slot === "forYou" ? "Checklist" : "Markdown or Checklist"}`} directly under the root${slot === "visual" ? ", or leave visual out" : ""}.`, "content"));
+      add(problem("summary", path, `summary.${slot} "${key}" is a Tabs, which a card's summary never shows; name ${slot === "visual" ? "one figure" : `a ${{ lead: "Markdown", conditions: "Markdown or Checklist", forYou: "Checklist", progress: "Plan" }[slot]}`} directly under the root${slot === "visual" ? ", or leave visual out" : ""}.`, "content"));
     else if (!fits(key) && slot === "visual" && typeOf(key) === "Group")
       add(problem("summary", path, `summary.visual "${key}" is a Group, which is a figure only as a Group of inputs: 1-${CARD_PARTS} blocks of its own, each ${[...CARD_PART_TYPES].join(", ")}, at least one an input.`, "interactive"));
     else if (!fits(key))
@@ -1948,8 +1966,8 @@ const componentLine = (type: BriefComponent) => {
 export const BRIEF_DESCRIBED_COMPONENTS = [
   "Markdown", "Group", "Columns", "Plan", "Checklist", "Findings", "Metrics", "LiveRefs", "Table", "Attachments",
 ] as const satisfies readonly BriefComponent[];
-/** Props the description's line leaves to brief_guide: rarely needed in a card. */
-const QUIET_PROPS = new Set(["sourceIds", "selectable"]);
+/** Props the description's line leaves to brief_guide: rarely needed in a card (a Plan step's prs, R-38, among them). */
+const QUIET_PROPS = new Set(["sourceIds", "selectable", "prs"]);
 
 /** Props as the description shows them: `{a, b?, c: x|y, d[{…}]}`, two levels, no counts. */
 function compactProps(schema: Json, depth: number): string {
@@ -2482,7 +2500,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Collection: items of one kind (news, papers, projects, pictures), 2-${L.collectionItems}, each with a title and, as it has them, an image, text (one line), meta (its source or time, e.g. "News · 07:40"), an https href its title opens in a new window, and up to ${L.collectionTags} tags. image names an image attachment of this section (see attachments), which the Collection shows, so it needs no Attachments block; alt says what it shows. A section has at most ${L.attachments} attachments, so at most ${L.attachments} pictures; an item without one shows its text alone. layout: carousel is one page per item side by side, a picture over its text, for a few the reader looks at one by one; grid is tiles to browse and compare; list is rows for many results. Nothing turns pages by itself. As the summary's visual, a wide or large card shows a carousel whole, a grid's first row (two rows on a large card) and a list's first ${COLLECTION_CARD_ROWS.wide} rows (${COLLECTION_CARD_ROWS.large} on a large card), and a small card its first item, each with how many there are. The report page shows every item; a grid or list whose items have tags shows up to ${L.collectionFilters} of them to filter by, and a list a search of titles, text and meta.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example, and a Tabs of titled Groups for parts of one kind the reader picks between (news, papers, policy), as in the tabs example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
-    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?, forYou?, size}: lead, visual, conditions and forYou are ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Calc, Diagram, Figure, Steps, Timeline, Table, ResearchDesk, Collection, Attachments with one image file, or a Group of inputs the reader sets on the card, see interactive); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows; forYou a Checklist of what the user is asked to do: when the card is the one the project's page leads with (a lead's newest status, else report, bound to no task), that page lists its open items beside it. Leave forYou out for an Agent's own list. size is the room the card takes among Home's cards: small (one column: the lead and conditions, Metrics of one or two values as big numbers, a Collection's first item; any other figure is left to the page), wide (two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk; a Collection under it) or large (two columns, two rows: an image, a scatter chart, an HTML page). Name it with every summary, for what the summary shows, not for how much you wrote. A summary without one is still accepted (advice summary_size_missing), and Home guesses its card's size from its figure. A card with no visual shows instead the first kept image or single HTML page (.html or .htm) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there. A report whose body holds only its lead (one paragraph), the card's picture and files, and its conditions is the whole report: its card has no Open report. The user may give a card they pinned to their widgets another size there; your card keeps yours. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title. Nothing else folds, but a report's or status's Markdown block over ${L.advice.markdownChars} characters: Home shows its headings and first paragraph, and the rest behind Show all, so its first paragraph should say the point. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
+    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?, forYou?, progress?, size}: lead, visual, conditions, forYou and progress are ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Calc, Diagram, Figure, Steps, Timeline, Table, ResearchDesk, Collection, Attachments with one image file, or a Group of inputs the reader sets on the card, see interactive); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows; forYou a Checklist of what the user is asked to do: when the card is the one the project's page leads with (a lead's newest status, else report, bound to no task), that page lists its open items beside it. Leave forYou out for an Agent's own list. progress a Plan of what the card's task delivers, one step per outcome (one per question for an investigation), each done, doing, todo or blocked, and a step's prs the numbers of the pull requests that deliver it; the page shows it in your order. size is the room the card takes among Home's cards: small (one column: the lead and conditions, Metrics of one or two values as big numbers, a Collection's first item; any other figure is left to the page), wide (two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk; a Collection under it) or large (two columns, two rows: an image, a scatter chart, an HTML page). Name it with every summary, for what the summary shows, not for how much you wrote. A summary without one is still accepted (advice summary_size_missing), and Home guesses its card's size from its figure. A card with no visual shows instead the first kept image or single HTML page (.html or .htm) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there. A report whose body holds only its lead (one paragraph), the card's picture and files, and its conditions is the whole report: its card has no Open report. The user may give a card they pinned to their widgets another size there; your card keeps yours. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title. Nothing else folds, but a report's or status's Markdown block over ${L.advice.markdownChars} characters: Home shows its headings and first paragraph, and the rest behind Show all, so its first paragraph should say the point. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
     `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
     ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `Card faces: an accepted brief_update, and a validateOnly check that passes, tell in cards how each report or status card it writes shows on Home, read by Home's own rules from the section as Core keeps it: at most ${L.cards} (moreCards counts the rest), and cardsUnavailable says why any are missing, which changes nothing else in the answer. Asks have none. Exact: summary (named, or unnamed: how the body opens), lead {block, text, chars, otherParagraphs}, visual {from: named, file (the first kept image or page the body shows, when no visual is named or the named one is not a picture), opening or none; block, type, file, drawn: what the card's size draws, e.g. a table's rows and columns}, dropped (a summary slot you named that the card does not use, and why), conditions, files, opensReport and notOnCard (the blocks left to the page). wide and phone are references, not the reader's device: Home's project page at the default text size, a 1440 px window and a 390 px touch phone, the card at its own span; their estimate (the lead's lines and where it is cut, what of a table or Metrics fits fully or partly in the frame, heightPx) comes from font metrics and Home's CSS, not a browser. Read them to check that the first look carries your conclusion, and that no limit a number depends on falls past the cut.`,

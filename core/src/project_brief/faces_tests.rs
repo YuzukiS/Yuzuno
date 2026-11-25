@@ -181,6 +181,56 @@ async fn the_summarys_for_you_checklist_is_told_as_requested() {
     assert_eq!(written["cards"][0]["asked"]["requested"], json!({"lead":"lead","forYou":"todo"}));
 }
 
+/// A report `export` whose summary names `block` as its progress (R-38).
+fn with_progress(block: Value) -> Value {
+    let mut change = report("export", "Export settings", None, &[]);
+    let body = &mut change["body"]["elements"];
+    body["plan"] = block;
+    body["body"]["children"] = json!(["lead", "plan"]);
+    body["body"]["props"]["summary"]["progress"] = json!("plan");
+    change
+}
+
+#[tokio::test]
+async fn the_summarys_progress_plan_is_told_as_requested() {
+    // R-38: summary.progress names the Plan of what the card's task delivers; the face's request names it too.
+    let (_dir, ws, _project) = lab();
+    let plan = json!({"type":"Plan","props":{"steps":[{"id":"model","text":"Request model","state":"done","prs":[1121]}]}});
+    let written = update::update(&ws, &FAKE, "a", input("p", 0, vec![with_progress(plan)])).await.unwrap().unwrap();
+    assert_eq!(written["cards"][0]["asked"]["requested"], json!({"lead":"lead","progress":"plan"}));
+}
+
+/// R-38, with the generated validator as Core runs it: a progress Plan is kept with each step's PRs; one that is no
+/// Plan is dropped as any summary slot that did not fit, the block staying where its author put it; a PR is a number
+/// from 1, anything else refused where it stands.
+#[tokio::test]
+async fn the_generated_validator_keeps_a_progress_plan_and_its_prs() {
+    let (_dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    let body = || sections::live_key(&ws.store.db.read().unwrap(), &project, "export").unwrap().unwrap().data["body"].clone();
+    let plan = json!({"type":"Plan","props":{"steps":[
+        {"id":"model","text":"Request model — states and next step","state":"done","prs":[1121, 1122]},
+        {"id":"view","text":"Progress bar","state":"doing"}]}});
+    let written = update::update(&ws, &checker, "a", input("p1", 0, vec![with_progress(plan)])).await.unwrap().unwrap();
+    assert!(written["repairs"].as_array().is_none_or(Vec::is_empty), "{written}");
+    let kept = body();
+    assert_eq!(kept["elements"]["body"]["props"]["summary"]["progress"], "plan");
+    assert_eq!(kept["elements"]["plan"]["props"]["steps"][0]["prs"], json!([1121, 1122]));
+    let checklist = json!({"type":"Checklist","props":{"items":[{"id":"model","text":"Request model","done":true}]}});
+    let repaired = update::update(&ws, &checker, "a", input("p2", 1, vec![with_progress(checklist)])).await.unwrap().unwrap();
+    assert!(repaired["repairs"].as_array().unwrap().iter().any(|repair| repair["code"] == "dropped_layout"
+        && repair["path"] == "changes[0].body.elements.body.props.summary"
+        && repair["reason"].as_str().is_some_and(|why| why.contains("removed progress"))), "{repaired}");
+    let kept = body();
+    assert!(kept["elements"]["body"]["props"]["summary"].get("progress").is_none(), "{kept}");
+    assert_eq!(kept["elements"]["body"]["children"], json!(["lead", "plan"]));
+    let zero = json!({"type":"Plan","props":{"steps":[{"id":"model","text":"Request model","state":"done","prs":[0]}]}});
+    let refused = update::update(&ws, &checker, "a", input("p3", 2, vec![with_progress(zero)])).await.unwrap().unwrap_err();
+    assert_eq!((refused["problems"][0]["code"].clone(), refused["problems"][0]["path"].clone()),
+        (json!("invalid_field"), json!("changes[0].body.elements.plan.props.steps.0.prs.0")), "{refused}");
+    assert_eq!(sections::brief_version(&ws.store.db.read().unwrap(), &project).unwrap(), 2);
+}
+
 /// `agent` starts Turn `turn` from the user's own message (a refresh is made only in one, YN-113).
 fn user_turn(ws: &Workspace, agent: &str, turn: &str) {
     let input = MessageInput { client_message_id: format!("{agent}-{turn}"), text: "Synthetic request.".into(), text_blocks: None,
