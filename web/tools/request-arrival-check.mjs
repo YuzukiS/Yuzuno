@@ -356,14 +356,18 @@ async function check(run) {
     });
     if (reduced) assert.equal(edge.border, edge.arrival, "a still edge in the send button's colour");
     assert.equal(edge.shadow, "none", "an edge, not a ring");
-    // A focused control in the marked block keeps its own outline.
-    await page.locator('[data-request-block="21"] .request-block-title').focus();
-    const outline = await page.evaluate(() => {
-      const title = document.activeElement;
-      return { style: getComputedStyle(title).outlineStyle, width: getComputedStyle(title).outlineWidth, color: getComputedStyle(title).outlineColor };
-    });
-    assert.notEqual(outline.style, "none", "the title's focus outline shows");
-    assert.notEqual(outline.color, edge.arrival, "another colour than the mark");
+    // A focused control in the marked block keeps its own outline: a keyboard's focus (after the keys typed), so not on
+    // a touch screen, where the last input was a tap and the browser shows no focus outline.
+    let outline = null;
+    if (!run.phone) {
+      await page.locator('[data-request-block="21"] .request-block-title').focus();
+      outline = await page.evaluate(() => {
+        const title = document.activeElement;
+        return { style: getComputedStyle(title).outlineStyle, width: getComputedStyle(title).outlineWidth, color: getComputedStyle(title).outlineColor };
+      });
+      assert.notEqual(outline.style, "none", "the title's focus outline shows");
+      assert.notEqual(outline.color, edge.arrival, "another colour than the mark");
+    }
     await page.waitForFunction(() => !document.querySelector("[data-arriving]"), null, { timeout: 4000 });
     pass("Core's answer draws R-21 at once in its place; it arrives once, its edge marked, then goes", { motion, edge, outline });
     if (!reduced && !run.phone) await framesOf(page, run);
