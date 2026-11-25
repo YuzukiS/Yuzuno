@@ -509,6 +509,24 @@ function barOf(rows: readonly TaskRow[]): { now: BlockNow & { kind: "bar" }; sou
   };
 }
 
+/** One cell of a drawn bar: a segment, or (more than `BAR_CELLS` of them) a run of adjacent ones of one state. */
+export type BarCell = { key: string; state: Segment["state"]; segments: Segment[] };
+
+/** Most cells a bar draws one per outcome (R-38 §3); past it, adjacent outcomes of one state share a cell. */
+export const BAR_CELLS = 10;
+
+/** The cells a bar draws: one per segment, or past BAR_CELLS, adjacent segments of one state (and not asking) merged. */
+export function barCells(segments: readonly Segment[], most = BAR_CELLS): BarCell[] {
+  if (segments.length <= most) return segments.map((segment) => ({ key: segment.id, state: segment.state, segments: [segment] }));
+  const cells: BarCell[] = [];
+  for (const segment of segments) {
+    const last = cells.at(-1);
+    if (last && last.state === segment.state && !segment.asking && !last.segments.some((s) => s.asking)) last.segments.push(segment);
+    else cells.push({ key: segment.id, state: segment.state, segments: [segment] });
+  }
+  return cells;
+}
+
 /** The block's status label (R-38 §2.3), from its own tasks (`own`) and those it joined. */
 function stateOf(request: ProjectRequest, own: readonly TaskRow[], joined: readonly TaskRow[]): BlockState {
   if (request.state === "done") return "done";

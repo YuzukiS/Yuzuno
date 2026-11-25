@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  askUpFront, authorOf, blockCounts, blockOfSection, forYouTodo, isPlaceholder, pageBlocks, projectCardsCount, projectLine, splitLead,
+  askUpFront, authorOf, barCells, blockCounts, blockOfSection, forYouTodo, isPlaceholder, pageBlocks, projectCardsCount, projectLine, splitLead,
 } from "../src/home/request-blocks.ts";
 import { summaryOf } from "../src/home/report/report-model.ts";
 
@@ -549,4 +549,12 @@ test("R-38 a progress written before later facts says which, at most three kinds
   const bar = block(pageBlocks([both], [a, b2]).blocks, 61).now;
   assert.deepEqual(bar.segments.map((s) => s.name), ["契约 · 契约", "视图 · 视图"]);
   assert.deepEqual([bar.label, bar.count, bar.total], ["done", 1, 2], "no step names a PR: done, not available");
+});
+
+test("R-38 a bar of more than ten outcomes draws adjacent ones of one state as one cell, never one asking", () => {
+  const seg = (i, state, asking = false) => ({ id: `t:${i}`, task: "t", name: `第 ${i} 项`, detail: null, state, prs: [], namesPrs: false, asking });
+  const few = Array.from({ length: 10 }, (_, i) => seg(i, "done"));
+  assert.equal(barCells(few).length, 10, "ten: one cell each");
+  const many = [...Array.from({ length: 6 }, (_, i) => seg(i, "done")), seg(6, "doing", true), seg(7, "doing"), ...Array.from({ length: 4 }, (_, i) => seg(8 + i, "todo"))];
+  assert.deepEqual(barCells(many).map((cell) => [cell.state, cell.segments.length]), [["done", 6], ["doing", 1], ["doing", 1], ["todo", 4]]);
 });
