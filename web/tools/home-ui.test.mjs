@@ -4097,7 +4097,8 @@ test("R-27 a Project's one card is its banner alone, with the card's Seen, Reply
     const hero = () => page.querySelector(".now-hero");
     assert.equal(hero().querySelector(".now-hero-head").textContent, "Release 2 is out.");
     assert.equal(hero().querySelector(".now-hero-text").textContent.trim(), "The docs follow this week.");
-    assert.ok(hero().compareDocumentPosition(page.querySelector(".project-view-tabs-bar")) & p.w.Node.DOCUMENT_POSITION_FOLLOWING, "above the tabs");
+    // R-36: the views are in the page's one bar, with its jumps.
+    assert.ok(hero().compareDocumentPosition(page.querySelector(".home-jumps .project-view-tabs")) & p.w.Node.DOCUMENT_POSITION_FOLLOWING, "above the bar with the views");
     // One copy: the banner is the card, by its id; no group.
     assert.equal(hero().id, "home-section-p-app-development");
     assert.equal(page.querySelector("[data-project-block]"), null);
