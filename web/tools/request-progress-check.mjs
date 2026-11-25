@@ -282,6 +282,22 @@ async function check(run) {
       for (let i = 1; i < rows.length; i++) assert.ok(rows[i].top >= rows[i - 1].bottom - 1, `R-${n}: ${JSON.stringify(rows)}`);
     }
     pass("each first look's parts stack, none over another");
+    // The user's to-do is the solid mark: its words readable on it (WCAG AA, 4.5:1).
+    const contrast = await block(40).locator(".request-state").evaluate((el) => {
+      const rgb = (value) => {
+        const probe = document.createElement("canvas").getContext("2d");
+        probe.fillStyle = value;
+        probe.fillRect(0, 0, 1, 1);
+        return [...probe.getImageData(0, 0, 1, 1).data].slice(0, 3);
+      };
+      const lum = ([r, g, b]) => [r, g, b].map((c) => c / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+        .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+      const style = getComputedStyle(el);
+      const [a, b] = [lum(rgb(style.color)), lum(rgb(style.backgroundColor))].sort((x, y) => y - x);
+      return (a + 0.05) / (b + 0.05);
+    });
+    assert.ok(contrast >= 4.5, `Your decision's words on its mark: ${contrast.toFixed(2)}:1`);
+    pass("the user's to-do mark is readable", { contrast: Number(contrast.toFixed(2)) });
     // S5: Core's line about the release; the lead's common item names YN-221, so R-31 is a related request and its
     // condition points to that card; Needs you holds R-40's Ask and R-36, so it says no "none".
     assert.deepEqual(await page.locator(".project-installed span").allTextContents(), w.installed);
