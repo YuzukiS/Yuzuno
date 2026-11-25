@@ -262,6 +262,16 @@ async function check(run) {
     assert.equal(await block(40).locator(".request-block-asks [data-section-key]").count(), 1, "its own Ask, answered in its first look");
     assert.match(await text(block(41).locator(".request-stale")), w.stale);
     pass("R-38 in progress by outcome; R-31's Ask names the Plan; an investigation, a settled one, an Ask and a stale summary each read as they are");
+    // Each part of a first look below the one before, never over it (a phone's grid once put them in one cell).
+    for (const n of [38, 31, 36, 41]) {
+      const rows = await block(n).evaluate((el) => [".request-block-head", ".request-block-fact", ".request-block-now", ".request-block-foot"]
+        .map((selector) => el.querySelector(selector)).filter(Boolean).map((part) => {
+          const box = part.getBoundingClientRect();
+          return { part: part.className, top: Math.round(box.top), bottom: Math.round(box.bottom) };
+        }));
+      for (let i = 1; i < rows.length; i++) assert.ok(rows[i].top >= rows[i - 1].bottom - 1, `R-${n}: ${JSON.stringify(rows)}`);
+    }
+    pass("each first look's parts stack, none over another");
     await shot("page", page);
     await shot("r38", r38);
 

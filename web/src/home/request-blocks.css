@@ -470,13 +470,15 @@
 
 /* A phone: the action at the end of the fold's row, a whole finger high, so the fact keeps the width. */
 @container deck (max-width: 520px) {
+  /* R-38: the first look's progress and next step take the width; the action sits at the end of its line's row. */
   .request-block {
     grid-template-areas:
       "head head"
       "asks asks"
       "fact fact"
-      "delivered delivered"
-      "more act"
+      "now now"
+      "foot act"
+      "evidence evidence"
       "body body";
   }
   .request-block-act {
