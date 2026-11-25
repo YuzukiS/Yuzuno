@@ -184,7 +184,11 @@ export function ProjectTalk({
   /** A card's "See words" (§4.5): show request `n`'s words in the conversation; another `seq` is another ask. */
   reveal?: { n: number; seq: number } | null;
   /** The requests read, for the page's blocks and cards (talk-link.ts). */
-  onRequests?: (requests: readonly ProjectRequest[]) => void;
+  /**
+   * The requests once read, and whether they were read (`known`): a read that failed gives none, which is not the
+   * same as a Project with none (R-38 §2.1).
+   */
+  onRequests?: (requests: readonly ProjectRequest[], known: boolean) => void;
   /** The release this Core runs and how many PRs merged after it, as the requests' page says (R-38 §2.6). */
   onInstalled?: (installed: InstalledFacts) => void;
   onOlder?: (older: TalkOlder) => void;
@@ -277,8 +281,8 @@ export function ProjectTalk({
   // Once read: the page waits for them to know which block holds a card it is asked to show. A read that fails
   // leaves it none to show (its error is under the field).
   useEffect(() => {
-    if (page) onRequests?.(requests);
-    else if (loadError) onRequests?.([]);
+    if (page) onRequests?.(requests, true);
+    else if (loadError) onRequests?.([], false);
   }, [page, loadError, requests, onRequests]);
   useEffect(() => {
     if (page) onInstalled?.({ release: page.installedRelease ?? null, mergedAfter: page.mergedAfterInstalled ?? null });
