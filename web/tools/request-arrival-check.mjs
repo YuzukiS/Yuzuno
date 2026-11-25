@@ -310,6 +310,9 @@ async function check(run) {
     }
     await d.send();
     await page.waitForFunction(() => document.querySelector(".home-dock .project-talk-compose").dataset.state === "sending");
+    // The press's animation starts with the next frame: waited for, or, under reduced motion, given the time to.
+    if (reduced) await sleep(250);
+    else await page.waitForFunction(() => window.__seen.css.includes("talk-send-press"), null, { timeout: 2000 }).catch(() => {});
     const pressed = (await d.seen()).css.filter((name) => name === "talk-send-press");
     assert.deepEqual(pressed, reduced ? [] : ["talk-send-press"], "Return (or a tap) presses the button");
     const sending = await page.evaluate(() => {
@@ -576,6 +579,9 @@ async function framesOf(page, run) {
   });
   const field = page.locator(".home-dock [data-composer-input]");
   await field.click();
+  // What the step before left in the draft goes first: the frames show one request's words.
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Delete");
   await page.keyboard.type(SAID[run.language][1]);
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => window.__frozen, null, { timeout: 5000 });
