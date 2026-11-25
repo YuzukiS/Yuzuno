@@ -50,7 +50,7 @@ export const progressText = strings(
     show: "Show →",
     common: "depends on a project-wide item ↗",
     installedRelease: (release: string) => `Installed ${release}`,
-    mergedAfter: (n: number) => `${n} merged on main since, install not verified`,
+    mergedAfter: (n: number) => `${n} merged ${n === 1 ? "PR" : "PRs"} linked to this project ${n === 1 ? "is" : "are"} not in this version`,
     related: "Related requests",
     stale: (time: string, facts: string[]) => `Summary written ${time}${facts.length ? `; since then ${facts.join(", ")}` : ""}: what follows may be out of date`,
     expired: "Summary past its validity",
@@ -110,7 +110,7 @@ export const progressText = strings(
     show: "查看 →",
     common: "依赖共同事项 ↗",
     installedRelease: (release) => `已装 ${release}`,
-    mergedAfter: (n) => `之后 main 又合入 ${n} 个，安装待核实`,
+    mergedAfter: (n) => `当前版本未包含本项目关联的 ${n} 个已合并 PR`,
     related: "相关请求",
     stale: (time, facts) => `摘要写于 ${time}${facts.length ? `；之后${facts.join("、")}` : ""}，下面可能已不准`,
     expired: "摘要已过有效期",
@@ -356,8 +356,9 @@ export function NowLine({ block }: { block: RequestBlock }) {
 }
 
 /**
- * Core's line about the release (R-38 §2.6): the release this Core runs, by its version, and how many PRs linked to
- * the Project's tasks merged after it, by commit, while their install is not verified; only what Core could count.
+ * Core's line about the release (R-38 §2.6): the release this Core runs, by its version, and how many merged PRs
+ * linked to the Project's tasks Core found by commit not to be in it (merged later, or on another line); said only
+ * when Core knows every one, and never as a count of what merged on main (the lead's comment 12412).
  */
 export function InstalledLine({ release, mergedAfter }: { release: InstalledRelease; mergedAfter: number | null }) {
   const t = progressText(useLanguage());
