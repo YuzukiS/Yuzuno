@@ -522,6 +522,36 @@ test("R-38 the progress card may be an Ask (R-31); without a Plan, the task's ow
   assert.equal(block(pageBlocks([r41], [plain]).blocks, 41).now, null);
 });
 
+test("R-38 §2.2 Details list the hand-offs its lead planned after the outcomes, from the card's relay Plan only", () => {
+  ids = 900;
+  const relayed = (relaySteps, minutes = 3) => {
+    const card = planCard("yn-221", "YN-221", [{ id: "a", text: "静态资源缓存与压缩", state: "done" }, { id: "b", text: "定位 Core CPU", state: "blocked" }], minutes);
+    card.body.elements.body.props.summary.relay = "next";
+    card.body.elements.body.children.push("next");
+    card.body.elements.next = { type: "Plan", props: { title: "之后", steps: relaySteps } };
+    return card;
+  };
+  // R-31: a release, then the user's install, then a re-check: the steps not done, in order; the user's step is words.
+  const card = relayed([{ id: "r", text: "版本发布", state: "doing" }, { id: "i", text: "你安装", state: "todo" },
+    { id: "c", text: "YN-221 复测", state: "todo" }, { id: "w", text: "写测量方法", state: "done" }]);
+  const r31 = request(31, 900, "doing", [withTask(routed(card, "YN-221", "doing", lead))]);
+  const b = block(pageBlocks([r31], [card]).blocks, 31);
+  assert.deepEqual(b.details.relay, [{ task: "YN-221", text: "版本发布", state: "doing" }, { task: "YN-221", text: "你安装", state: "todo" },
+    { task: "YN-221", text: "YN-221 复测", state: "todo" }]);
+  assert.equal(b.group, "doing", "a planned step of the user's is no to-do");
+  assert.deepEqual(b.next, null, "nor its next step: none of the outcomes is in progress");
+  // No relay Plan, or every step done: nothing planned to show.
+  const none = planCard("yn-221", "YN-221", [{ id: "a", text: "x", state: "doing" }], 3);
+  assert.deepEqual(block(pageBlocks([request(31, 900, "doing", [withTask(routed(none, "YN-221", "doing", lead))])], [none]).blocks, 31).details.relay, []);
+  const finished = relayed([{ id: "r", text: "版本发布", state: "done" }]);
+  assert.deepEqual(block(pageBlocks([request(31, 900, "doing", [withTask(routed(finished, "YN-221", "doing", lead))])], [finished]).blocks, 31).details.relay, []);
+  // A relay named by no progress Plan's card shows no Details at all (§2.2: Details only with a Plan of outcomes).
+  const alone = relayed([{ id: "r", text: "版本发布", state: "todo" }]);
+  alone.body.elements.body.props.summary.progress = undefined;
+  delete alone.body.elements.body.props.summary.progress;
+  assert.equal(block(pageBlocks([request(31, 900, "doing", [withTask(routed(alone, "YN-221", "doing", lead))])], [alone]).blocks, 31).details, null);
+});
+
 test("R-38 the status label: the first that holds, in order", () => {
   ids = 900;
   const card = section("yn-230", "status", "进行中", 2, 10, lead, { status: status(10), card: binding("YN-230", "doing", x227) });
