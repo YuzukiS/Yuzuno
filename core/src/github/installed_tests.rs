@@ -9,6 +9,7 @@
 //! path, and drop answers against other releases. GitHub is a fixture; every
 //! repository, commit and release is synthetic.
 use super::{installed::*, *};
+use rusqlite::params;
 use std::{collections::BTreeMap, os::unix::fs::PermissionsExt, sync::atomic::{AtomicU8, Ordering}};
 
 const RELEASE: &str = "1111111111111111111111111111111111111111";
