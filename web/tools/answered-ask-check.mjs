@@ -370,7 +370,8 @@ async function check(run) {
         text: one(".home-answer-body .home-section-body")?.textContent.trim() ?? null,
         afterRecord: !!one(".home-answer-body")?.previousElementSibling?.querySelector(".home-answer-record"),
       },
-      order: [top(".home-answer-ask"), top(".home-answer-label"), top(".home-answer-value")],
+      // The question's box, then its line's ("Your reply" and the answer share a baseline, not a top).
+      order: [top(".home-answer-ask"), top(".home-answer-line")],
       actions: [...(answer?.querySelectorAll(".home-answer-bar > button") ?? [])].map((b) => b.textContent.trim()),
     };
   });
@@ -407,7 +408,7 @@ async function check(run) {
     assert.equal(now.notes, words.oneNote, "the words counted, in its record");
     assert.equal(now.record, null, "its record closed");
     assert.equal(now.kind, words.wait);
-    assert.ok(now.order[0] < now.order[1] && now.order[1] <= now.order[2], `the question, then the reply: ${now.order}`);
+    assert.ok(now.order[0] < now.order[1], `the question, then the reply: ${now.order}`);
     assert.deepEqual(now.actions, [words.show, words.again]);
     await nothingCut();
     await shot("request-answered", card("yn-220/ask"));
