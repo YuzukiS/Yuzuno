@@ -18,7 +18,7 @@ function tree(section: Section) {
 
 /**
  * What a report opens with (T-18), as its author named it on the body's
- * root: `summary {lead, visual?, conditions?, forYou?, size}`, ids of the
+ * root: `summary {lead, visual?, conditions?, forYou?, progress?, size}`, ids of the
  * root's own blocks, which the page shows first and once, and the room its
  * card takes on Home. Core refuses any other shape; one that does not hold
  * here is taken as none. A body that names none has no summary: its page is
@@ -26,13 +26,16 @@ function tree(section: Section) {
  * from before sizes were named has no size (null). `forYou` (R-27) names the
  * Checklist of what the user is asked to do, which the project's banner lists
  * and the page shows in the author's order; one that is no Checklist of the
- * root's own, or a block another slot names, is taken as none.
+ * root's own, or a block another slot names, is taken as none. `progress`
+ * (R-38) names the Plan of what the card's task delivers, likewise shown in
+ * the author's order; one that is no Plan of the root's own is taken as none.
  */
 export type Summary = {
   lead: string;
   visual: string | null;
   conditions: string | null;
   forYou: string | null;
+  progress: string | null;
   size: "small" | "wide" | "large" | null;
 };
 const SIZES = new Set(["small", "wide", "large"]);
@@ -43,7 +46,7 @@ export function summaryOf(section: Section): Summary | null {
   if (!body || !named || typeof named !== "object" || Array.isArray(named)) return null;
   const { elements, top } = body;
   const type = (id: unknown) => (typeof id === "string" && top.includes(id) ? elements[id]?.type : undefined);
-  const { lead, visual, conditions, forYou, size } = named;
+  const { lead, visual, conditions, forYou, progress, size } = named;
   if (type(lead) !== "Markdown") return null;
   // A Group is a figure as a Group of inputs the reader sets (YN-16).
   const figure = visual === undefined || (type(visual) === "Group" ? interactiveGroup(elements, visual as string) : FIGURES.has(type(visual) ?? "") &&
@@ -60,6 +63,7 @@ export function summaryOf(section: Section): Summary | null {
     visual: image ? ((visual as string | undefined) ?? null) : null,
     conditions: (conditions as string | undefined) ?? null,
     forYou: type(forYou) === "Checklist" && !ids.includes(forYou as string) ? (forYou as string) : null,
+    progress: type(progress) === "Plan" ? (progress as string) : null,
     size: typeof size === "string" && SIZES.has(size) ? (size as Summary["size"]) : null,
   };
 }

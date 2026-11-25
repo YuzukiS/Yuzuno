@@ -32,7 +32,7 @@ const all = ["answer", "holds", "loss", "method", "evidence", "plain", "refs", "
 test("the page leads with the summary its author named, each block once, then the rest in order with sources and files beside it", () => {
   const report = section("eval", 7, 3, all, { summary: { lead: "answer", visual: "loss", conditions: "holds", size: "wide" }, details: ["method"] });
   const parts = partsOf(report);
-  assert.deepEqual(parts.summary, { lead: "answer", visual: "loss", conditions: "holds", forYou: null, size: "wide" });
+  assert.deepEqual(parts.summary, { lead: "answer", visual: "loss", conditions: "holds", forYou: null, progress: null, size: "wide" });
   assert.deepEqual(parts.flow, ["method", "evidence", "plain"]);
   assert.deepEqual(parts.sources, ["refs"]);
   assert.deepEqual(parts.attachments, ["shot"]);
@@ -43,6 +43,23 @@ test("the page leads with the summary its author named, each block once, then th
     { id: "evidence", title: "Loss by step", kind: "chart" },
     { id: "evidence", title: "Runs", kind: "table", rows: 2 },
   ]);
+});
+
+test("R-38 a summary's progress names the Plan of what the card's task delivers, shown in the author's order", () => {
+  const steps = [{ id: "model", text: "Request model — states and next step", state: "done", prs: [1121] }, { id: "view", text: "Progress bar", state: "doing" }];
+  const report = (progress, block) => {
+    const value = section("yn-9", 9, 2, ["answer", "plan", "holds"], { summary: { lead: "answer", progress, size: "wide" } });
+    value.body.elements.plan = block ?? { type: "Plan", props: { steps } };
+    return value;
+  };
+  const parts = partsOf(report("plan"));
+  assert.deepEqual(parts.summary, { lead: "answer", visual: null, conditions: null, forYou: null, progress: "plan", size: "wide" });
+  assert.deepEqual(parts.flow, ["plan", "holds"], "the page keeps the Plan where its author put it");
+  // One that is no Plan of the root's own is taken as none; the rest of the summary still holds.
+  assert.equal(summaryOf(report("holds"))?.progress, null, "a Checklist is no Plan");
+  assert.equal(summaryOf(report("missing"))?.progress, null);
+  assert.equal(summaryOf(report("method-text"))?.progress, null, "not the root's own");
+  assert.equal(summaryOf(report("plan"))?.lead, "answer");
 });
 
 test("a body that names no summary is shown as written: nothing lifted, guessed or folded", () => {
@@ -63,8 +80,8 @@ test("a summary or details that do not hold are taken as none, never half-applie
   const withFile = (kind) => partsOf(section("d", 4, 1, all, { summary: { lead: "answer", visual: "shot" } },
     { attachments: [{ name: "a.png", kind, mime: "", size: 1, snapshot: true, mayChange: false, takenAt: "" }] }));
   // A summary kept from before sizes were named has none.
-  assert.deepEqual(withFile("image").summary, { lead: "answer", visual: "shot", conditions: null, forYou: null, size: null });
-  assert.deepEqual(withFile("text").summary, { lead: "answer", visual: null, conditions: null, forYou: null, size: null });
+  assert.deepEqual(withFile("image").summary, { lead: "answer", visual: "shot", conditions: null, forYou: null, progress: null, size: null });
+  assert.deepEqual(withFile("text").summary, { lead: "answer", visual: null, conditions: null, forYou: null, progress: null, size: null });
   assert.deepEqual(withFile("text").attachments, ["shot"]);
   // details: only titled Groups directly under the root, never a summary block.
   assert.deepEqual([...named({ details: ["plain", "note", "answer", "method", "missing"] }).details], ["method"]);
@@ -118,7 +135,7 @@ test("YN-16 a summary's visual may be a Group of inputs, the card's live figure"
       note: { type: "Markdown", props: { text: "Oil." } },
     } },
   });
-  assert.deepEqual(summaryOf(report({ type: "Group", props: {}, children: ["vegan", "note"] })), { lead: "lead", visual: "box", conditions: null, forYou: null, size: "wide" });
+  assert.deepEqual(summaryOf(report({ type: "Group", props: {}, children: ["vegan", "note"] })), { lead: "lead", visual: "box", conditions: null, forYou: null, progress: null, size: "wide" });
   assert.equal(summaryOf(report({ type: "Group", props: {}, children: ["note"] })), null, "a Group of no input is no figure");
 });
 
