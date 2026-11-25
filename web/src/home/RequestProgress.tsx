@@ -364,10 +364,12 @@ export function NowLine({ block }: { block: RequestBlock }) {
 export function InstalledLine({ release, mergedAfter }: { release: InstalledRelease; mergedAfter: number | null }) {
   const t = progressText(useLanguage());
   return (
-    <p className="project-installed" title={`${release.releaseId} · ${release.gitSha.slice(0, 12)}`}>
-      <span>{t.installedRelease(release.version || release.releaseId)}</span>
-      {mergedAfter ? <span>{t.mergedAfter(mergedAfter)}</span> : null}
-    </p>
+    <Tip content={<TipText title={`${release.releaseId} · ${release.gitSha.slice(0, 12)}`} />} describe={false}>
+      <p className="project-installed">
+        <span>{t.installedRelease(release.version || release.releaseId)}</span>
+        {mergedAfter ? <span>{t.mergedAfter(mergedAfter)}</span> : null}
+      </p>
+    </Tip>
   );
 }
 
@@ -379,9 +381,11 @@ export function RelatedRequests({ related, onShowBlock }: { related: readonly { 
     <p className="now-related">
       <span className="now-related-label">{t.related}</span>
       {related.map(({ task, n }) => (
-        <button key={task} type="button" className="home-chip now-related-chip" title={task} onClick={(event) => { event.stopPropagation(); onShowBlock(n); }}>
-          R-{n}
-        </button>
+        <Tip key={task} content={<TipText title={task} />} describe={false}>
+          <button type="button" className="home-chip now-related-chip" onClick={(event) => { event.stopPropagation(); onShowBlock(n); }}>
+            R-{n}
+          </button>
+        </Tip>
       ))}
     </p>
   );
