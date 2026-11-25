@@ -151,7 +151,7 @@ pub async fn call(
             tokio::spawn(async move {
                 let Some(ws) = weak.upgrade() else { return };
                 let id = ws.stored(move |s| Ok(crate::collaboration_store::task_key(&*s.db.read()?, &task)?.0)).await;
-                if let Err(error) = async { installed::pass(&ws, Some(id?)).await }.await {
+                if let Err(error) = async { installed::pass(&ws, Some(id?), installed::BATCH).await }.await {
                     eprintln!("Which of a task's merged PRs the installed release has: {error:#}");
                 }
             });
@@ -213,6 +213,11 @@ pub(crate) fn claim(ws: &Workspace, key: &str) -> bool {
     }
     jobs.insert(key.to_owned(), (true, Instant::now()));
     true
+}
+
+/// Whether `key` waits out its cooldown now, with no read of it running.
+pub(crate) fn cooling(ws: &Workspace, key: &str) -> bool {
+    ws.github.jobs.lock().unwrap().get(key).is_some_and(|(busy, until)| !busy && *until > Instant::now())
 }
 
 /// Ends `key`'s read: its cooldown, five minutes after GitHub's rate limit, else 30 seconds.

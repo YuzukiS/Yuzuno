@@ -345,21 +345,19 @@ impl Client {
         }
     }
 
-    /// Whether commit `ancestor` is in the history of commit `descendant` in
-    /// `repo` (R-38 §2.6): GitHub's compare `descendant...ancestor` (base
-    /// `descendant`, head `ancestor`) says behind or identical exactly when
-    /// the head is an ancestor of the base, or is the base. Only its status is
-    /// read. None when GitHub has no such commit in `repo` (HTTP 404).
-    pub(crate) async fn contains(&self, repo: &str, descendant: &str, ancestor: &str) -> Result<Option<bool>> {
-        let endpoint = format!("repos/{repo}/compare/{descendant}...{ancestor}?per_page=1");
-        let mut child = self.spawn_with_headers(&endpoint, "Accept: application/vnd.github+json", "GET", false,
-            &["--jq".into(), ".status".into()])?;
-        let mut out = child.stdout.take().context("gh stdout unavailable")?.take(257);
+    /// One GET of `endpoint` filtered by gh's `--jq` `filter`, at most 4 KiB
+    /// out: Ok(Ok(its text)), Ok(Err(GitHub's refusal as `failure` names it:
+    /// not_found, rate_limited, ...)), or Err when it could not be read
+    /// (timeout, gh missing, too large).
+    async fn jq(&self, endpoint: &str, filter: &str) -> Result<std::result::Result<String, anyhow::Error>> {
+        let mut child = self.spawn_with_headers(endpoint, "Accept: application/vnd.github+json", "GET", false,
+            &["--jq".into(), filter.into()])?;
+        let mut out = child.stdout.take().context("gh stdout unavailable")?.take(4097);
         let mut err = child.stderr.take().context("gh stderr unavailable")?.take(64 * 1024 + 1);
         let result = tokio::time::timeout(self.deadline, async {
             let (mut bytes, mut diagnostic) = (Vec::new(), Vec::new());
             tokio::try_join!(out.read_to_end(&mut bytes), err.read_to_end(&mut diagnostic))?;
-            ensure!(bytes.len() <= 256 && diagnostic.len() <= 64 * 1024, "GitHub comparison exceeds its transport budget");
+            ensure!(bytes.len() <= 4096 && diagnostic.len() <= 64 * 1024, "GitHub answer exceeds its transport budget");
             let status = child.wait().await?;
             Ok::<_, anyhow::Error>((status, bytes, diagnostic))
         })
@@ -371,19 +369,44 @@ impl Client {
                 let _ = child.wait().await;
                 match failure {
                     Ok(Err(e)) => return Err(e),
-                    _ => bail!("timeout: GitHub comparison timed out"),
+                    _ => bail!("timeout: GitHub read timed out"),
                 }
             }
         };
         if !status.success() {
-            let error = failure(&diagnostic, status.code());
-            return if error.to_string().starts_with("not_found") { Ok(None) } else { Err(error) };
+            return Ok(Err(failure(&diagnostic, status.code())));
         }
-        match String::from_utf8_lossy(&bytes).trim() {
-            "behind" | "identical" => Ok(Some(true)),
-            "ahead" | "diverged" => Ok(Some(false)),
-            other => bail!("unavailable: GitHub gave an unknown comparison status {:?}", other.chars().take(40).collect::<String>()),
+        Ok(Ok(String::from_utf8_lossy(&bytes).trim().to_owned()))
+    }
+
+    /// Whether commit `ancestor` is in the history of commit `descendant` in
+    /// `repo` (R-38 §2.6): GitHub's compare `descendant...ancestor` (base
+    /// `descendant`, head `ancestor`) says behind or identical exactly when
+    /// the head is an ancestor of the base, or is the base. Only its status is
+    /// read. None when GitHub answers not found: a repository it does not show,
+    /// or a commit it does not have, which this read cannot tell apart.
+    pub(crate) async fn contains(&self, repo: &str, descendant: &str, ancestor: &str) -> Result<Option<bool>> {
+        match self.jq(&format!("repos/{repo}/compare/{descendant}...{ancestor}?per_page=1"), ".status").await? {
+            Ok(status) => match status.as_str() {
+                "behind" | "identical" => Ok(Some(true)),
+                "ahead" | "diverged" => Ok(Some(false)),
+                other => bail!("unavailable: GitHub gave an unknown comparison status {:?}", other.chars().take(40).collect::<String>()),
+            },
+            Err(error) if error.to_string().starts_with("not_found") => Ok(None),
+            Err(error) => Err(error),
         }
+    }
+
+    /// A merged pull request's merge commit and when it merged, in one read of
+    /// the PR alone (R-38 §2.6); None while it is not merged.
+    pub(crate) async fn merge_commit(&self, repo: &str, number: u64) -> Result<Option<(String, Option<String>)>> {
+        let answer = self.jq(&format!("repos/{repo}/pulls/{number}"), "{sha: .merge_commit_sha, at: .merged_at}").await??;
+        let value: Value = serde_json::from_str(&answer).context("invalid_response: GitHub gave no merge commit")?;
+        let sha = value["sha"].as_str().filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()));
+        Ok(match (sha, value["at"].as_str()) {
+            (Some(sha), Some(at)) => Some((sha.to_ascii_lowercase(), Some(at.to_owned()))),
+            _ => None,
+        })
     }
 
     /// The commit SHA GitHub resolves `reference` to in `repo`, with GitHub's
