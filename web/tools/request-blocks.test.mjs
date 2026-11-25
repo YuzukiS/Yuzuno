@@ -449,8 +449,8 @@ function planCard(key, task, steps, minutes, extra = {}) {
   });
 }
 /** A card's route with its task's progress, blocker and PRs (S2), as Core reads them. */
-function withTask(card, { progress = null, blocker = null, prs = [] } = {}) {
-  return { ...card, task: { ...card.task, progress, blocker }, prs: { items: prs } };
+function withTask(card, { progress = null, progressAt = undefined, blocker = null, prs = [] } = {}) {
+  return { ...card, task: { ...card.task, progress, ...(progressAt === undefined ? {} : { progressAt }), blocker }, prs: { items: prs } };
 }
 const R38_STEPS = [
   { id: "s1", text: "S1 契约 — summary.progress 与步骤 prs", state: "done", prs: [1121] },
@@ -616,4 +616,33 @@ test("R-43 with no progress yet, the front desk's newest reply is in the first l
   // No note, or a blank one: nothing.
   const r44 = request(44, 6, "doing", [withTask(routed(null, "YN-231", "doing", lead))], { notes: [{ note: "  ", by: desk, at: at(3) }] });
   assert.equal(block(pageBlocks([r44], []).blocks, 44).reply, null);
+});
+
+test("R-38 §2.5 a task's own progress is dated by when it was written: what came after it is said; unknown, nothing", () => {
+  ids = 900;
+  const replies = [{ n: 1, text: "还要 JSON", textBlocks: null, images: [], files: [], at: at(5), messageId: "m-1", deliveredTo: [] }];
+  const merged = { number: 1130, title: "#1130", url: "https://example.com/pull/1130", repository: "o/r", state: "merged", mergedAt: at(10), installed: null };
+  const r50 = request(50, 120, "doing", [withTask(routed(null, "YN-240", "doing", x227),
+    { progress: "导出已能用。JSON 还在做。", progressAt: at(30), prs: [merged] })], { replies });
+  const b = block(pageBlocks([r50], []).blocks, 50);
+  assert.deepEqual(b.now, { kind: "progress", text: "导出已能用。", task: "YN-240" });
+  assert.deepEqual(b.stale, { at: at(30), facts: [{ kind: "merged", prs: [1130] }, { kind: "followUp", count: 1 }], expired: false });
+  // Written after both: nothing to say.
+  const r51 = request(51, 120, "doing", [withTask(routed(null, "YN-240", "doing", x227),
+    { progress: "导出已能用。", progressAt: at(2), prs: [merged] })], { replies });
+  assert.equal(block(pageBlocks([r51], []).blocks, 51).stale, null);
+  // An older Core, or a task whose record does not say: unknown, so nothing is claimed either way.
+  for (const progressAt of [undefined, null]) {
+    const r52 = request(52, 120, "doing", [withTask(routed(null, "YN-240", "doing", x227), { progress: "导出已能用。", progressAt, prs: [merged] })], { replies });
+    assert.equal(block(pageBlocks([r52], []).blocks, 52).stale, null);
+  }
+  // Several tasks: of those going on, the progress written last; an ended task's newer progress is not it.
+  const r53 = request(53, 120, "doing", [
+    withTask(routed(null, "YN-241", "doing", x227), { progress: "旧的进度。", progressAt: at(40) }),
+    withTask(routed(null, "YN-242", "doing", x207), { progress: "新的进度。", progressAt: at(8) }),
+    withTask(routed(null, "YN-243", "done", null), { progress: "已结束的任务。", progressAt: at(1) }),
+  ], { replies });
+  const several = block(pageBlocks([r53], []).blocks, 53);
+  assert.deepEqual(several.now, { kind: "progress", text: "新的进度。", task: "YN-242" });
+  assert.deepEqual(several.stale?.facts, [{ kind: "followUp", count: 1 }]);
 });
