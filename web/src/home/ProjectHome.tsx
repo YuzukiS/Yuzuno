@@ -9,6 +9,8 @@ import { projectColour } from "../project-groups";
 import type { Agent, PendingRequest } from "../types";
 import { changedSinceSeen, requestDomId, sectionDomId } from "./brief-layout";
 import { settleWhenLanded } from "../settle";
+import { arriveIn } from "../surface";
+import { inSight, markArrived, whenInSight } from "./request-arrival";
 import { unfoldAround } from "./card-fold";
 import { DeckSizes } from "./card-sizes";
 import { relative } from "./format";
@@ -18,7 +20,7 @@ import type { SeenMark } from "./home-api";
 import { askKey, HomeJumps, nextAsk, scrollWithinHome, waitingAsks } from "./HomeJumps";
 import { RefreshHome } from "./home-tools";
 import { History30, ProjectFacts, RepoBlock } from "./HomePanel";
-import { ProjectTalk, type TalkBusy, type TalkCommand, type TalkOlder } from "./ProjectTalk";
+import { ProjectTalk, type TalkArrival, type TalkBusy, type TalkCommand, type TalkOlder } from "./ProjectTalk";
 import { savedView, saveView, type TalkView } from "./project-talk";
 import type { ProjectRequest } from "./project-talk-api";
 import { ProjectTalkLink, type TalkLink } from "./talk-link";
@@ -168,6 +170,9 @@ export function ProjectHome({
   const [older, setOlder] = useState<TalkOlder | null>(null);
   const [busy, setBusy] = useState<TalkBusy | null>(null);
   const [command, setCommand] = useState<TalkCommand | null>(null);
+  // What the user just sent (YN-226), and, while its block is not in sight, where it went, said above the composer.
+  const [justSent, setJustSent] = useState<TalkArrival | null>(null);
+  const [sentNotice, setSentNotice] = useState<TalkArrival | null>(null);
   // Requests or Conversation (§3.1), this device's choice for the project; "both" from before reads as Requests.
   const [view, setView] = useState<TalkView>(() => savedView(workspaceId, projectId));
   const chooseView = (next: TalkView) => {
@@ -324,6 +329,42 @@ export function ProjectHome({
       if (element) scrollWithinHome(element, "nearest", !reducedMotion());
     }, 320);
   }, []);
+  // What the user just sent lands (YN-226), once its block is drawn: a new request's block arrives in its place, from
+  // a little below, its gap opening; one already on the page before the send (the same words sent again) or the one
+  // followed up is only marked. Not in sight (scrolled past, under the keyboard, or the conversation shown), the page
+  // says where it went above the composer, without moving or taking the focus, and marks the block once it comes
+  // into sight. Nothing else arrives this way: what a read brings is drawn as it is.
+  const shownSent = useRef(0);
+  const watching = useRef<(() => void) | null>(null);
+  const dismissNotice = useCallback(() => {
+    watching.current?.();
+    watching.current = null;
+    setSentNotice(null);
+  }, []);
+  useEffect(() => () => watching.current?.(), []);
+  useLayoutEffect(() => {
+    if (!justSent || shownSent.current === justSent.seq) return;
+    const block = root.current?.querySelector<HTMLElement>(`[data-request-block="${justSent.n}"]`) ?? null;
+    // Not drawn yet (in either view; the conversation's page keeps the blocks, hidden): its requests are read next,
+    // and this runs again. Read and still not drawn: shown nowhere here.
+    if (!block && !requests.some((request) => request.n === justSent.n)) return;
+    shownSent.current = justSent.seq;
+    watching.current?.();
+    watching.current = null;
+    if (!block || view === "chat" || !inSight(block)) {
+      setSentNotice(justSent);
+      if (block)
+        watching.current = whenInSight(block, block.closest<HTMLElement>(".home-view"), () => {
+          watching.current = null;
+          setSentNotice((was) => (was?.seq === justSent.seq ? null : was));
+          markArrived(block);
+        });
+      return;
+    }
+    setSentNotice(null);
+    if (justSent.kind === "request" && justSent.fresh) arriveIn(block, true);
+    markArrived(block);
+  }, [justSent, view, requests, blocks]);
   /** The page opened, not a card on it: its top, with the focus on its heading so Tab goes on from there. The page
    * is no card and takes no card's mark (R-23): that mark would frame the whole page. */
   function toTop() {
@@ -554,6 +595,9 @@ export function ProjectHome({
         onShowRequest={showBlock}
         onShowChat={() => setView("chat")}
         onFocusTarget={keepTarget}
+        onArrival={setJustSent}
+        notice={sentNotice}
+        onDismissNotice={dismissNotice}
       />
       <div className="project-home-body" hidden={view === "chat"}>
         <div className="project-home-main" id={`project-requests-${id}`}>

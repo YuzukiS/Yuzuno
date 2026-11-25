@@ -38,7 +38,9 @@ window.shownRequests=[];
 window.chats=0;
 window.busy=null;
 window.read=null;
-window.renderTalk=(props={})=>flushSync(()=>root.render(<CardAgents.Provider value={new Map(window.agents.map((a)=>[a.id,a]))}><ProjectTalk projectId="p1" projectName="Atlas" workspaceId="ws" readOnly={false} revision={0} leadCount={1} onNavigate={(target)=>window.navigated.push(target)} onShowRequest={(n)=>window.shownRequests.push(n)} onShowChat={()=>window.chats++} onBusy={(busy)=>{window.busy={confirming:[...busy.confirming],resending:[...busy.resending],errors:[...busy.errors]};}} onRequests={(requests)=>{window.read=requests.map((r)=>r.n);}} {...props}/></CardAgents.Provider>));
+window.arrivals=[];
+window.dismissed=0;
+window.renderTalk=(props={})=>flushSync(()=>root.render(<CardAgents.Provider value={new Map(window.agents.map((a)=>[a.id,a]))}><ProjectTalk projectId="p1" projectName="Atlas" workspaceId="ws" readOnly={false} revision={0} leadCount={1} onArrival={(arrival)=>window.arrivals.push(arrival)} onDismissNotice={()=>window.dismissed++} onNavigate={(target)=>window.navigated.push(target)} onShowRequest={(n)=>window.shownRequests.push(n)} onShowChat={()=>window.chats++} onBusy={(busy)=>{window.busy={confirming:[...busy.confirming],resending:[...busy.resending],errors:[...busy.errors]};}} onRequests={(requests)=>{window.read=requests.map((r)=>r.n);}} {...props}/></CardAgents.Provider>));
 window.renderMembers=(props)=>flushSync(()=>root.render(<ProjectMembers {...props}/>));`,
   );
   const result = await build({
@@ -162,7 +164,17 @@ function mount({ width = 1440, lang = "en", storage = {}, front = { version: 1, 
     }
     const receipt = { input: { text: call.body?.text, clientMessageId: call.body?.clientMessageId }, status: "accepted", turnId: "t1", error: null };
     if (method === "POST" && call.url.endsWith("/replies")) return answer({ reply: { n: 2 }, receipts: [receipt] });
-    if (method === "POST" && call.url.endsWith("/requests")) return answer({ request: { n: 5 }, receipt });
+    // A new request (YN-226): Core keeps it, lists it from then on when state.listOnPost, answers when state.hold
+    // lets it, with the whole request when state.full (as project_requests.rs does), else with its number only.
+    if (method === "POST" && call.url.endsWith("/requests")) {
+      const made = { id: "r5", n: 5, text: call.body.text, textBlocks: null, title: null, createdAt: new Date().toISOString(), frontAgentId: "d",
+        messageId: call.body.clientMessageId, delivery: state.delivery ?? "accepted", replies: [], notes: [], routes: [], cards: [],
+        state: "waiting", progress: { cards: 0, ended: 0 }, lines: [] };
+      state.made = made;
+      if (state.listOnPost) state.requests = [made, ...state.requests.filter((r) => r.n !== 5)];
+      if (state.hold) await state.hold;
+      return answer({ request: state.full ? made : { n: 5 }, receipt });
+    }
     return answer({});
   };
   window.eval(bundle);
@@ -387,5 +399,185 @@ test("a Project's front desk is chosen among its saved leads, saved at once agai
   assert.deepEqual(plain(page.calls.find((c) => c.method === "PUT").body), { expectedVersion: 2, agentId: "e" });
   await until(() => page.document.querySelector('.project-front-desk input[value="e"]').checked, "e is the front desk");
   assert.match(page.document.querySelector(".project-front-desk").textContent, /Chosen as the front desk/);
+  assert.deepEqual(page.errors, []);
+});
+
+// YN-226: what the user sends lands once, as soon as Core's answer or a read of the requests has it.
+const gate = () => {
+  let open;
+  const promise = new Promise((resolve) => (open = resolve));
+  return { promise, open };
+};
+const requestReads = (page) => page.calls.filter((c) => c.method === "GET" && /\/requests$/.test(c.url)).length;
+const count = (list, n) => list.filter((x) => x === n).length;
+
+test("a new request lands once, drawn from Core's answer at once; a read that does not list it yet keeps it", async (t) => {
+  const page = await talk({}, { mode: "requests" });
+  t.after(page.close);
+  page.state.full = true;
+  setComposerText(page.field(), "Add a dark mode");
+  await tick();
+  const reads = requestReads(page);
+  page.document.querySelector(".project-talk-send").click();
+  await until(() => page.window.arrivals.length, "it lands");
+  assert.deepEqual(plain(page.window.arrivals), [{ kind: "request", n: 5, seq: 1, fresh: true, delivered: true }]);
+  await until(() => page.window.read?.[0] === 5, "drawn from Core's answer");
+  // The read after the send does not list R-5 yet (it started before Core kept it here): R-5 stays.
+  await until(() => requestReads(page) > reads, "read again");
+  await tick();
+  assert.deepEqual(plain(page.window.read), [5, 4, 3, 2, 1]);
+  assert.equal(composerText(page.field()), "", "the words went");
+  assert.equal(page.document.querySelector(".project-talk-compose").dataset.state, "idle");
+  // Listed from now on; Home's reads read it again: one R-5, told once.
+  page.state.requests = [page.state.made, ...page.state.requests];
+  page.window.renderTalk({ mode: "requests", revision: 1 });
+  await until(() => requestReads(page) > reads + 1, "Home's read");
+  await tick();
+  assert.equal(count(plain(page.window.read), 5), 1);
+  assert.equal(page.window.arrivals.length, 1, "a read tells nothing");
+  assert.deepEqual(page.errors, []);
+});
+
+test("while the words go, the field takes more, at its contrast; what the user wrote or chose meanwhile stays", async (t) => {
+  const page = await talk({}, { mode: "requests" });
+  t.after(page.close);
+  const hold = gate();
+  Object.assign(page.state, { full: true, hold: hold.promise });
+  setComposerText(page.field(), "Add a dark mode");
+  await tick();
+  page.document.querySelector(".project-talk-send").click();
+  const form = () => page.document.querySelector(".project-talk-compose");
+  await until(() => form().dataset.state === "sending", "going");
+  const status = form().querySelector('.project-talk-arrival[role="status"]');
+  assert.ok(status.hasAttribute("data-sending"), "said, for reduced motion, where the spinner stands still");
+  assert.equal(status.textContent, "Sending…");
+  assert.equal(form().querySelector(".project-talk-send").getAttribute("aria-busy"), "true");
+  assert.doesNotMatch(form().textContent, /No answer from Core yet/, "not while it goes");
+  assert.equal(form().querySelector(".home-composer").dataset.readonly, undefined, "the field takes more");
+  // More words after them, and another request to follow up.
+  setComposerText(page.field(), "Add a dark mode and a light one");
+  page.window.renderTalk({ mode: "requests", command: { kind: "follow", n: 3, seq: 1 } });
+  await until(() => page.document.querySelector(".project-talk-quoting"), "R-3 chosen meanwhile");
+  assert.equal(page.window.arrivals.length, 0, "nothing lands before Core answers");
+  hold.open();
+  await until(() => page.window.arrivals.length, "it lands");
+  await tick();
+  assert.equal(composerText(page.field()), "and a light one", "the words sent leave; those written after them stay");
+  assert.ok(page.document.querySelector(".project-talk-quoting"), "R-3 is still the one followed up");
+  const kept = JSON.parse(page.window.localStorage.getItem("yuzuno.project-talk-drafts.v1"));
+  assert.deepEqual([Object.values(kept)[0].text, Object.values(kept)[0].quote], ["and a light one", 3]);
+  assert.equal(page.posts()[0].body.text, "Add a dark mode", "only what was there when it went");
+  // A press of Send leaves the focus in the field: a phone's keyboard stays up.
+  const press = new page.window.MouseEvent("mousedown", { bubbles: true, cancelable: true });
+  page.document.querySelector(".project-talk-send").dispatchEvent(press);
+  assert.ok(press.defaultPrevented);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a read that lists the request before Core's answer tells it; the answer then tells nothing more", async (t) => {
+  const page = await talk({}, { mode: "requests" });
+  t.after(page.close);
+  const hold = gate();
+  Object.assign(page.state, { full: true, hold: hold.promise, listOnPost: true });
+  setComposerText(page.field(), "Add a dark mode");
+  await tick();
+  page.document.querySelector(".project-talk-send").click();
+  await until(() => page.state.made, "Core keeps it");
+  // Home reads again (Core said the project changed) before the answer comes.
+  page.window.renderTalk({ mode: "requests", revision: 1 });
+  await until(() => page.window.arrivals.length, "it lands from the read");
+  assert.deepEqual(plain(page.window.arrivals), [{ kind: "request", n: 5, seq: 1, fresh: true, delivered: true }]);
+  assert.equal(page.document.querySelector(".project-talk-compose").dataset.state, "sending", "the answer is still to come");
+  hold.open();
+  await until(() => page.document.querySelector(".project-talk-compose").dataset.state === "idle", "answered");
+  await tick(80);
+  assert.equal(page.window.arrivals.length, 1, "once");
+  assert.equal(count(plain(page.window.read), 5), 1);
+  assert.deepEqual(page.errors, []);
+});
+
+test("an answer without the whole request goes the reading way; a send that fails tells nothing, its retry once", async (t) => {
+  const page = await talk({ fail: 1 }, { mode: "requests" });
+  t.after(page.close);
+  page.state.listOnPost = true;
+  setComposerText(page.field(), "Add a dark mode");
+  await tick();
+  const send = () => page.document.querySelector(".project-talk-send");
+  send().click();
+  await until(() => page.document.querySelector('.project-talk-compose [role="alert"]'), "the failure is shown");
+  assert.equal(page.window.arrivals.length, 0, "nothing lands");
+  assert.equal(composerText(page.field()), "Add a dark mode", "the draft stays");
+  // Sent again under the same ID; Core answers with its number only (state.full unset): the read has it.
+  send().click();
+  await until(() => page.window.arrivals.length, "it lands from the read");
+  assert.equal(page.posts()[1].body.clientMessageId, page.posts()[0].body.clientMessageId);
+  assert.deepEqual(plain(page.window.arrivals), [{ kind: "request", n: 5, seq: 1, fresh: true, delivered: true }]);
+  assert.equal(count(plain(page.window.read), 5), 1);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a follow-up lands on its request; a request Core kept but did not deliver says so", async (t) => {
+  const page = await talk({}, { mode: "requests" });
+  t.after(page.close);
+  page.window.renderTalk({ mode: "requests", command: { kind: "follow", n: 3, seq: 1 } });
+  await until(() => page.document.querySelector(".project-talk-quoting"), "quoted");
+  setComposerText(page.field(), "And the phone");
+  await tick();
+  page.document.querySelector(".project-talk-send").click();
+  await until(() => page.window.arrivals.length, "it lands");
+  assert.deepEqual(plain(page.window.arrivals), [{ kind: "follow", n: 3, seq: 1, fresh: false, delivered: true }]);
+  Object.assign(page.state, { full: true, delivery: "uncertain" });
+  setComposerText(page.field(), "Make the export faster");
+  await tick();
+  page.document.querySelector(".project-talk-send").click();
+  await until(() => page.window.arrivals.length === 2, "it lands");
+  assert.deepEqual(plain(page.window.arrivals[1]), { kind: "request", n: 5, seq: 2, fresh: true, delivered: false });
+  assert.deepEqual(page.errors, []);
+});
+
+test("the notice above the field says where it went, shows its request on Show and takes no focus", async (t) => {
+  const page = await talk({}, { mode: "requests" });
+  t.after(page.close);
+  const notice = () => page.document.querySelector(".project-talk-notice");
+  page.window.renderTalk({ mode: "requests", notice: { kind: "request", n: 5, seq: 1, fresh: true, delivered: true } });
+  await tick();
+  assert.equal(notice().closest('[role="status"]').className, "project-talk-arrival");
+  assert.equal(notice().querySelector(".project-talk-notice-text").textContent, "Recorded as R-5");
+  assert.equal(notice().dataset.tone, undefined);
+  assert.ok(!notice().contains(page.document.activeElement), "no focus taken");
+  const show = page.button("Show", notice());
+  assert.equal(show.getAttribute("aria-label"), "Show request R-5");
+  show.click();
+  assert.deepEqual(plain(page.window.shownRequests), [5]);
+  assert.equal(page.window.dismissed, 1);
+  page.window.renderTalk({ mode: "requests", notice: { kind: "request", n: 5, seq: 2, fresh: true, delivered: false } });
+  await tick();
+  assert.equal(notice().querySelector(".project-talk-notice-text").textContent, "Recorded as R-5 · not confirmed delivered");
+  assert.equal(notice().dataset.tone, "attention");
+  page.window.renderTalk({ mode: "requests", notice: { kind: "follow", n: 3, seq: 3, fresh: false, delivered: true } });
+  await tick();
+  assert.equal(notice().querySelector(".project-talk-notice-text").textContent, "Added to R-3");
+  page.button("Dismiss", notice()).click();
+  assert.equal(page.window.dismissed, 2);
+  // A new send closes it.
+  setComposerText(page.field(), "Add a dark mode");
+  await tick();
+  page.document.querySelector(".project-talk-send").click();
+  assert.equal(page.window.dismissed, 3);
+  assert.deepEqual(page.errors, []);
+});
+
+test("the notice in Chinese", async (t) => {
+  const page = await talk({ lang: "zh" }, { mode: "requests" });
+  t.after(page.close);
+  page.window.renderTalk({ mode: "requests", notice: { kind: "request", n: 5, seq: 1, fresh: true, delivered: false } });
+  await tick();
+  const notice = page.document.querySelector(".project-talk-notice");
+  assert.equal(notice.querySelector(".project-talk-notice-text").textContent, "已记下为 R-5 · 没确认送达");
+  assert.equal(page.button("查看", notice).getAttribute("aria-label"), "查看请求 R-5");
+  assert.ok(page.button("关闭", notice));
+  page.window.renderTalk({ mode: "requests", notice: { kind: "follow", n: 3, seq: 2, fresh: false, delivered: true } });
+  await tick();
+  assert.equal(page.document.querySelector(".project-talk-notice-text").textContent, "已追加到 R-3");
   assert.deepEqual(page.errors, []);
 });
