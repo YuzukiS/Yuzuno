@@ -27,7 +27,8 @@ const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
 const report = { task: "YN-233", fixture: "synthetic, R-44's shape", runs: [], posts: [], unexpected: [], errors: [] };
 const HOST = "localhost:47396";
-const now = Date.now();
+// Each run's times are from its own start (check), so "5 min ago" is still 5 minutes into the later runs.
+let now = Date.now();
 const at = (minutes) => new Date(now - minutes * 60_000).toISOString();
 
 const base = {
@@ -149,6 +150,7 @@ function pass(run, scenario, what, facts) {
 }
 
 async function check(run, scenario) {
+  now = Date.now();
   const w = words[run.language][scenario];
   const result = { run: run.name, scenario, viewport: run.viewport, facts: {}, shots: [] };
   report.runs.push(result);
