@@ -74,6 +74,7 @@ export const progressText = strings(
     by: (name: string, time: string) => `${name}, ${time}`,
     got: "Got",
     left: "Left",
+    relay: "Planned hand-offs after this",
     installed: "Installed (commit verified)",
     pending: "Merged · install not verified",
     open: "Not merged yet",
@@ -133,6 +134,7 @@ export const progressText = strings(
     by: (name, time) => `${name} 写于 ${time}`,
     got: "已得到",
     left: "还差",
+    relay: "之后的接力（计划）",
     installed: "已装（提交已核实）",
     pending: "已合入 · 安装待核实",
     open: "未合入",
@@ -335,10 +337,18 @@ export function DetailLists({ block }: { block: RequestBlock }) {
         <ul>{items.map((item) => <li key={`${item.task}:${item.name}`} data-state={item.state}>{t.detail(item.name, t.segment[item.state], detailOf(item, t))}</li>)}</ul>
       </section>
     );
+  const relay = block.details.relay;
   return (
     <div className="request-details">
       {list(t.got, block.details.got)}
       {list(t.left, block.details.left)}
+      {/* R-38 §2.2: what its lead plans after these, in order; words only, nothing here is the user's to do now. */}
+      {relay.length > 0 && (
+        <section data-relay="">
+          <h4>{t.relay}</h4>
+          <ol className="request-relay">{relay.map((step, i) => <li key={`${step.task}:${i}`} data-state={step.state}>{step.text}</li>)}</ol>
+        </section>
+      )}
     </div>
   );
 }

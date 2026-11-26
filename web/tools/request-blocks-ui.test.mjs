@@ -804,3 +804,25 @@ test("R-43 a request with no progress yet shows the front desk's newest reply ou
     assert.deepEqual(page.errors, []);
   }
 });
+
+test("R-38 §2.2 opened, Details list the hand-offs its lead planned after the outcomes, in order, as words", async () => {
+  for (const [lang, title] of [["en", "Planned hand-offs after this"], ["zh", "之后的接力（计划）"]]) {
+    const page = mount({ lang, opened: ["r31"] });
+    const card = section("yn-221", "status", "R-31 runtime", 4, { status: { asOf: ago(4), validFor: 3600, stale: false }, card: bind("YN-221"),
+      body: { root: "body", elements: {
+        body: { type: "BriefBody", props: { summary: { lead: "lead", progress: "plan", relay: "next", size: "wide" } }, children: ["lead", "plan", "next"] },
+        lead: { type: "Markdown", props: { text: "Five of six usable." } },
+        plan: { type: "Plan", props: { steps: [{ id: "a", text: "Caching", state: "done" }, { id: "b", text: "Locate Core CPU", state: "blocked" }] } },
+        next: { type: "Plan", props: { steps: [{ id: "r", text: "Release", state: "doing" }, { id: "i", text: "You install", state: "todo" },
+          { id: "c", text: "YN-221 re-measures", state: "todo" }] } } } } });
+    page.window.renderPage({ requests: [request(31, 300, "doing", [routed(card, "YN-221")])], sections: [card] });
+    await tick();
+    const relay = page.block(31).querySelector(".request-details [data-relay]");
+    assert.ok(relay, lang);
+    assert.equal(page.text(relay.querySelector("h4")), title);
+    assert.deepEqual([...relay.querySelectorAll("li")].map((li) => [page.text(li), li.dataset.state]),
+      [["Release", "doing"], ["You install", "todo"], ["YN-221 re-measures", "todo"]]);
+    assert.equal(page.block(31).dataset.group, "doing", "a planned step of the user's is no to-do");
+    assert.deepEqual(page.errors, []);
+  }
+});

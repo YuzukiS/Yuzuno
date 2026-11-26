@@ -203,7 +203,12 @@ export type BlockNext =
   | { kind: "step"; text: string; task: string; who: Who | null };
 
 export type DetailItem = { task: string; name: string; detail: string | null; state: Segment["state"]; facts: PullFact[] };
-export type BlockDetails = { got: DetailItem[]; left: DetailItem[] };
+/**
+ * One hand-off its lead planned after the outcomes (R-38 §2.2): a step not done of the Plan its task's card names as
+ * `summary.relay`, by task when several tasks have one. A plan, never a to-do: a step of the user's is words here.
+ */
+export type RelayStep = { task: string; text: string; state: PlanStep["state"] };
+export type BlockDetails = { got: DetailItem[]; left: DetailItem[]; relay: RelayStep[] };
 
 export type BlockEvidence = {
   /** Merged and in the release (Core kept the commit ancestry). */
@@ -476,6 +481,21 @@ export function progressCard(row: TaskRow): { section: Section; steps: PlanStep[
   return best;
 }
 
+/**
+ * A task's planned relay (R-38 §2.2): of its live cards and Asks, the newest whose summary names a Plan as its relay,
+ * that Plan's steps not done; none without one. Only what its lead wrote there: nothing is read from words or events.
+ */
+function relayOf(row: TaskRow): PlanStep[] {
+  const candidates = [row.card, ...row.earlier, ...row.asks].filter((s): s is Section => !!s && !s.history);
+  let best: { section: Section; steps: PlanStep[] } | null = null;
+  for (const section of candidates) {
+    const named = summaryOf(section)?.relay;
+    const steps = named ? stepsOf(section, named) : [];
+    if (steps.length && (!best || time(section.updatedAt) > time(best.section.updatedAt))) best = { section, steps };
+  }
+  return best?.steps.filter((step) => step.state !== "done") ?? [];
+}
+
 /** A step's text as its name and, after the first " — ", its detail. */
 function split(text: string) {
   const at = text.indexOf(" — ");
@@ -624,6 +644,13 @@ function progressRow(rows: readonly TaskRow[]): TaskRow | undefined {
   return pool.reduce<TaskRow | undefined>((best, row) => (!best || time(row.task.progressAt) > time(best.task.progressAt) ? row : best), undefined);
 }
 
+/** `rows`' planned relays in their order, each step named by its task when several tasks plan one. */
+function relayed(rows: readonly TaskRow[]): RelayStep[] {
+  const planned = rows.map((row) => ({ row, steps: relayOf(row) })).filter(({ steps }) => steps.length);
+  return planned.flatMap(({ row, steps }) =>
+    steps.map((step) => ({ task: row.task.id, text: planned.length > 1 ? `${shortOf(row)} · ${step.text}` : step.text, state: step.state })));
+}
+
 /** A block's progress parts (R-38 §2): from its own tasks, else (none of its own) those it joined. */
 function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joined: readonly TaskRow[]) {
   const rows = own.length ? own : joined;
@@ -649,6 +676,7 @@ function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joine
       ? {
           got: segments.filter((s) => DONE_STATES.has(s.state)).map(({ task, name, detail, state, facts }) => ({ task, name, detail, state, facts })),
           left: segments.filter((s) => !DONE_STATES.has(s.state)).map(({ task, name, detail, state, facts }) => ({ task, name, detail, state, facts })),
+          relay: relayed(rows),
         }
       : null,
     evidence: evidenceOf(request, rows),

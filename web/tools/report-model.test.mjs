@@ -32,7 +32,7 @@ const all = ["answer", "holds", "loss", "method", "evidence", "plain", "refs", "
 test("the page leads with the summary its author named, each block once, then the rest in order with sources and files beside it", () => {
   const report = section("eval", 7, 3, all, { summary: { lead: "answer", visual: "loss", conditions: "holds", size: "wide" }, details: ["method"] });
   const parts = partsOf(report);
-  assert.deepEqual(parts.summary, { lead: "answer", visual: "loss", conditions: "holds", forYou: null, progress: null, size: "wide" });
+  assert.deepEqual(parts.summary, { lead: "answer", visual: "loss", conditions: "holds", forYou: null, progress: null, relay: null, size: "wide" });
   assert.deepEqual(parts.flow, ["method", "evidence", "plain"]);
   assert.deepEqual(parts.sources, ["refs"]);
   assert.deepEqual(parts.attachments, ["shot"]);
@@ -53,13 +53,27 @@ test("R-38 a summary's progress names the Plan of what the card's task delivers,
     return value;
   };
   const parts = partsOf(report("plan"));
-  assert.deepEqual(parts.summary, { lead: "answer", visual: null, conditions: null, forYou: null, progress: "plan", size: "wide" });
+  assert.deepEqual(parts.summary, { lead: "answer", visual: null, conditions: null, forYou: null, progress: "plan", relay: null, size: "wide" });
   assert.deepEqual(parts.flow, ["plan", "holds"], "the page keeps the Plan where its author put it");
   // One that is no Plan of the root's own is taken as none; the rest of the summary still holds.
   assert.equal(summaryOf(report("holds"))?.progress, null, "a Checklist is no Plan");
   assert.equal(summaryOf(report("missing"))?.progress, null);
   assert.equal(summaryOf(report("method-text"))?.progress, null, "not the root's own");
   assert.equal(summaryOf(report("plan"))?.lead, "answer");
+});
+
+test("R-38 §2.2 a summary's relay names the Plan of the hand-offs planned after the outcomes; never the progress Plan", () => {
+  const relayed = (relay) => {
+    const value = section("yn-9", 9, 2, ["answer", "plan", "next"], { summary: { lead: "answer", progress: "plan", relay, size: "wide" } });
+    value.body.elements.plan = { type: "Plan", props: { steps: [{ id: "model", text: "Request model", state: "done" }] } };
+    value.body.elements.next = { type: "Plan", props: { steps: [{ id: "release", text: "Release", state: "todo" }] } };
+    return value;
+  };
+  assert.deepEqual(summaryOf(relayed("next")), { lead: "answer", visual: null, conditions: null, forYou: null, progress: "plan", relay: "next", size: "wide" });
+  assert.deepEqual(partsOf(relayed("next")).flow, ["plan", "next"], "the page keeps both where their author put them");
+  assert.equal(summaryOf(relayed("plan"))?.relay, null, "the progress Plan is no relay");
+  assert.equal(summaryOf(relayed("answer"))?.relay, null, "a Markdown is no Plan");
+  assert.equal(summaryOf(relayed(undefined))?.relay, null);
 });
 
 test("a body that names no summary is shown as written: nothing lifted, guessed or folded", () => {
@@ -80,8 +94,8 @@ test("a summary or details that do not hold are taken as none, never half-applie
   const withFile = (kind) => partsOf(section("d", 4, 1, all, { summary: { lead: "answer", visual: "shot" } },
     { attachments: [{ name: "a.png", kind, mime: "", size: 1, snapshot: true, mayChange: false, takenAt: "" }] }));
   // A summary kept from before sizes were named has none.
-  assert.deepEqual(withFile("image").summary, { lead: "answer", visual: "shot", conditions: null, forYou: null, progress: null, size: null });
-  assert.deepEqual(withFile("text").summary, { lead: "answer", visual: null, conditions: null, forYou: null, progress: null, size: null });
+  assert.deepEqual(withFile("image").summary, { lead: "answer", visual: "shot", conditions: null, forYou: null, progress: null, relay: null, size: null });
+  assert.deepEqual(withFile("text").summary, { lead: "answer", visual: null, conditions: null, forYou: null, progress: null, relay: null, size: null });
   assert.deepEqual(withFile("text").attachments, ["shot"]);
   // details: only titled Groups directly under the root, never a summary block.
   assert.deepEqual([...named({ details: ["plain", "note", "answer", "method", "missing"] }).details], ["method"]);
@@ -135,7 +149,7 @@ test("YN-16 a summary's visual may be a Group of inputs, the card's live figure"
       note: { type: "Markdown", props: { text: "Oil." } },
     } },
   });
-  assert.deepEqual(summaryOf(report({ type: "Group", props: {}, children: ["vegan", "note"] })), { lead: "lead", visual: "box", conditions: null, forYou: null, progress: null, size: "wide" });
+  assert.deepEqual(summaryOf(report({ type: "Group", props: {}, children: ["vegan", "note"] })), { lead: "lead", visual: "box", conditions: null, forYou: null, progress: null, relay: null, size: "wide" });
   assert.equal(summaryOf(report({ type: "Group", props: {}, children: ["note"] })), null, "a Group of no input is no figure");
 });
 

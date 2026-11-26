@@ -116,7 +116,7 @@ export const FACE_NOTE =
 type Node = { type?: string; props?: Record<string, unknown>; children?: string[] };
 type Elements = Record<string, Node>;
 /** The summary the author sent, by its ids, before Core normalized or repaired the section. */
-export type RequestedSummary = { lead?: unknown; visual?: unknown; conditions?: unknown; forYou?: unknown; progress?: unknown } | null | undefined;
+export type RequestedSummary = { lead?: unknown; visual?: unknown; conditions?: unknown; forYou?: unknown; progress?: unknown; relay?: unknown } | null | undefined;
 /** A section as Core keeps it, as much of it as a face reads. */
 export type FaceSection = Pick<Section, "key" | "kind" | "title" | "body" | "attachments">;
 

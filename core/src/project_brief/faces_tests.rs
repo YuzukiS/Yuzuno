@@ -192,6 +192,20 @@ fn with_progress(block: Value) -> Value {
 }
 
 #[tokio::test]
+async fn the_summarys_relay_plan_is_told_as_requested() {
+    // R-38 §2.2: summary.relay names the Plan of the hand-offs the lead plans after the outcomes; requested names it too.
+    let (_dir, ws, _project) = lab();
+    let mut change = with_progress(json!({"type":"Plan","props":{"steps":[{"id":"model","text":"Request model","state":"done"}]}}));
+    let body = &mut change["body"]["elements"];
+    body["next"] = json!({"type":"Plan","props":{"steps":[{"id":"release","text":"Release","state":"todo"},
+        {"id":"install","text":"You install","state":"todo"}]}});
+    body["body"]["children"] = json!(["lead", "plan", "next"]);
+    body["body"]["props"]["summary"]["relay"] = json!("next");
+    let written = update::update(&ws, &FAKE, "a", input("p", 0, vec![change])).await.unwrap().unwrap();
+    assert_eq!(written["cards"][0]["asked"]["requested"], json!({"lead":"lead","progress":"plan","relay":"next"}));
+}
+
+#[tokio::test]
 async fn the_summarys_progress_plan_is_told_as_requested() {
     // R-38: summary.progress names the Plan of what the card's task delivers; the face's request names it too.
     let (_dir, ws, _project) = lab();
