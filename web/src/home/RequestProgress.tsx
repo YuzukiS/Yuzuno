@@ -1,13 +1,16 @@
-import { useContext, useId, useState } from "react";
+import { useContext, useId, useState, type ReactNode } from "react";
+import { CircleCheck, Hourglass, LoaderCircle, MessageCircle, TriangleAlert } from "lucide-react";
 import { strings, useLanguage } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import { Tip, TipText } from "../Tip";
 import { CardAgents } from "./card-responsible";
-import { absolute, relative } from "./format";
-import type { InstalledRelease, RequestPull } from "./project-talk-api";
+import { absolute, duration, relative } from "./format";
+import type { InstalledRelease, RequestPull, RouteAgent } from "./project-talk-api";
+import { talkText } from "./talk-text";
 import type { BlockCommon } from "./RequestBlocks";
 import {
-  barCells, type BarCell, type BlockNext, type BlockNow, type BlockStale, type BlockState, type PullFact, type RequestBlock, type Segment, type Who,
+  barCells, type BarCell, type BlockFollowUp, type BlockNext, type BlockNow, type BlockStale, type BlockState, type FollowUpItem, type FollowUpTo,
+  type PullFact, type RequestBlock, type Segment, type Who,
 } from "./request-blocks";
 
 /**
@@ -19,8 +22,27 @@ export const progressText = strings(
   {
     state: {
       done: "Done", deliveryFailed: "Not delivered", unconfirmed: "Delivery not confirmed", decide: "Your decision",
-      accept: "For you to accept", condition: "Waiting on a condition", team: "Team on it", going: "In progress", frontDesk: "With the front desk",
+      followUp: "Waiting for a reply", accept: "For you to accept", condition: "Waiting on a condition", team: "Team on it", going: "In progress",
+      frontDesk: "With the front desk",
     } as Record<BlockState, string>,
+    /** The follow-up zone (R-45 §3.2). */
+    follow: {
+      label: "Your follow-up and what came of it",
+      one: "You followed up",
+      many: (n: number) => `You followed up ${n} times · newest`,
+      count: (n: number, answered: number) => `${n} follow-ups · ${answered} answered`,
+      delivered: "Delivered to", noAnswer: "no answer yet",
+      waited: (time: string) => `waiting ${time}`,
+      others: (k: number, who: string) => `${k} more ${k === 1 ? "waits" : "wait"} for ${who} too`,
+      othersClosed: (k: number, who: string) => `${k} more went to ${who}, closed before answering; no one will answer ${k === 1 ? "it" : "them"}`,
+      closed: (who: string) => `${who} was closed before answering; no one will answer it`,
+      answered: "answered", later: "Then", said: "said",
+      caveat: "Not marked as answering a follow-up",
+      unsent: "Not confirmed delivered", failed: "Not delivered", resend: "Send again",
+      show: "Show in the conversation →",
+      showLabel: (n: number) => `Show follow-up #${n} in the conversation`,
+      list: (names: string[]) => names.join(", "),
+    },
     segment: {
       available: "usable", done: "done", merged: "merged · install not verified", doing: "in progress", blocked: "waiting on a condition", todo: "not started",
     } as Record<Segment["state"], string>,
@@ -81,8 +103,25 @@ export const progressText = strings(
   },
   {
     state: {
-      done: "已完成", deliveryFailed: "送达失败", unconfirmed: "未确认送达", decide: "等你决定", accept: "等你验收", condition: "等条件",
+      done: "已完成", deliveryFailed: "送达失败", unconfirmed: "未确认送达", decide: "等你决定", followUp: "等答复", accept: "等你验收", condition: "等条件",
       team: "团队在办", going: "进行中", frontDesk: "前台在看",
+    },
+    follow: {
+      label: "你的追问和答复",
+      one: "你追问",
+      many: (n) => `你追问 ${n} 次 · 最近一条`,
+      count: (n, answered) => `共 ${n} 条 · ${answered} 条已答`,
+      delivered: "已送达", noAnswer: "还没有答复",
+      waited: (time) => `已等 ${time}`,
+      others: (k, who) => `另 ${k} 条也在等 ${who}`,
+      othersClosed: (k, who) => `另 ${k} 条的原收件人 ${who} 已关闭，没人会答`,
+      closed: (who) => `原收件人 ${who} 已关闭，没人会答`,
+      answered: "答复", later: "之后", said: "说",
+      caveat: "没有标明回答哪一条追问",
+      unsent: "没确认送达", failed: "送达失败", resend: "再发一次",
+      show: "在对话中查看 →",
+      showLabel: (n) => `在对话中查看追问 #${n}`,
+      list: (names) => names.join("、"),
     },
     segment: { available: "可用", done: "完成", merged: "已合入 · 安装待核实", doing: "在做", blocked: "等条件", todo: "未开始" },
     label: {
@@ -425,5 +464,131 @@ export function RelatedRequests({ related, onShowBlock }: { related: readonly { 
         </Tip>
       ))}
     </p>
+  );
+}
+
+/**
+ * Who a follow-up went to, or who answered it (R-45 §3.2): the Agent's name as the page knows it, else as Core named
+ * it, else "an Agent". The one place the follow-up zone and the conversation's marks name anyone.
+ */
+export function useFollowUpName() {
+  const agents = useContext(CardAgents);
+  const someone = talkText(useLanguage()).someone;
+  return (who: FollowUpTo | RouteAgent) => agents.get(who.agentId)?.name || who.name || someone;
+}
+
+const FOLLOW_ICON: Record<FollowUpItem["state"], typeof Hourglass> = {
+  waiting: Hourglass, unsent: TriangleAlert, answered: CircleCheck, later: MessageCircle,
+};
+
+/**
+ * The user's newest follow-up and what came of it, in the block's first look (R-45 §3.2): how many there are and how
+ * many are answered; its words, two lines at most; then whom it waits for and since when, or who answered and what
+ * (three lines at most), or what was said after it that names no follow-up, said so, or that it is not confirmed
+ * delivered, with Send again. Its link opens the request's conversation at it. Nothing for a request with none.
+ */
+export function FollowUpZone({ follow, onShow, onResend, resending = false, readOnly = false }: {
+  follow: BlockFollowUp;
+  /** Opens the conversation at follow-up `n`, the lines named with it marked. */
+  onShow: (n: number, marked: string[]) => void;
+  /** Sends follow-up `n` again as Core keeps it. */
+  onResend?: (n: number) => void;
+  resending?: boolean;
+  readOnly?: boolean;
+}) {
+  const language = useLanguage();
+  const t = progressText(language).follow;
+  const time = useTimeDisplay();
+  const nameOf = useFollowUpName();
+  const { latest, items } = follow;
+  const names = (to: readonly FollowUpTo[]) => t.list(to.map(nameOf));
+  const when = (at: string) => (
+    <Tip content={<TipText title={absolute(at, time)} />} describe={false}>
+      <time dateTime={at}>{relative(at, language)}</time>
+    </Tip>
+  );
+  // The other follow-ups still waiting: those an open Agent has, and those whose every Agent is closed, no one's now.
+  const others = items.filter((item) => item.n !== latest.n && item.state === "waiting");
+  const stillOpen = others.filter((item) => item.to.some((to) => !to.closed));
+  const noOne = others.filter((item) => !item.to.some((to) => !to.closed));
+  const whoOf = (list: readonly FollowUpItem[], open: boolean) =>
+    names([...new Map(list.flatMap((item) => item.to).filter((to) => to.closed !== open).map((to) => [to.agentId, to])).values()]);
+  const Icon = FOLLOW_ICON[latest.state];
+  let status: ReactNode;
+  switch (latest.state) {
+    case "waiting": {
+      const open = latest.to.filter((to) => !to.closed);
+      const seconds = Math.max(60, (Date.now() - Date.parse(latest.at)) / 1000);
+      status = open.length ? (
+        <>
+          <span>{t.delivered} <b>{names(open)}</b> · {t.noAnswer}</span>{" "}
+          <span className="request-follow-who">· {t.waited(duration(seconds, language))}</span>
+        </>
+      ) : (
+        <span>{t.closed(names(latest.to))}</span>
+      );
+      break;
+    }
+    case "unsent":
+      status = (
+        <>
+          <span>{latest.failed ? t.failed : t.unsent}</span>
+          {onResend && !readOnly && (
+            <>
+              {" · "}
+              <button type="button" className="talk-link" disabled={resending} onClick={() => onResend(latest.n)}>
+                {resending && <LoaderCircle size={12} className="spin" aria-hidden="true" />}
+                {t.resend}
+              </button>
+            </>
+          )}
+        </>
+      );
+      break;
+    case "answered":
+      status = (
+        <>
+          <span className="request-follow-who"><b>{nameOf(latest.note.by)}</b> {t.answered} · {when(latest.note.at)}</span>
+          <span className="request-follow-answer">{latest.note.note}</span>
+        </>
+      );
+      break;
+    case "later":
+      status = (
+        <>
+          <span className="request-follow-who">{t.later} <b>{nameOf(latest.note.by)}</b> {t.said} · {when(latest.note.at)}</span>
+          <span className="request-follow-answer">{latest.note.note}</span>
+          <span className="request-follow-caveat">{t.caveat}</span>
+        </>
+      );
+      break;
+  }
+  // The lines its jump marks: the follow-up, the note that answers it or came after it, and the follow-ups that note
+  // came after alike (R-45 §3.4).
+  const marked =
+    latest.state === "answered" ? [`note:${latest.note.n}`]
+      : latest.state === "later" ? [`note:${latest.note.n}`, ...latest.together.filter((n) => n !== latest.n).map((n) => `reply:${n}`)]
+        : [];
+  return (
+    <section className="request-follow" data-state={latest.state} aria-label={t.label}>
+      <p className="request-follow-head">
+        <b>{items.length > 1 ? t.many(items.length) : t.one}</b> · {when(latest.at)}
+        {items.length > 1 && <span className="request-follow-count">{t.count(items.length, follow.answered)}</span>}
+      </p>
+      <p className="request-follow-said">{latest.text}</p>
+      <div className="request-follow-status" data-kind={latest.state}>
+        <span className="request-follow-icon" aria-hidden="true"><Icon size={12} /></span>
+        <p className="request-follow-lines">
+          {status}
+          {latest.state === "waiting" && stillOpen.length > 0 && <span className="request-follow-more">{t.others(stillOpen.length, whoOf(stillOpen, true))}</span>}
+          {latest.state === "waiting" && noOne.length > 0 && <span className="request-follow-more">{t.othersClosed(noOne.length, whoOf(noOne, false))}</span>}
+        </p>
+      </div>
+      <p className="request-follow-foot">
+        <button type="button" className="talk-link" aria-label={t.showLabel(latest.n)} onClick={() => onShow(latest.n, marked)}>
+          {t.show}
+        </button>
+      </p>
+    </section>
   );
 }

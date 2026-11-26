@@ -533,6 +533,8 @@ export function ProjectHome({
       onView={(to) => showView(block.key, to)}
       focus={thread?.block === block.key ? thread : null}
       onShowThread={showThread}
+      onResendFollowUp={(n, m) => setCommand((was) => ({ kind: "resend", n, reply: m, seq: (was?.seq ?? 0) + 1 }))}
+      resendingFollowUps={busy?.followUps.get(block.request.n)}
       onAction={blockAction}
       onShowBlock={showBlock}
       busy={!!busy && (busy.confirming.has(block.request.n) || busy.resending.has(block.request.n))}

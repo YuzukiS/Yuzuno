@@ -122,11 +122,16 @@ function trimmed(words: ReplyWords): { text: string; textBlocks?: TextBlock[] } 
 }
 
 /** What a request's block asks of "Talk to the project" (YN-212 §3.2), which keeps the draft and Core's answers:
- * follow it up in the composer, confirm it done, or send its words again; another `seq` is another. */
-export type TalkCommand = { kind: "follow" | "confirm" | "resend"; n: number; seq: number };
+ * follow it up in the composer, confirm it done, or send its words again, or its follow-up `reply` (R-45 §3.2);
+ * another `seq` is another. */
+export type TalkCommand = { kind: "follow" | "confirm" | "resend"; n: number; reply?: number; seq: number };
 
-/** What the page's blocks show of the actions under way here: a confirmation, a send again, and their errors. */
-export type TalkBusy = { confirming: ReadonlySet<number>; resending: ReadonlySet<number>; errors: ReadonlyMap<number, string> };
+/** What the page's blocks show of the actions under way here: a confirmation, a send again (of a request's words, or
+ * of its follow-ups by request and number), and their errors. */
+export type TalkBusy = {
+  confirming: ReadonlySet<number>; resending: ReadonlySet<number>; followUps: ReadonlyMap<number, ReadonlySet<number>>;
+  errors: ReadonlyMap<number, string>;
+};
 
 /** Older requests than those read, for the page's blocks: whether there are, a read under way, and how to read them. */
 export type TalkOlder = { hasMore: boolean; reading: boolean; read: () => void };
@@ -536,7 +541,13 @@ export function ProjectTalk({
 
   useEffect(() => {
     const numbers = new Set([...resending].filter((id) => id.startsWith("r:")).map((id) => Number(id.slice(2))));
-    onBusy?.({ confirming, resending: numbers, errors: confirmErrors });
+    const followUps = new Map<number, Set<number>>();
+    for (const id of resending) {
+      if (!id.startsWith("f:")) continue;
+      const [n, m] = id.slice(2).split(":").map(Number);
+      followUps.set(n, (followUps.get(n) ?? new Set()).add(m));
+    }
+    onBusy?.({ confirming, resending: numbers, followUps, errors: confirmErrors });
   }, [confirming, resending, confirmErrors, onBusy]);
   // A block's action (YN-212 §3.2), once for each `seq`.
   const ran = useRef(0);
@@ -547,7 +558,10 @@ export function ProjectTalk({
     else if (command.kind === "confirm") void confirm(command.n);
     else {
       const request = byN.get(command.n);
-      if (request) void resend(`r:${command.n}`, request);
+      const reply = command.reply === undefined ? undefined : request?.replies.find((r) => r.n === command.reply);
+      // The same IDs the conversation sends them again by, so either shows the other's under way.
+      if (request && reply) void resend(`f:${command.n}:${reply.n}`, request, reply);
+      else if (request && command.reply === undefined) void resend(`r:${command.n}`, request);
     }
     // Run when a new command comes; the draft and the requests are read as they are then.
     // eslint-disable-next-line react-hooks/exhaustive-deps
