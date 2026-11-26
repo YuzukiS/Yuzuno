@@ -174,11 +174,37 @@ pub(crate) fn request_head(workspace: &str, project: &str, project_id: &str, n: 
     )
 }
 
-/// What a follow-up's Agent reads before its words.
-pub(crate) fn follow_up_head(workspace: &str, project: &str, project_id: &str, n: i64) -> String {
+/// What the front desk reads before a follow-up's words (R-45, the user's
+/// choice on YN-233: only the front desk replies): the follow-up by its
+/// number m; that it replies for the project where the user reads it, by
+/// that number; and the request's tasks with who answers for each now,
+/// whom it asks for material itself. Each name at most a line (MAX_LINE).
+/// `desk` is None for an Agent that is not the front desk now (a follow-up
+/// sent again under its client ID to whom it first went, before R-45): only
+/// its number.
+pub(crate) fn follow_up_head(workspace: &str, project: &str, project_id: &str, n: i64, m: i64, desk: Option<&[(String, String)]>) -> String {
+    let Some(tasks) = desk else {
+        return format!(
+            "Follow-up #{m} to request R-{n} from the user, in the project {project} (Workspace {workspace}, Project {project_id}); \
+             the user's words travel as they are:"
+        );
+    };
+    let tasks = if tasks.is_empty() {
+        String::new()
+    } else {
+        let line = |name: &str| match name.char_indices().nth(routes::MAX_LINE) {
+            Some((at, _)) => format!("{}…", &name[..at]),
+            None if name.is_empty() => "no one now".to_owned(),
+            None => name.to_owned(),
+        };
+        let each = tasks.iter().map(|(task, who)| format!("{task} ({})", line(who))).collect::<Vec<_>>().join(", ");
+        format!(" Its tasks and who answers for each now: {each}; ask them yourself for what you need (task_comment with notifyAgentId, \
+            or peer_send), never send the user to them.")
+    };
     format!(
-        "Follow-up to request R-{n} from the user, in the project {project} (Workspace {workspace}, Project {project_id}); \
-         the user's words travel as they are:"
+        "Follow-up #{m} to request R-{n} from the user, in the project {project} (Workspace {workspace}, Project {project_id}). You reply \
+         for the project, where the user reads it: project_route with request R-{n}, your note as the reply and replyTo [{m}] (no title \
+         or routes needed); a card, result or report is no reply.{tasks} The user's words travel as they are:"
     )
 }
 
@@ -610,34 +636,32 @@ pub(super) fn waits_for_slot(db: &Connection, agent: &str) -> Result<bool> {
     Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM executor_slots WHERE agent_id=?1 AND state='waiting')", [agent], |r| r.get(0))?)
 }
 
-/// Who a follow-up goes to (YN-86 §4.4): once the request is routed, each
-/// open Agent that answers for one of its cards now (cards.rs: the task's
-/// newest executor not yet released, else its assignee), in the order its
-/// routes came, but an executor still waiting for its slot, which takes no
-/// message before it starts (executor_slots.rs); until then, or when none
-/// of its cards has such an Agent, the front desk as it is now.
-fn follow_up_to(db: &Connection, project: &str, request: &str) -> Result<Vec<String>> {
-    let mut to: Vec<String> = Vec::new();
-    for task in progress::routed_tasks(db, request)? {
-        let Some(agent) = crate::project_brief::responsible_agent(db, &task)? else { continue };
-        let open: bool = db
-            .query_row("SELECT json_extract(data,'$.agent.closedAt') IS NULL FROM agents WHERE id=?1", [&agent], |r| r.get(0))
-            .optional()?
-            .unwrap_or(false);
-        if open && !waits_for_slot(db, &agent)? && !to.contains(&agent) {
-            to.push(agent);
-        }
-    }
-    if to.is_empty() {
-        to.push(front_desk_now(db, project)?);
-    }
-    Ok(to)
+/// Who a follow-up goes to: the front desk as it is now, which replies for
+/// the project (R-45, the user's choice on YN-233: only the front desk
+/// replies to the user); the Agents answering for the request's cards are
+/// its to ask (`follow_up_head`). None: refused as a request is.
+fn follow_up_to(db: &Connection, project: &str) -> Result<Vec<String>> {
+    Ok(vec![front_desk_now(db, project)?])
+}
+
+/// The request's tasks, each by its key, with the name of who answers for
+/// it now ("" for none), in the order its routes came.
+fn request_tasks(db: &Connection, request: &str) -> Result<Vec<(String, String)>> {
+    progress::routed_tasks(db, request)?
+        .into_iter()
+        .map(|task| {
+            let who = match crate::project_brief::responsible_agent(db, &task)? {
+                Some(agent) => routes::agent(db, &agent)?["name"].as_str().unwrap_or_default().to_owned(),
+                None => String::new(),
+            };
+            Ok((crate::collaboration_store::task_shown(db, &task), who))
+        })
+        .collect()
 }
 
 /// `POST /api/projects/{id}/requests/{n}/replies` (YN-86 §4.4): the user's
-/// follow-up to request R-n, kept as they wrote it and sent to whoever
-/// answers for the request (`follow_up_to`), each Agent under the same client
-/// ID. The same clientMessageId again is the same follow-up, sent to the same
+/// follow-up to request R-n, kept as they wrote it and sent to the front
+/// desk (`follow_up_to`), under its client ID. The same clientMessageId again is the same follow-up, sent to the same
 /// Agents; with other words it is refused. Refused before it was sent to
 /// anyone, nothing is kept.
 pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words: Words) -> Result<Value> {
@@ -647,7 +671,7 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
     let gate = lock(ws, project).await;
     let _held = gate.lock().await;
     let (id, said) = (project.to_owned(), words.clone());
-    let (place, request, reply) = ws.stored(move |store| {
+    let (place, request, reply, tasks, desk) = ws.stored(move |store| {
         let mut writer = store.db.write()?;
         let tx = writer.transaction()?;
         let place = place(&tx, &id, &said)?;
@@ -662,10 +686,11 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
         if let Some(found) = found {
             ensure!(found.text == said.text && found.text_blocks == said.text_blocks && found.images == said.images
                 && found.files == said.files, "This clientMessageId was already used for another message");
-            return Ok((place, request, found));
+            let (tasks, desk) = (request_tasks(&tx, &request.id)?, front_desk::in_project(&tx, &id)?.effective_agent_id);
+            return Ok((place, request, found, tasks, desk));
         }
         refuse_archived(&place)?;
-        let to = follow_up_to(&tx, &id, &request.id)?;
+        let to = follow_up_to(&tx, &id)?;
         // Every Agent it goes to takes its images and files, or none is sent any of it.
         refuse_images(&tx, &to, &said.images)?;
         refuse_files(&tx, &to, &said.files)?;
@@ -678,13 +703,15 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
             params![request.id, reply.n, reply.text, kept_blocks(&reply.text_blocks)?, reply.at, reply.message_id,
                 serde_json::to_string(&reply.delivered_to)?, kept_images(&reply.images)?, kept_files(&reply.files)?],
         )?;
+        let (tasks, desk) = (request_tasks(&tx, &request.id)?, front_desk::in_project(&tx, &id)?.effective_agent_id);
         tx.commit()?;
-        Ok((place, request, reply))
+        Ok((place, request, reply, tasks, desk))
     }).await?;
-    let head = follow_up_head(&place.workspace, &place.name, project, request.n);
     let origin = json!({"kind":ORIGIN,"projectId":project,"requestId":request.id,"request":request.n,"reply":reply.n,"workspaceId":place.workspace});
     let mut receipts = Vec::new();
     for agent in &reply.delivered_to {
+        let reads = (desk.as_deref() == Some(agent.as_str())).then_some(tasks.as_slice());
+        let head = follow_up_head(&place.workspace, &place.name, project, request.n, reply.n, reads);
         let sent = send(ws, project, agent, &reply.message_id, &reply.files, false, origin.clone(), |turn| {
             message(&reply.message_id, &head, &reply.text, reply.text_blocks.as_deref(), &reply.images, turn)
         }).await;
@@ -762,9 +789,15 @@ fn delivery(db: &Connection, request: &str, agent: &str, client: &str, reply: Op
         .flatten())
 }
 
+/// A follow-up as the page reads it: each Agent it went to with how its
+/// message stands and its name now ("" once deleted, R-45), which the page
+/// shows in a tip, as the project's.
 fn reply_view(db: &Connection, request: &str, reply: Reply) -> Result<Value> {
     let delivered_to = reply.delivered_to.iter()
-        .map(|agent| Ok(json!({"agentId":agent,"delivery":delivery(db, request, agent, &reply.message_id, Some(reply.n))?})))
+        .map(|agent| {
+            let name = routes::agent(db, agent)?["name"].clone();
+            Ok(json!({"agentId":agent,"name":name,"delivery":delivery(db, request, agent, &reply.message_id, Some(reply.n))?}))
+        })
         .collect::<Result<Vec<_>>>()?;
     Ok(json!({"n":reply.n,"text":reply.text,"textBlocks":reply.text_blocks,"images":reply.images,"files":reply.files,"at":reply.at,
         "messageId":reply.message_id,"deliveredTo":delivered_to}))

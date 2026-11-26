@@ -787,32 +787,38 @@ async fn a_failed_route_undoes_nothing_and_its_retry_goes_on_where_it_stopped() 
     assert!(lab.section(&next).await.is_none(), "its card is its executor's to write");
 }
 
-// §4.4: a follow-up goes to the front desk until its request is routed,
-// then to each open Agent answering for one of its cards, each once, not to
-// an executor still waiting for its slot; with none of those, to the front
-// desk. The words go as they were written.
+// §4.4, R-45 (the user's choice on YN-233: only the front desk replies): a
+// follow-up goes to the front desk as it is now, before and after its
+// request is routed, never to the Agents answering for its cards; its words
+// go as they were written, after a head that names each of the request's
+// tasks with who answers for it now, for the front desk to ask.
 #[tokio::test]
-async fn a_follow_up_goes_to_who_answers_for_the_requests_cards() {
+async fn a_follow_up_goes_to_the_front_desk_with_the_requests_tasks_and_who_answers_for_them() {
     let lab = lab();
     let n = lab.say("导出要 CSV", "m1").await;
     let before = follow_up(&lab.ws, &lab.project, n, lab.words("还要 JSON", "f1")).await.unwrap();
     assert_eq!(before["reply"]["deliveredTo"].as_array().unwrap().iter().map(|d| d["agentId"].clone()).collect::<Vec<_>>(), [json!("desk")]);
-    lab.route("desk", n, "导出", "好。", vec![to_agent("导出代码", "lead", "开发协调"), to_agent("导出文档", "member", "写文档"),
-        to_agent("导出测试", "lead", "也归开发协调"), design("导出格式", "比较格式")]).await.unwrap();
+    assert!(!lab.receipt("desk", "f1").unwrap().input.text.contains("Its tasks"), "no task yet");
+    let made = lab.route("desk", n, "导出", "好。", vec![to_agent("导出代码", "lead", "开发协调"), to_agent("导出文档", "member", "写文档"),
+        design("导出格式", "比较格式")]).await.unwrap();
+    let key = |index: usize| made["routes"][index]["task"].as_str().unwrap().to_owned();
     let text = " 再加 XML \n";
     let after = follow_up(&lab.ws, &lab.project, n, lab.words(text, "f2")).await.unwrap();
-    let to: Vec<_> = after["reply"]["deliveredTo"].as_array().unwrap().iter().map(|d| d["agentId"].clone()).collect();
-    assert_eq!(to, [json!("lead"), json!("member")], "each once, not the waiting executor");
-    for agent in ["lead", "member"] {
-        assert!(lab.receipt(agent, "f2").unwrap().input.text.ends_with(&format!("\n\n{text}")));
-    }
-    assert!(lab.receipt("desk", "f2").is_none());
-    // Its cards' Agents closed: the front desk.
-    for agent in ["lead", "member"] {
-        lab.ws.store.update(agent, "test/closed", &json!({}), |d| d.agent.closed_at = Some(crate::model::now())).unwrap();
-    }
-    let alone = follow_up(&lab.ws, &lab.project, n, lab.words("还有吗", "f3")).await.unwrap();
-    assert_eq!(alone["reply"]["deliveredTo"][0]["agentId"], "desk");
+    let to: Vec<_> = after["reply"]["deliveredTo"].as_array().unwrap().iter().map(|d| (d["agentId"].clone(), d["name"].clone())).collect();
+    assert_eq!(to, [(json!("desk"), json!("Desk"))], "the front desk only");
+    let sent = lab.receipt("desk", "f2").unwrap().input.text;
+    assert!(sent.ends_with(&format!("\n\n{text}")), "{sent}");
+    let executor = made["routes"][2]["to"]["name"].as_str().unwrap().to_owned();
+    assert!(sent.contains(&format!("Its tasks and who answers for each now: {} (Lead), {} (Member), {} ({executor});", key(0), key(1), key(2))),
+        "{sent}");
+    assert!(sent.contains("never send the user to them"), "{sent}");
+    assert!(lab.receipt("lead", "f2").is_none() && lab.receipt("member", "f2").is_none());
+    // Another front desk now: the next follow-up goes to it.
+    let version = front_desk::get(&lab.ws.store, &lab.project).unwrap().version;
+    front_desk::save(&lab.ws.store, &lab.project, version, Some("lead".into())).unwrap();
+    let next = follow_up(&lab.ws, &lab.project, n, lab.words("还有吗", "f3")).await.unwrap();
+    assert_eq!(next["reply"]["deliveredTo"][0]["agentId"], "lead");
+    assert!(lab.receipt("lead", "f3").unwrap().input.text.contains("replyTo [3]"));
 }
 
 // §4.5, §8: a request's progress is read from its cards' tasks only, and
@@ -1011,3 +1017,5 @@ mod route_deliverable_tests;
 mod route_join_tests;
 #[path = "route_progress_tests.rs"]
 mod route_progress_tests;
+#[path = "route_reply_tests.rs"]
+mod route_reply_tests;

@@ -156,7 +156,8 @@ pub(super) const CONFIRM_FROM: &str = "requests.confirmFrom";
 
 /// What `view` (project_requests.rs) adds to a request once the front desk
 /// has seen it (YN-86 §4.5):
-/// - `notes`: the front desk's short replies, oldest first;
+/// - `notes`: the front desk's short replies, oldest first, each with the
+///   follow-ups it answers (`replyTo`, R-45) or null;
 /// - `routes`: its routes and the user's reassignments of its cards, by time;
 /// - `cards`: one per task it went to, as Home shows the card and who
 ///   answers for it now, with its task's newest result (`result`) and what
@@ -297,13 +298,20 @@ fn answered(db: &Connection, request: &str, rows: &[RouteRow]) -> Result<bool> {
     })
 }
 
+/// The front desk's notes, oldest first: each by its number, with the
+/// follow-ups it answers (`replyTo`, R-45) by theirs, or null for a note
+/// that named none (every note from before replyTo).
 fn notes(db: &Connection, request: &str) -> Result<Vec<Value>> {
+    type Row = (i64, String, String, String, Option<String>);
     let rows = db
-        .prepare_cached("SELECT note,by_agent_id,at FROM project_request_notes WHERE request_id=?1 ORDER BY n")?
-        .query_map([request], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+        .prepare_cached("SELECT n,note,by_agent_id,at,reply_to FROM project_request_notes WHERE request_id=?1 ORDER BY n")?
+        .query_map([request], |r| Ok::<Row, _>((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter()
-        .map(|(note, by, at)| Ok(json!({"note":note,"by":routes::agent(db, &by)?,"at":at})))
+        .map(|(n, note, by, at, reply_to)| {
+            let reply_to: Value = reply_to.map(|raw| serde_json::from_str(&raw)).transpose()?.unwrap_or(Value::Null);
+            Ok(json!({"n":n,"note":note,"by":routes::agent(db, &by)?,"at":at,"replyTo":reply_to}))
+        })
         .collect()
 }
 

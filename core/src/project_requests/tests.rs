@@ -211,7 +211,10 @@ fn the_longest_head_fits_beside_the_longest_words() {
     let (workspace, project_id, name) = ("w".repeat(64), "p".repeat(64), "😀".repeat(25));
     assert_eq!(name.len(), 100);
     let words = longest();
-    for head in [request_head(&workspace, &name, &project_id, i64::MAX), follow_up_head(&workspace, &name, &project_id, i64::MAX)] {
+    // R-45: the front desk's follow-up head names the request's tasks, at most one per route (six), each name a line at most.
+    let tasks: Vec<(String, String)> = (0..6).map(|i| (format!("{}-{i}", "K".repeat(48)), "😀".repeat(300))).collect();
+    for head in [request_head(&workspace, &name, &project_id, i64::MAX), follow_up_head(&workspace, &name, &project_id, i64::MAX, i64::MAX, Some(&tasks)),
+        follow_up_head(&workspace, &name, &project_id, i64::MAX, i64::MAX, None)] {
         let sent = message("m", &head, &words, None, &[], None);
         assert!(sent.text.len() - words.len() <= MAX_MESSAGE_TEXT - MAX_REPLY, "a head of {} bytes", sent.text.len() - words.len());
         assert!(sent.text.len() <= MAX_MESSAGE_TEXT);
@@ -264,8 +267,10 @@ async fn a_follow_up_goes_to_the_front_desk_while_its_request_is_not_routed() {
     assert_eq!((answer["reply"]["n"].clone(), answer["reply"]["text"].clone()), (json!(1), json!(text)));
     assert_eq!(answer["reply"]["deliveredTo"][0]["agentId"], "b");
     let sent = receipt(&ws, "b", "f1").unwrap();
-    let head = follow_up_head(&workspace, "Code", &project, 1);
-    assert!(head.starts_with("Follow-up to request R-1 from the user"));
+    // b is the front desk: its head says how to reply to the follow-up, by its number (R-45); no task yet.
+    let head = follow_up_head(&workspace, "Code", &project, 1, 1, Some(&[]));
+    assert!(head.starts_with("Follow-up #1 to request R-1 from the user"), "{head}");
+    assert!(head.contains("project_route with request R-1, your note as the reply and replyTo [1]"), "{head}");
     assert_eq!(sent.input.text, format!("{head}\n\n{text}"));
     let moved = &sent.input.text_blocks.as_ref().unwrap()[0];
     assert_eq!(utf16(&sent.input.text, moved.start, moved.end), "PASTED");
