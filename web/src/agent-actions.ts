@@ -1,3 +1,4 @@
+import { useMemo, useRef } from "react";
 import { strings, type Language } from "./i18n";
 import { nativeSession } from "./machine-checks";
 import type { Agent } from "./types";
@@ -59,6 +60,24 @@ export interface AgentActionHandlers {
   rename?: (id: string) => void;
   /** Copies a link to the Agent itself (T-184), where links are offered. */
   copyLink?: (id: string) => void;
+}
+
+/**
+ * The same handlers on every render while the same entries are offered
+ * (YN-234), each calling the latest of `handlers` when it runs. A rail row
+ * given them is drawn again for its own changes only, not for every render
+ * of the list; an entry offered or withdrawn still gives new handlers.
+ */
+export function useSteadyActions(handlers: AgentActionHandlers): AgentActionHandlers {
+  const latest = useRef(handlers);
+  latest.current = handlers;
+  const offered = (Object.keys(handlers) as (keyof AgentActionHandlers)[]).filter((key) => handlers[key]).sort().join(" ");
+  return useMemo(() => {
+    const steady: Partial<Record<keyof AgentActionHandlers, (id: string) => unknown>> = {};
+    for (const key of offered.split(" ") as (keyof AgentActionHandlers)[])
+      if (key) steady[key] = (id: string) => (latest.current[key] as ((id: string) => unknown) | undefined)?.(id);
+    return steady as AgentActionHandlers;
+  }, [offered]);
 }
 
 /** An OpenCode Agent made with OpenCode 1.19.3 (T-32): one with a session
