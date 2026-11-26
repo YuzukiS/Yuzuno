@@ -12,10 +12,12 @@
 //! YN-184).
 mod front_desk;
 mod owed;
+pub(crate) mod pending;
 mod progress;
 mod reassign;
 pub(crate) mod routes;
 pub(crate) use front_desk::lead_left;
+pub(crate) use pending::desk_changed;
 pub(crate) use progress::handoffs;
 
 use crate::{
@@ -103,7 +105,8 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     // (YN-184), kept once: a request settled before it is done as the rule
     // before made it, with no confirmation written in the user's name.
     db.execute("INSERT OR IGNORE INTO workspace_meta(key,value) VALUES(?1,?2)", params![progress::CONFIRM_FROM, crate::model::now()])?;
-    routes::migrate(db)
+    routes::migrate(db)?;
+    pending::migrate(db)
 }
 
 /// What the user said, as their page sends it.

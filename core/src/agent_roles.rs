@@ -262,6 +262,9 @@ pub(crate) fn save(store: &Store, project: &str, expected: i64, ids: Vec<String>
          ON CONFLICT(project_id) DO UPDATE SET version=excluded.version",
         params![project, version],
     )?;
+    // Its front desk may be another lead now (its only lead): told what went
+    // to someone else (project_requests/pending.rs).
+    crate::project_requests::desk_changed(&tx, project)?;
     let saved = leads_in(&tx, project)?;
     tx.commit()?;
     Ok(saved)

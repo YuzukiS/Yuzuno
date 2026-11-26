@@ -737,7 +737,8 @@ Nor is a lead's or your work its to do, so its list of Yuzuno's tools leaves
 out the ones Core would refuse it anyway (YN-192): `machines_list`,
 `handover_update`, `executor_templates_change`, `executor_release`,
 `merge_enqueue`, `merge_cancel`, `merge_retry`, `merge_unpause`,
-`merge_revert`, `cleanup_restore` and `project_route`. Called anyway, each
+`merge_revert`, `cleanup_restore`, `project_route` and
+`project_requests_pending`. Called anyway, each
 refuses it by its own check, as before. Its harness reads the list when the
 executor's session starts.
 

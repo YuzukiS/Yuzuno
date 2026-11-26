@@ -156,6 +156,8 @@ pub struct Workspace {
     pub(crate) results: Arc<crate::results::Validator>,
     /// The turn-end Brief check's journal position (see `brief_turns`).
     pub(crate) brief_turns: crate::brief_turns::State,
+    /// What the front desks owe the user: the reminder passes' positions (project_requests/pending.rs).
+    pub(crate) pending_replies: crate::project_requests::pending::State,
     /// The previous Machine Load sample (see `machine_load`).
     pub(crate) machine_load: crate::machine_load::State,
     /// Each SSH machine's remote session, for `/api/machine-live` (YN-83 S1;
@@ -256,6 +258,7 @@ impl Workspace {
             child_changes: Default::default(),
             results: Arc::new(crate::results::Validator::from_env()),
             brief_turns: Default::default(),
+            pending_replies: Default::default(),
             machine_load: Default::default(),
             machine_live: Default::default(),
             gpus: Default::default(),

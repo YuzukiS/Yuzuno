@@ -103,12 +103,13 @@ pub(crate) fn read_only_allows(tool: &str) -> bool {
 /// - merge_unpause, merge_revert: merge_queue/store.rs, a lead of the repository's Project
 /// - cleanup_restore: cleanup_plans/worktrees.rs, a lead of the plan's task's Project
 /// - project_route: project_requests/routes.rs, the Project's front desk, a lead
+/// - project_requests_pending: project_requests/pending.rs, a lead of the Project
 ///
 /// A tool added later is listed until named here.
-pub(crate) const LEAD_ONLY_TOOLS: [&str; 11] = [
+pub(crate) const LEAD_ONLY_TOOLS: [&str; 12] = [
     "machines_list", "handover_update", "executor_templates_change", "executor_release",
     "merge_enqueue", "merge_cancel", "merge_retry", "merge_unpause", "merge_revert",
-    "cleanup_restore", "project_route",
+    "cleanup_restore", "project_route", "project_requests_pending",
 ];
 
 /// Whether an executor's tools/list shows Yuzuno's tool `tool`.
