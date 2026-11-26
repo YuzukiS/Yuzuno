@@ -30,8 +30,15 @@ import sys
 
 DATA = re.compile(r"^\s*const (UNIT_DATA|CONCURRENCY_DATA|CPU_USAGE) = (.*?);\s*$", re.M | re.S)
 FIELD = re.compile(r"<td>([A-Za-z ]+):</td>\s*<td>(.*?)</td>", re.S)
-# The target part of a unit: ` name "kind"`, with ` (test)` for a test build.
-TARGET = re.compile(r'\A (?:\S+ )?"([\w-]+)"( \(test\))?\Z')
+# The target part of a unit. Cargo 1.97 writes ` name "kind"` (` core_app
+# "lib" (test)`, ` signals "test" (test)`) and ` build-script`, as in
+# fixtures/cargo-timing-1.97.1.html; older Cargo wrote ` kind "name"`,
+# ` lib (test)` and ` build script`. Both are read: the quoted word is the
+# kind when it is one, else the word before it.
+TARGET = re.compile(r'\A (?:([\w-]+) )?"([^"]+)"( \(test\))?\Z')
+UNNAMED = re.compile(r'\A (lib)( \(test\))?\Z')
+BUILD_SCRIPT = re.compile(r'\A build[- ]script( \(run\))?\Z')
+TARGET_KINDS = {"lib", "rlib", "proc-macro", "bin", "test", "example", "bench"}
 SLOWEST = 15
 KINDS = {  # kind: what the summary calls it, in this order
     "lib": "library",
@@ -64,16 +71,22 @@ def seconds(value):
 
 def kind_of(unit):
     target = unit.get("target", "")
-    if unit.get("mode") == "run-custom-build" or target.strip() == "build-script (run)":
+    if unit.get("mode") == "run-custom-build":
         return "build script run"
-    if target.strip() == "build-script":
-        return "build script"
     if target == "":
         return "lib"
+    script = BUILD_SCRIPT.match(target)
+    if script:
+        return "build script run" if script.group(1) else "build script"
     match = TARGET.match(target)
-    if not match:
-        return "other"
-    kind, test = match.group(1), bool(match.group(2))
+    if match:
+        word, quoted, test = match.group(1), match.group(2), bool(match.group(3))
+        kind = quoted if quoted in TARGET_KINDS else word
+    else:
+        match = UNNAMED.match(target)
+        if not match:
+            return "other"
+        kind, test = match.group(1), bool(match.group(2))
     if kind in ("lib", "rlib", "proc-macro"):
         return "lib test" if test else "lib"
     if kind == "bin":

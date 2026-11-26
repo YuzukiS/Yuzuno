@@ -5,6 +5,7 @@ Run: python3 -m unittest discover -s .github/scripts
 import io
 import json
 import os
+from pathlib import Path
 import tempfile
 import unittest
 import unittest.mock
@@ -74,7 +75,49 @@ const BOX_HEIGHT = 25;
 """
 
 
+FIXTURE = Path(__file__).with_name("fixtures") / "cargo-timing-1.97.1.html"
+
+
 class Kinds(unittest.TestCase):
+    def test_a_real_cargo_1_97_report(self):
+        # Copied from cargo 1.97.1's own report, the toolchain CI pins: the
+        # labels are what Cargo writes, not what this test assumes.
+        units, concurrency, cpu, fields = cargo_timings.parse(FIXTURE.read_text())
+        kinds = sorted((u["name"], u["target"], cargo_timings.kind_of(u)) for u in units)
+        self.assertEqual(kinds, [
+            ("core-app", "", "lib"),
+            ("core-app", " build-script", "build script"),
+            ("core-app", " build-script (run)", "build script run"),
+            ("core-app", ' core-app "bin"', "bin"),
+            ("core-app", ' core-app "bin" (test)', "bin test"),
+            ("core-app", ' core-helper "bin"', "bin"),
+            ("core-app", ' core-helper "bin" (test)', "bin test"),
+            ("core-app", ' core_app "lib" (test)', "lib test"),
+            ("core-app", ' lab "example"', "example"),
+            ("core-app", ' signals "test" (test)', "integration test"),
+            ("core-app", ' speed "bench" (test)', "bench"),
+            ("derive-probe", "", "lib"),
+            ("helper", "", "lib"),
+        ])
+        result = cargo_timings.summarize(units, concurrency, cpu, fields)
+        packages = {(g["package"], g["kind"]) for g in result["groups"]}
+        self.assertIn(("core-app", "integration test"), packages)
+        self.assertIn((None, "lib"), packages)  # helper and derive-probe: dependencies
+        self.assertNotIn(("helper", "lib"), packages)
+        self.assertEqual([lib["unit"] for lib in result["workspaceLibraries"]], ["core-app 0.1.0"])
+        self.assertEqual(set(result["workspaceLibraries"][0]["sections"]), {"frontend", "codegen"})
+        self.assertFalse(result["linkSplit"])
+        self.assertEqual(fields["Fresh units"], "0")
+        self.assertTrue(fields["rustc"].startswith("rustc 1.97.1 "))
+
+    def test_older_cargos_kind_first_labels(self):
+        cases = {' bin "core-app"': "bin", ' bin "core-app" (test)': "bin test", ' test "jobs" (test)': "integration test",
+                 ' example "lab"': "example", ' bench "speed" (test)': "bench", " lib (test)": "lib test",
+                 " build script": "build script", " build script (run)": "build script run"}
+        for target, kind in cases.items():
+            with self.subTest(target=target):
+                self.assertEqual(cargo_timings.kind_of({"target": target}), kind)
+
     def test_each_target_form(self):
         cases = {"": "lib", " build-script": "build script", " build-script (run)": "build script run",
                  ' x "lib" (test)': "lib test", ' x "bin"': "bin", ' x "bin" (test)': "bin test",
