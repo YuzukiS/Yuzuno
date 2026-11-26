@@ -385,6 +385,10 @@ fn the_current_path_reads_through_its_indexes() {
         (super::NEWEST_SUBSCRIPTIONS, "ci_subscriptions_task"), (super::SUBSCRIPTION_COUNT, "ci_subscriptions_task"),
         (super::LATEST_REVIEWER_RUN, "pr_reviews_task"), (super::REVIEW_COUNTS, "pr_reviews_task"),
         (super::LATEST_RUN, "(watch_id=?)"), (super::MESSAGE_STATE, "(id=?)"),
+        // The same of archived subscriptions and runs (R-39).
+        (crate::ci_monitor::archive::NEWEST_ARCHIVED_SUBSCRIPTIONS, "ci_subscriptions_archive_task"),
+        (crate::ci_monitor::archive::ARCHIVED_SUBSCRIPTION_COUNT, "ci_subscriptions_archive_task"),
+        (crate::ci_monitor::archive::LATEST_ARCHIVED_RUN, "(watch_id=?)"), (crate::ci_monitor::archive::LATEST_KEPT_RUN, "(watch_id=?)"),
         // A PR's newest merge entry on the task and its queue (YN-193).
         (super::LATEST_MERGE, "merge_entries_task"), (super::MERGE_QUEUE, "INTEGER PRIMARY KEY"),
         // A research record and its line (T-17): by key, never the history.

@@ -363,7 +363,9 @@ export interface HomeReplySnapshot {
   form: {
     id: string;
     title: string;
-    fields: { id: string; label: string; type: "text" | "single" | "multi"; answer: string | string[] }[];
+    /** `options`: a choice's options as that version offered them, by label (YN-230); absent for words, and from
+     * a reply kept before Core kept them that Core could not read them for from the very version answered. */
+    fields: { id: string; label: string; type: "text" | "single" | "multi"; answer: string | string[]; options?: string[] }[];
   } | null;
 }
 /** One input a person wrote, or may have ("unconfirmed"), in the

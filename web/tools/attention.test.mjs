@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { askingAgents, attentionRank, needsYouTargets, nextTarget, orderByAttention, unseenEnd, waitingSince } from "../src/attention.ts";
+import { askingAgents, attentionRank, needsYouTargets, nextTarget, orderByAttention, restingEnd, unseenEnd, waitingSince } from "../src/attention.ts";
 
 // Who needs the user, and in what order (T-42).
 const agent = (id, extra = {}) => ({
@@ -65,6 +65,32 @@ test("ties keep the list's order, and a Project's leads come first (T-36's inter
   const given = [...agents];
   orderByAttention(given, { seen: {} });
   assert.deepEqual(ids(given), ["a", "b", "c", "d"]);
+});
+
+test("an executor's Turn end is never unseen: its place is the same before and after its conversation is read (YN-232)", () => {
+  const exec = (id, extra = {}) => agent(id, { kind: "executor", executor: { state: "running", agentId: id }, ...extra });
+  // Its last Turn finished, its runtime ready, nothing of it read on any device.
+  const done = exec("done", end(7));
+  const failed = exec("failed", end(8, "failed"));
+  for (const seen of [{}, { done: 7, failed: 8 }]) {
+    assert.equal(unseenEnd(done, seen), null, JSON.stringify(seen));
+    assert.equal(unseenEnd(failed, seen), null, JSON.stringify(seen));
+    assert.equal(attentionRank(done, seen), "idle", JSON.stringify(seen));
+  }
+  // Core's fact stays, read or not: how its last Turn ended, while it rests.
+  assert.equal(restingEnd(done), "finished");
+  assert.equal(restingEnd(failed), "failed");
+  assert.equal(restingEnd({ ...failed, status: "working" }), null, "a Turn runs again");
+  assert.equal(restingEnd({ ...failed, closedAt: "2026-11-05T00:00:00Z" }), null);
+  // The same list, unread here and read through: the same order.
+  const list = [agent("lead", { kind: "lead", ...end(3) }), exec("w", { status: "working" }), done, exec("quiet")];
+  const before = ids(orderByAttention(list, { seen: {} }));
+  assert.deepEqual(before, ["lead", "w", "done", "quiet"], "a lead's unseen end still goes first");
+  assert.deepEqual(ids(orderByAttention(list, { seen: { lead: 3, done: 7 } })), ["w", "lead", "done", "quiet"],
+    "only the lead's place changes once read");
+  assert.deepEqual(ids(orderByAttention(list.filter((a) => a.id !== "lead"), { seen: {} })),
+    ids(orderByAttention(list.filter((a) => a.id !== "lead"), { seen: { done: 7 } })));
+  // (The executors' own order, executorRank, is executor-seen-ui.test.mjs's: it reads the app's strings.)
 });
 
 test("waiting since takes each Agent's oldest request or question, and no Ask", () => {

@@ -861,10 +861,10 @@ It never holds a key's value or an account's email.
 - **The sidebar.** In each Project's list, leads come first, then the
   other Agents, then a 任务执行者 · Executors group and, folded by default,
   已归档 · Archived. With attention order, executors are ordered by: waiting
-  on you, or failed; handed in; running; archiving;
-  queued or starting. A failed executor shows there only while its task is
-  blocked on it; a released one, under Archived and in Closed. While some
-  wait for a slot, the group's heading says how many are queued and how
+  on you, or failed (its start, or its Turn as its row says it); handed in;
+  running; archiving; queued or starting. A failed executor shows there only
+  while its task is blocked on it; a released one, under Archived and in
+  Closed. While some wait for a slot, the group's heading says how many are queued and how
   many run.
 - **Every Agent's row** has no avatar (rail v11, the user's answers to
   design/ask-rail-readability). Line one is a standing Agent's or a lead's
@@ -885,10 +885,18 @@ It never holds a key's value or an account's email.
   motion nothing turns or breathes. Once its Turn ends, an Agent's ring
   rests at the grey idle ring, and a pill says what holds it (YN-92: a
   turning ring reads as at work). Only a lead shows updates unread, as a
-  small dot at the ring's top left with no count; other Agents show none.
+  small dot at the ring's top left with no count; other Agents show none,
+  and a folded Project group's unread count leaves executors out.
+  - An executor's row never says whether its conversation has been opened
+    (YN-232, the user: they talk with the lead, not with each executor): no
+    ✓ or "Finished · unseen" for a Turn it ended, what it left running shown
+    at once, and its place in the attention order the same either way.
+    Opening its conversation, or reading it to its end, changes none of its
+    row's states, words or ring.
   - An executor's: working while a Turn runs on its task (compacting too;
     handed in too, while a Turn runs on its next slice); needs you while a
-    request or question waits; ✕ when its start or its Turn failed; ✓ once
+    request or question waits; ✕ when its start or its Turn failed (its
+    runtime in error, or its last Turn failed and none has run since); ✓ once
     released or archiving (what an archiving one waits for is line two);
     otherwise grey. At work on its task with no Turn running, it is grey
     with a pill, the first that holds: what it left running (在等 Job
@@ -924,9 +932,9 @@ It never holds a key's value or an account's email.
     row has seen the call hold the Turn for a second, so quick calls never
     flash, and goes when it ends. Thinking, writing or any other call shows
     none, whatever runs in the background.
-  - While no Turn runs (and its last end has been seen), what it started
-    and left running counts: review rounds preparing or running whose result
-    is mailed to it, and the background shells (Claude, Codex) and Claude
+  - While no Turn runs (a standing Agent's last end seen; an executor's at
+    once), what it started and left running counts: review rounds preparing
+    or running whose result is mailed to it, and the background shells (Claude, Codex) and Claude
     sub-agents its live connection reports (`GET /api/waits/live`); CI it
     watches that runs, is being found or awaits its first run
     (`/api/ci/live`); Jobs queued or holding a reservation

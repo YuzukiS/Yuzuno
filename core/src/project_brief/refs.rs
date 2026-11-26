@@ -143,9 +143,13 @@ impl<'a> Refs<'a> {
                 None => None,
             },
             "ci" => {
+                // A run key or a run's number, in the main table or the archive (R-39).
                 let run = match data(db, "SELECT data FROM ci_runs WHERE id=?1", id)? {
                     Some(run) => Some(run),
-                    None => data(db, "SELECT data FROM ci_runs WHERE json_extract(data,'$.runId')=?1 ORDER BY seq DESC LIMIT 1", id)?,
+                    None => match data(db, "SELECT data FROM ci_runs_archive WHERE id=?1", id)? {
+                        Some(run) => Some(run),
+                        None => data(db, "SELECT data FROM (SELECT seq,data FROM ci_runs WHERE json_extract(data,'$.runId')=?1 UNION ALL SELECT seq,data FROM ci_runs_archive WHERE run_id=?1) ORDER BY seq DESC LIMIT 1", id)?,
+                    },
                 };
                 run.map(|run| {
                     let mut shown = state(json!({"found":true,"title":run["name"],"url":run["url"]}), run["status"].as_str().unwrap_or("unknown"));

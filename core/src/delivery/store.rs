@@ -769,24 +769,20 @@ fn ci(db: &Connection, r: &Round) -> Result<Value> {
     let Some(id) = r.ci.id.as_deref() else {
         return Ok(Value::Null);
     };
-    let sub: Option<(String, bool, i64)> = db
-        .query_row(
-            "SELECT watch_id,active,expires FROM ci_subscriptions WHERE id=?1",
-            [id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()?;
-    let Some((wid, active, expires)) = sub else {
+    // An ended flow's subscription may be archived (R-39).
+    let Some(place) = crate::ci_monitor::archive::subscription_place(db, id)? else {
         return Ok(Value::Null);
     };
-    let raw: String = db.query_row("SELECT data FROM ci_watches WHERE id=?1", [&wid], |row| {
+    let (wid, active, expires): (String, bool, i64) = db.query_row(
+        &format!("SELECT watch_id,active,expires FROM {} WHERE id=?1", place.subscriptions()),
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let raw: String = db.query_row(&format!("SELECT data FROM {} WHERE id=?1", place.watches()), [&wid], |row| {
         row.get(0)
     })?;
     let w: Value = serde_json::from_str(&raw)?;
-    let mut query=db.prepare("SELECT r.data FROM ci_watch_runs wr JOIN ci_runs r ON r.id=wr.run_id WHERE wr.watch_id=?1 ORDER BY r.seq DESC")?;
-    let rows = query
-        .query_map([wid], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = crate::ci_monitor::archive::watch_runs(db, &wid, place)?;
     // Runs can be retried or started again for one SHA. Use the latest run and
     // attempt per workflow/event, not an old success or a superseded failure.
     let mut latest = std::collections::BTreeMap::<String, Value>::new();

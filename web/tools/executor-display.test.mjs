@@ -6,6 +6,8 @@ import { REVIEW_ROUNDS, elapsedText, executorView, prStatus } from "../src/execu
 // executorView's rules that holds, from its lifecycle (Core's
 // executor_lifecycle.rs) and its runtime status together.
 const agent = (extra = {}) => ({ status: "idle", pendingCount: 0, closedAt: null, disconnectedAt: null, ...extra });
+const failedEnd = { seq: 9, outcome: "failed", at: "2026-11-06T11:30:00Z" };
+const finishedEnd = { seq: 9, outcome: "finished", at: "2026-11-06T11:30:00Z" };
 const life = (state, extra = {}) => ({ state, agentId: "e", dispatchedAt: "2026-11-06T10:00:00Z", since: "2026-11-06T11:00:00Z", ...extra });
 const shown = (lifecycle, a = agent(), more = {}) => {
   const view = executorView({ agent: a, lifecycle, ...more });
@@ -30,7 +32,14 @@ test("each lifecycle and runtime pair says exactly one state, the first rule tha
     [life("running"), agent({ status: "working" }), { asking: true }, "needsYou", null],
     [life("queued", { position: 1 }), agent(), { asking: true }, "queued", { kind: "position", position: 1 }],
     [life("running"), agent({ status: "error" }), {}, "failed", { kind: "turnFailed" }],
-    [life("running"), agent(), { unseen: "failed" }, "failed", { kind: "turnFailed" }],
+    // Its last Turn failed and none runs since: failed, from Core's facts, read or not (YN-232).
+    [life("running"), agent({ lastTurnEnd: failedEnd }), {}, "failed", { kind: "turnFailed" }],
+    [life("delivering"), agent({ lastTurnEnd: failedEnd }), {}, "failed", { kind: "turnFailed" }],
+    [life("running"), agent({ status: "working", lastTurnEnd: failedEnd }), {}, "working", null],
+    [life("running"), agent({ lastTurnEnd: finishedEnd }), {}, "working", null],
+    // A read mark is no fact of its: it changes nothing.
+    [life("running"), agent({ lastTurnEnd: finishedEnd }), { unseen: "failed" }, "working", null],
+    [life("running"), agent({ lastTurnEnd: finishedEnd }), { unseen: "finished", waiting: "Waiting · Job" }, "working", { kind: "waiting", label: "Waiting · Job" }],
     [life("running"), agent({ status: "offline" }), {}, "stopped", { kind: "offline" }],
     [life("running"), agent({ disconnectedAt: "2026-11-06T12:00:00Z" }), {}, "stopped", { kind: "offline" }],
     [life("delivering"), agent(), {}, "review", { kind: "awaitingRelease" }],

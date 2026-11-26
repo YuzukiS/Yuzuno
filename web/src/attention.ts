@@ -13,22 +13,32 @@ import type { Agent } from "./types";
 /** The journal seq of the last Turn end this device showed, by Agent. */
 export type TurnSeen = Readonly<Record<string, number>>;
 
-/** How the Agent's last Turn ended, when this device has not seen that end
- * and the Agent is at rest (ready, or ended in error): `finished` or
- * `failed`. A closed Agent, or one working or waiting again, has none. An
- * end the conversation was read past, here or on another device
- * (`reviewedSeq`, the Workspace's), is seen too: a new device, browser
- * profile or cleared storage does not bring back Turns read long ago
- * (review 9392d7c2). */
-export function unseenEnd(agent: Agent, seen: TurnSeen): "finished" | "failed" | null {
+/** How the Agent's last Turn ended, while it is open and at rest (ready, or
+ * ended in error): `finished` or `failed`, as Core says it, whoever has read
+ * it. A closed Agent, or one working or waiting again, has none. */
+export function restingEnd(agent: Pick<Agent, "lastTurnEnd" | "closedAt" | "status">): "finished" | "failed" | null {
   const end = agent.lastTurnEnd;
   if (!end || agent.closedAt) return null;
-  if (!["idle", "error", "uncertain"].includes(agent.status)) return null;
-  return Math.max(seen[agent.id] ?? 0, agent.reviewedSeq ?? 0) >= end.seq ? null : end.outcome;
+  return ["idle", "error", "uncertain"].includes(agent.status) ? end.outcome : null;
+}
+
+/** How the Agent's last Turn ended, when this device has not seen that end
+ * and the Agent is at rest (restingEnd). An end the conversation was read
+ * past, here or on another device (`reviewedSeq`, the Workspace's), is seen
+ * too: a new device, browser profile or cleared storage does not bring back
+ * Turns read long ago (review 9392d7c2). An executor's end is never unseen
+ * (YN-232, the user: they talk with its lead, not with each executor): its
+ * row, ring, card and place in the list say what Core says it is at,
+ * whether its conversation has been opened or not. */
+export function unseenEnd(agent: Agent, seen: TurnSeen): "finished" | "failed" | null {
+  const outcome = restingEnd(agent);
+  if (!outcome || agent.kind === "executor") return null;
+  return Math.max(seen[agent.id] ?? 0, agent.reviewedSeq ?? 0) >= agent.lastTurnEnd!.seq ? null : outcome;
 }
 
 /** The attention ranks, in order: what waits on the user (requests, open
- * questions), a Turn end not seen here, working, at rest, offline. */
+ * questions), a Turn end not seen here (never an executor's), working, at
+ * rest, offline. */
 export const attentionRanks = ["needsYou", "unseen", "working", "idle", "offline"] as const;
 export type AttentionRank = (typeof attentionRanks)[number];
 

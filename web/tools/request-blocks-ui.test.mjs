@@ -263,10 +263,17 @@ test("unfolded: open Asks first, then the task's one card, the answered Asks, jo
   assert.equal(answered.querySelector(".home-kind").textContent.trim(), "Resolved by Dev Lead");
   assert.notEqual(answered.querySelector(".home-changed")?.textContent, "New", "answered and resolved: never New");
   assert.equal(answered.querySelector(".home-answer-ask").textContent, "Casual copy?");
-  assert.equal(answered.querySelector(".home-reply-words").textContent.trim(), "Yes");
   assert.ok(answered.querySelector(".home-answer-unkept"), "an earlier reply, said so");
-  assert.deepEqual([...answered.querySelectorAll(".home-answer-given footer button")].map((b) => b.textContent.trim()), ["Copy answer", "Details"],
+  // YN-230: opened from its line, its record is what was asked for: the reply as sent, then the Ask's explanation.
+  assert.equal(answered.querySelector(".home-answer-toggle").getAttribute("aria-expanded"), "true");
+  assert.equal(answered.querySelector(".home-answer-record .home-reply-words").textContent.trim(), "Yes");
+  assert.equal(answered.querySelector(".home-answer-body .home-answer-body-head").textContent, "This version of the Ask");
+  assert.ok(answered.querySelector(".home-answer-body .home-section-body"), "read here, with nothing to reply");
+  assert.deepEqual([...answered.querySelectorAll(".home-answer-bar button")].map((b) => b.textContent.trim()), ["Hide record"],
     "resolved: nothing more is sent from it");
+  answered.querySelector(".home-answer-toggle").click();
+  await tick(40);
+  assert.equal(answered.querySelector(".home-answer-line .home-reply-words").textContent.trim(), "Yes", "closed: its one line");
   assert.equal(answered.querySelector(".home-ask"), null, "no reply controls under it");
   line.click();
   await tick(40);
@@ -489,10 +496,10 @@ test("the Project's cards: a closed group drawing nothing until opened, then the
   assert.deepEqual(page.errors, []);
 });
 
-// YN-223 (R-29's settled design): an answered Ask in the Project's cards reads the question as the user answered it,
-// its note, then the reply as given; a form's answers by field; folded, the question and what was chosen stay. Read
-// only, nothing can be sent from it; in Chinese, its own words.
-test("the Project's cards: an answered Ask as R-29 settled it, a form's answers, folded and read only, in Chinese", async () => {
+// YN-230 (R-41's design, over R-29's): an answered Ask in the Project's cards reads the question as the user answered
+// it, its note, then one line of what they chose, never the form's own wording; its record, one toggle away, has the
+// form's answers by field. Read only, nothing can be sent from it; in Chinese, its own words.
+test("the Project's cards: an answered Ask as R-41 settled it, a form's answers on one line and in its record, read only, in Chinese", async () => {
   const page = mount({ lang: "zh", readOnly: true, opened: ["project"] });
   const data = fixtures();
   const question = "R-26 的七项建议，这一轮你想推进哪些？每项都可以之后再加。";
@@ -513,26 +520,31 @@ test("the Project's cards: an answered Ask as R-29 settled it, a form's answers,
   assert.equal(card.querySelector(".home-answer-ask").textContent, "R-26 的七项建议，这一轮你想推进哪些？");
   assert.equal(card.querySelector(".home-answer-hint").textContent, "每项都可以之后再加。");
   assert.equal(card.querySelector(".home-answer-label").textContent, "你的回复");
-  assert.equal(card.querySelector(".home-reply-form-title").textContent, "“选择开发范围”的回答");
-  assert.deepEqual([...card.querySelectorAll("dd li")].map((li) => li.textContent), picks, "each choice of the form, as chosen");
-  // Read only: Copy answer and Details, nothing that sends; a form has no options then.
-  assert.deepEqual([...card.querySelectorAll(".home-answer-given footer button")].map((b) => b.textContent.trim()), ["复制回答", "详情"]);
-  // Folded: the question and the answers stay, the form's title and the actions one unfold away.
-  const fold = card.querySelector(".home-answer-byline .home-fold");
-  assert.equal(fold.getAttribute("aria-controls"), card.querySelector(".home-answer").id);
-  fold.click();
+  // One line: what was chosen, joined; no form title, no field label.
+  assert.equal(card.querySelector(".home-answer-picks").textContent, picks.join("、"));
+  assert.equal(card.querySelector(".home-reply-form-title, .home-answer-record, dt"), null, "the form's own wording is in its record");
+  // Read only: the one toggle, nothing that sends.
+  assert.deepEqual([...card.querySelectorAll(".home-answer-bar button")].map((b) => b.textContent.trim()), ["查看回答记录"]);
+  const toggle = card.querySelector(".home-answer-toggle");
+  toggle.click();
   await tick(40);
-  assert.ok(card.classList.contains("is-folded"));
-  assert.equal(card.querySelector(".home-answer-ask").textContent, "R-26 的七项建议，这一轮你想推进哪些？", "the question stays");
-  assert.deepEqual([...card.querySelectorAll("dd li")].map((li) => li.textContent), picks, "what was chosen stays");
-  assert.equal(card.querySelector(".home-reply-form-title"), null);
-  assert.equal(card.querySelector(".home-answer-given footer"), null);
-  const unfold = card.querySelector(".home-answer-unfold");
-  assert.equal(unfold.textContent.trim(), "查看完整回复");
-  unfold.click();
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(toggle.textContent.trim(), "收起记录");
+  const record = card.querySelector(".home-answer-record");
+  assert.equal(record.getAttribute("aria-label"), "回答时的记录");
+  assert.equal(page.text(record.querySelector(".home-answer-record-head")), "回答记录选择开发范围");
+  assert.deepEqual([...record.querySelectorAll(".home-answer-fields > div")].map((row) => [row.querySelector("dt").textContent, row.querySelector("dd").textContent]),
+    [["这轮要做哪些？可多选", picks.join("、")]], "each field and its answer");
+  assert.equal(record.querySelector(".home-answer-others"), null, "the form offers none to show as not chosen");
+  assert.equal(record.querySelector(".home-answer-tools button").textContent.trim(), "复制回答");
+  assert.equal(card.querySelector(".home-answer-line"), null);
+  // Read only: the Ask's explanation is read here, after the answer.
+  assert.equal(card.querySelector(".home-answer-body .home-answer-body-head").textContent, "这版 Ask 的说明");
+  assert.ok(card.querySelector(".home-answer-body .home-section-body"));
+  toggle.click();
   await tick(40);
-  assert.ok(!card.classList.contains("is-folded"), "unfolded again");
-  assert.ok(card.querySelector(".home-answer-given footer"));
+  assert.equal(card.querySelector(".home-answer-record"), null, "closed again");
+  assert.equal(card.querySelector(".home-answer-picks").textContent, picks.join("、"), "its line again");
   assert.deepEqual(page.errors, []);
 });
 
@@ -789,6 +801,28 @@ test("R-43 a request with no progress yet shows the front desk's newest reply ou
     assert.equal(page.text(reply.querySelector(".request-reply-text")), said);
     assert.equal(reply.querySelector("time").getAttribute("datetime"), r42.notes[0].at);
     assert.ok(b.querySelector(".request-stats"), "Core's count stays under it");
+    assert.deepEqual(page.errors, []);
+  }
+});
+
+test("R-38 §2.2 opened, Details list the hand-offs its lead planned after the outcomes, in order, as words", async () => {
+  for (const [lang, title] of [["en", "Planned hand-offs after this"], ["zh", "之后的接力（计划）"]]) {
+    const page = mount({ lang, opened: ["r31"] });
+    const card = section("yn-221", "status", "R-31 runtime", 4, { status: { asOf: ago(4), validFor: 3600, stale: false }, card: bind("YN-221"),
+      body: { root: "body", elements: {
+        body: { type: "BriefBody", props: { summary: { lead: "lead", progress: "plan", relay: "next", size: "wide" } }, children: ["lead", "plan", "next"] },
+        lead: { type: "Markdown", props: { text: "Five of six usable." } },
+        plan: { type: "Plan", props: { steps: [{ id: "a", text: "Caching", state: "done" }, { id: "b", text: "Locate Core CPU", state: "blocked" }] } },
+        next: { type: "Plan", props: { steps: [{ id: "r", text: "Release", state: "doing" }, { id: "i", text: "You install", state: "todo" },
+          { id: "c", text: "YN-221 re-measures", state: "todo" }] } } } } });
+    page.window.renderPage({ requests: [request(31, 300, "doing", [routed(card, "YN-221")])], sections: [card] });
+    await tick();
+    const relay = page.block(31).querySelector(".request-details [data-relay]");
+    assert.ok(relay, lang);
+    assert.equal(page.text(relay.querySelector("h4")), title);
+    assert.deepEqual([...relay.querySelectorAll("li")].map((li) => [page.text(li), li.dataset.state]),
+      [["Release", "doing"], ["You install", "todo"], ["YN-221 re-measures", "todo"]]);
+    assert.equal(page.block(31).dataset.group, "doing", "a planned step of the user's is no to-do");
     assert.deepEqual(page.errors, []);
   }
 });

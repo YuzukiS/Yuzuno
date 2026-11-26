@@ -592,6 +592,12 @@ fn a_home_reply_shows_its_snapshot_only_from_cores_receipt() {
         if !home.is_null() { origin["home"] = home; }
         origin
     };
+    // A form field with the options it offered (YN-230): a choice's, by label; never words', nor anything else.
+    let offered = |at: usize, options: Value| {
+        let mut changed = snapshot("Go");
+        changed["form"]["fields"][at]["options"] = options;
+        changed
+    };
     // Longer than the 8 KiB a field is trimmed above.
     let long = format!("{}end", "word ".repeat(4000));
     let receipts = [
@@ -609,6 +615,9 @@ fn a_home_reply_shows_its_snapshot_only_from_cores_receipt() {
         ("h12", { let mut named = origin(snapshot("Go")); named["sectionId"] = json!(7); named }),
         ("h13", { let mut named = origin(snapshot("Go")); named["sectionId"] = json!("7"); named }),
         ("t1", json!({"kind":"client","home":snapshot("Go")})),
+        ("h14", origin(offered(1, json!(["Keyboard", "Wide text"])))),
+        ("h15", origin({ let mut text = offered(0, json!(["Dark"])); text["form"]["fields"][0]["type"] = json!("text"); text })),
+        ("h16", origin(offered(0, json!([{"id":"dark","label":"Dark"}])))),
     ];
     let user = |id: &str, client: &str| json!({"id":id,"type":"userMessage","clientId":client,
         "content":[{"type":"text","text":"Reply from the user on Home, to version 1 of the Project Brief section `decide`"}]});
@@ -630,7 +639,10 @@ fn a_home_reply_shows_its_snapshot_only_from_cores_receipt() {
             let shown = |id: &str| (item(id)["_yuzunoInput"].clone(), item(id)["_yuzunoHome"].clone());
             assert_eq!(shown("i-h1"), (json!("home"), whole("Go")));
             assert_eq!(shown("i-h2"), (json!("home"), whole(&long)), "whole, however long");
-            for id in ["i-h3", "i-h4", "i-h5", "i-h6", "i-h7", "i-h8", "i-h9", "i-h10"] {
+            let mut kept = identity.clone();
+            kept["snapshot"] = offered(1, json!(["Keyboard", "Wide text"]));
+            assert_eq!(shown("i-h14"), (json!("home"), kept), "a choice with the options it offered");
+            for id in ["i-h3", "i-h4", "i-h5", "i-h6", "i-h7", "i-h8", "i-h9", "i-h10", "i-h15", "i-h16"] {
                 assert_eq!(shown(id), (json!("home"), identity.clone()), "{id}");
             }
             assert_eq!(shown("i-h11"), (json!("home"), Value::Null));

@@ -168,12 +168,19 @@ fn snapshot_shape(snapshot: &Value) -> bool {
     let string = |value: Option<&Value>| value.is_some_and(Value::is_string);
     let text = |value: &Value| value.is_null() || value.is_string();
     let option = |value: &Value| value.as_object().is_some_and(|o| o.len() == 2 && string(o.get("id")) && string(o.get("label")));
+    // A choice may say the options it offered, by label (YN-230, project_brief::home `offered`); words never do.
+    let offered = |f: &serde_json::Map<String, Value>| match f.get("options") {
+        None => true,
+        Some(Value::Array(options)) => matches!(f.get("type").and_then(Value::as_str), Some("single" | "multi")) && options.iter().all(Value::is_string),
+        Some(_) => false,
+    };
     let field = |value: &Value| value.as_object().is_some_and(|f| {
-        f.len() == 4 && string(f.get("id")) && string(f.get("label")) && match (f.get("type").and_then(Value::as_str), f.get("answer")) {
-            (Some("text" | "single"), Some(Value::String(_))) => true,
-            (Some("multi"), Some(Value::Array(answers))) => answers.iter().all(Value::is_string),
-            _ => false,
-        }
+        f.len() == 4 + usize::from(f.contains_key("options")) && offered(f) && string(f.get("id")) && string(f.get("label"))
+            && match (f.get("type").and_then(Value::as_str), f.get("answer")) {
+                (Some("text" | "single"), Some(Value::String(_))) => true,
+                (Some("multi"), Some(Value::Array(answers))) => answers.iter().all(Value::is_string),
+                _ => false,
+            }
     });
     let form = |value: &Value| value.is_null() || value.as_object().is_some_and(|form| {
         form.len() == 3 && string(form.get("id")) && string(form.get("title"))

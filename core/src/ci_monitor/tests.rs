@@ -8,6 +8,8 @@ mod stopped_refresh;
 mod commit_watch;
 #[path = "limits_tests.rs"]
 mod limits;
+#[path = "archive_tests.rs"]
+mod rolling;
 fn setup() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
     let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();

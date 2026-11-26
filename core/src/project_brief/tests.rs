@@ -1536,7 +1536,8 @@ async fn a_delivered_form_reply_keeps_its_answers_by_id_with_the_version_it_answ
     let (_dir, ws, project) = lab();
     let mut setup = put("setup", "ask");
     setup["ask"]["reply"] = json!({"form":{"id":"prefs","title":"Preview setup","fields":[
-        {"id":"checks","type":"multi","label":"Checks","required":true,"options":[{"id":"keys","label":"Keyboard"},{"id":"wide","label":"Wide text"}]}]}});
+        {"id":"checks","type":"multi","label":"Checks","required":true,
+         "options":[{"id":"keys","label":"Keyboard"},{"id":"wide","label":"Wide text"},{"id":"dark","label":"Dark mode"}]}]}});
     accept(&ws, "a", input("s1", 0, vec![setup])).await;
     let workspace = ws.store.workspace_id().unwrap();
     let form: home::FormReply = serde_json::from_value(json!({"formId":"prefs","answers":{"checks":["wide","keys"]}})).unwrap();
@@ -1561,8 +1562,13 @@ async fn a_delivered_form_reply_keeps_its_answers_by_id_with_the_version_it_answ
     assert_eq!(kept(&ws), Some(json!({"version":1,"formId":"prefs","answers":{"checks":["wide","keys"]}})));
     // YN-223: Home shows the answers as given; a reply from before Core kept that is read by the answers kept by id,
     // as this version's form labels them, only while its text says exactly those answers and the ask is that version.
-    let answers = json!({"id":"prefs","title":"Preview setup","fields":[{"id":"checks","label":"Checks","type":"multi","answer":["Wide text","Keyboard"]}]});
+    // YN-230: with the options the choice offered, by label, so what was not chosen shows beside what was.
+    let answers = json!({"id":"prefs","title":"Preview setup","fields":[{"id":"checks","label":"Checks","type":"multi","answer":["Wide text","Keyboard"],
+        "options":["Keyboard","Wide text","Dark mode"]}]});
     let given = snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],"form":answers}));
+    // A snapshot kept before Core kept those options: only the answers.
+    let mut before = given.clone();
+    before["form"]["fields"][0].as_object_mut().unwrap().remove("options");
     let shown = |ws: &Arc<Workspace>| -> Value {
         let home = home::build(&ws.store).unwrap();
         let setup = home["projects"][0]["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "setup").unwrap().clone();
@@ -1573,6 +1579,8 @@ async fn a_delivered_form_reply_keeps_its_answers_by_id_with_the_version_it_answ
             rusqlite::params![project, value]).unwrap();
     };
     assert_eq!(shown(&ws), given);
+    set(&ws, "reply_snapshot", Some(before.to_string().as_str()));
+    assert_eq!(shown(&ws), given, "an earlier snapshot: the options of the very version answered");
     set(&ws, "reply_snapshot", None);
     assert_eq!(shown(&ws), given, "an earlier reply, read by the answers kept by id");
     set(&ws, "reply_text", Some(format!("{text}\n\nAnd dark mode").as_str()));
@@ -1580,6 +1588,14 @@ async fn a_delivered_form_reply_keeps_its_answers_by_id_with_the_version_it_answ
     set(&ws, "reply_text", Some(text.as_str()));
     accept(&ws, "a", input("s1e", 1, vec![edit("setup", json!({"note":markdown("Later context.")}))])).await;
     assert_eq!(shown(&ws), Value::Null, "the ask no longer that version: the reply as sent");
+    // An earlier snapshot of an ask no longer the version answered: its answers only, never another version's options,
+    // not even of a form with the same id whose options changed.
+    set(&ws, "reply_snapshot", Some(before.to_string().as_str()));
+    assert_eq!(shown(&ws), before, "a later version's form is not read for the options");
+    ws.store.db.write().unwrap().execute(
+        "UPDATE project_brief_sections SET data=json_set(data,'$.ask.reply.form.fields[0].options',json(?2)) WHERE project_id=?1 AND key='setup' AND live=1",
+        rusqlite::params![project, r#"[{"id":"keys","label":"Keyboard"},{"id":"wide","label":"Wide text"},{"id":"other","label":"Something else"}]"#]).unwrap();
+    assert_eq!(shown(&ws), before, "nor one with the same form id and other options");
     // Asked again: the earlier reply's answers never count for the new question.
     accept(&ws, "a", input("s2", 2, vec![put("setup", "ask")])).await;
     assert_eq!(kept(&ws), None);
@@ -1668,8 +1684,8 @@ async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
     assert_eq!(kept, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],
         "form":{"id":"prefs","title":"Preview setup","fields":[
             {"id":"dir","label":"Working directory","type":"text","answer":"/home/me/project"},
-            {"id":"theme","label":"Theme","type":"single","answer":"Dark"},
-            {"id":"checks","label":"Checks","type":"multi","answer":["Wide text","Keyboard"]}]}})));
+            {"id":"theme","label":"Theme","type":"single","answer":"Dark","options":["Light","Dark"]},
+            {"id":"checks","label":"Checks","type":"multi","answer":["Wide text","Keyboard"],"options":["Keyboard","Wide text"]}]}})));
     let message = receipt("f1").unwrap().input.text;
     assert!(message.contains(&format!("\n{text}\n")), "{message}");
     // Its retry is that message; the same words with other answers are not.

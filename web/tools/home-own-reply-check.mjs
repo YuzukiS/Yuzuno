@@ -226,9 +226,9 @@ async function check(run) {
       height: Math.round(box.height * 10) / 10, width: Math.round(box.width), blank: Math.round(inner - bottom),
       minHeight: el.style.minHeight, answer: el.classList.contains("is-answer"), open: el.classList.contains("is-open"), size: el.dataset.cardSize ?? null,
       kind: el.querySelector(".home-kind")?.textContent.trim() ?? null,
-      // The answer card's question as answered, then the reply as given (YN-223): the option chosen and the user's words.
+      // The answer card's question as answered, then one line of the reply (YN-230): the option chosen, or the user's words.
       ask: el.querySelector(":scope > .home-answer .home-answer-ask")?.textContent ?? null,
-      reply: [el.querySelector(":scope > .home-answer .home-reply-choice")?.textContent, el.querySelector(":scope > .home-answer .home-reply-words")?.textContent.trim()]
+      reply: [el.querySelector(":scope > .home-answer .home-answer-picks")?.textContent, el.querySelector(":scope > .home-answer .home-reply-words")?.textContent.trim()]
         .filter(Boolean).join(" ") || null,
       focused: document.activeElement === el, running: el.getAnimations().length,
     };
