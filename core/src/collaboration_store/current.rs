@@ -24,7 +24,7 @@ pub(super) const REVIEW_COUNTS: &str = "SELECT COUNT(*),COUNT(json_extract(data,
 pub(super) const NEWEST_SUBSCRIPTIONS: &str = "SELECT id,watch_id,rowid FROM ci_subscriptions WHERE task_id=?1 ORDER BY rowid DESC LIMIT ?2";
 pub(super) const SUBSCRIPTION_COUNT: &str = "SELECT COUNT(*) FROM ci_subscriptions WHERE task_id=?1";
 // CROSS JOIN keeps the watch's own runs the outer loop: never every run's.
-pub(super) const LATEST_RUN: &str = "SELECT r.data FROM ci_watch_runs w CROSS JOIN ci_runs r ON r.id=w.run_id WHERE w.watch_id=?1 ORDER BY r.seq DESC LIMIT 1";
+pub(super) const LATEST_RUN: &str = "SELECT r.seq,r.data FROM ci_watch_runs w CROSS JOIN ci_runs r ON r.id=w.run_id WHERE w.watch_id=?1 ORDER BY r.seq DESC LIMIT 1";
 /// A PR's newest merge entry on the task, and its repository's queue (YN-193).
 pub(super) const LATEST_MERGE: &str = "SELECT data FROM merge_entries WHERE task_id=?1 AND repository_id=?2 AND number=?3 ORDER BY rowid DESC LIMIT 1";
 pub(super) const MERGE_QUEUE: &str = "SELECT data FROM merge_repositories WHERE repository_id=?1";
@@ -271,12 +271,12 @@ pub(super) fn delivery(db: &Connection, task: &str) -> Result<Value> {
         }
     }
     // The newest of the main tables' and the archive's (R-39).
-    use crate::ci_monitor::archive::{self, Place};
-    let mut rows: Vec<(String, String, i64, Place)> = Vec::new();
-    for (sql, place) in [(NEWEST_SUBSCRIPTIONS, Place::Main), (archive::NEWEST_ARCHIVED_SUBSCRIPTIONS, Place::Archive)] {
+    use crate::ci_monitor::archive;
+    let mut rows: Vec<(String, String, i64)> = Vec::new();
+    for sql in [NEWEST_SUBSCRIPTIONS, archive::NEWEST_ARCHIVED_SUBSCRIPTIONS] {
         let mut q = db.prepare(sql)?;
         rows.extend(
-            q.query_map(params![task, SUBSCRIPTIONS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, place)))?
+            q.query_map(params![task, SUBSCRIPTIONS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
                 .collect::<std::result::Result<Vec<_>, _>>()?,
         );
     }
@@ -285,13 +285,18 @@ pub(super) fn delivery(db: &Connection, task: &str) -> Result<Value> {
     let mut subscriptions = Vec::new();
     // Each shown watch's newest run as recorded, for the PRs' watchedRuns.
     let mut runs_seen: Vec<Value> = Vec::new();
-    for (id, watch, _, place) in rows {
+    for (id, watch, _) in rows {
         let sub = crate::ci_monitor::store::subscription(db, &id)?;
-        let run: Option<String> = match place {
-            Place::Main => db.query_row(LATEST_RUN, [&watch], |r| r.get(0)).optional()?,
-            Place::Archive => archive::latest_archived_run(db, &watch)?,
-        };
-        let run = run.map(|raw| serde_json::from_str::<Value>(&raw)).transpose()?;
+        // Its newest run through links of either place: a watch moves over
+        // several passes.
+        let mut run: Option<(i64, String)> = None;
+        for sql in [LATEST_RUN, archive::LATEST_ARCHIVED_RUN, archive::LATEST_KEPT_RUN] {
+            let row: Option<(i64, String)> = db.query_row(sql, [&watch], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+            if let Some(row) = row.filter(|row| run.as_ref().is_none_or(|newest| row.0 > newest.0)) {
+                run = Some(row);
+            }
+        }
+        let run = run.map(|(_, raw)| serde_json::from_str::<Value>(&raw)).transpose()?;
         let w = &sub["watch"];
         subscriptions.push(present(json!({"subscriptionId": id, "agent": sub["agent"]["name"], "active": sub["active"],
             "closure": sub["closure"]["reason"], "expiresAt": sub["expiresAt"],

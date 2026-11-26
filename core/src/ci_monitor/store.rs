@@ -510,15 +510,22 @@ impl Store {
             params![agent, task, chrono::Utc::now().timestamp()],
             |r| r.get(0),
         )?;
-        // The runs of the main tables' subscriptions, then of archived ones:
-        // those a live watch keeps in the main table, and archived runs.
+        // The runs of the main tables' subscriptions and of archived ones,
+        // through links of either place (a watch moves over several passes)
+        // to runs of either place. A main link names a main run.
         let scope = "(?1 IS NULL OR s.agent_id=?1) AND (?2 IS NULL OR s.task_id=?2) AND (?3 IS NULL OR r.seq<?3) ORDER BY r.seq DESC LIMIT 51";
         let mut rows: Vec<(i64, String, bool)> = Vec::new();
-        for sql in [
-            format!("SELECT DISTINCT r.seq,r.data,{RUN_WATCHED} FROM ci_runs r JOIN ci_watch_runs w ON w.run_id=r.id JOIN ci_subscriptions s ON s.watch_id=w.watch_id WHERE {scope}"),
-            format!("SELECT DISTINCT r.seq,r.data,{RUN_WATCHED} FROM ci_runs r JOIN ci_watch_runs_archive w ON w.run_id=r.id JOIN ci_subscriptions_archive s ON s.watch_id=w.watch_id WHERE {scope}"),
-            format!("SELECT DISTINCT r.seq,r.data,0 FROM ci_runs_archive r JOIN ci_watch_runs_archive w ON w.run_id=r.id JOIN ci_subscriptions_archive s ON s.watch_id=w.watch_id WHERE {scope}"),
+        for (links, subs, runs) in [
+            ("ci_watch_runs", "ci_subscriptions", "ci_runs"),
+            ("ci_watch_runs", "ci_subscriptions_archive", "ci_runs"),
+            ("ci_watch_runs_archive", "ci_subscriptions", "ci_runs"),
+            ("ci_watch_runs_archive", "ci_subscriptions", "ci_runs_archive"),
+            ("ci_watch_runs_archive", "ci_subscriptions_archive", "ci_runs"),
+            ("ci_watch_runs_archive", "ci_subscriptions_archive", "ci_runs_archive"),
         ] {
+            // An archived run is watched by no one.
+            let watched = if runs == "ci_runs" { RUN_WATCHED } else { "0" };
+            let sql = format!("SELECT DISTINCT r.seq,r.data,{watched} FROM {runs} r JOIN {links} w ON w.run_id=r.id JOIN {subs} s ON s.watch_id=w.watch_id WHERE {scope}");
             let mut q = db.prepare(&sql)?;
             rows.extend(
                 q.query_map(params![agent, task, before], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
