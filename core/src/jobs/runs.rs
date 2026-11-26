@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::Path,
     sync::Arc,
 };
@@ -981,9 +981,24 @@ pub(super) fn advance(store: &Store, db: &Connection, id: &str) -> Result<bool> 
 /// How many runs deep a change goes on to the runs waiting for it (YN-30).
 const DEPENDANT_DEPTH: u32 = 16;
 fn advance_at(store: &Store, db: &Connection, id: &str, depth: u32) -> Result<bool> {
+    let Some(mut changed) = advance_own(store, db, id)? else {
+        return Ok(false);
+    };
+    // The runs waiting for this one read it again, in this transaction: a
+    // success releases them, a failure holds them, a retry frees them.
+    if depth < DEPENDANT_DEPTH {
+        for dependant in after::dependants(db, id)? {
+            changed |= advance_at(store, db, &dependant, depth + 1)?;
+        }
+    }
+    Ok(changed)
+}
+/// One run's own advance, without the runs waiting for it; None for a run
+/// already settled.
+fn advance_own(store: &Store, db: &Connection, id: &str) -> Result<Option<bool>> {
     let mut run = get_run(db, id)?;
     if run["settledAt"].is_string() {
-        return Ok(false);
+        return Ok(None);
     }
     let mut changed = false;
     if run["cancelRequestedAt"].is_null() {
@@ -1079,12 +1094,41 @@ fn advance_at(store: &Store, db: &Connection, id: &str, depth: u32) -> Result<bo
             }
         }
     }
-    // The runs waiting for this one read it again, in this transaction: a
-    // success releases them, a failure holds them, a retry frees them.
-    if depth < DEPENDANT_DEPTH {
-        for dependant in after::dependants(db, id)? {
-            changed |= advance_at(store, db, &dependant, depth + 1)?;
+    Ok(Some(changed))
+}
+/// The reconciliation loop's pass over the runs in flight `open` (YN-221):
+/// every run advance_at reaches from them (the runs waiting for each, to the
+/// same depth) is advanced once, oldest first. A run names only older runs
+/// in afterRuns, so oldest first is upstream first: each run is advanced
+/// after every run it waits for that this pass advances, and reads them as
+/// the pass leaves them, as advancing each run and then again every run
+/// waiting for it did, without advancing a run again for each run it waits
+/// for.
+fn advance_each_once(store: &Store, db: &Connection, open: &[String]) -> Result<bool> {
+    let mut reached: HashSet<String> = open.iter().cloned().collect();
+    let mut frontier = open.to_vec();
+    for _ in 0..DEPENDANT_DEPTH {
+        let mut next = Vec::new();
+        for id in &frontier {
+            for dependant in after::dependants(db, id)? {
+                if reached.insert(dependant.clone()) {
+                    next.push(dependant);
+                }
+            }
         }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    let mut order = reached
+        .into_iter()
+        .map(|id| Ok((db.query_row("SELECT seq FROM local_job_runs WHERE id=?1", [&id], |r| r.get::<_, i64>(0))?, id)))
+        .collect::<Result<Vec<_>>>()?;
+    order.sort();
+    let mut changed = false;
+    for (_, id) in order {
+        changed |= advance_own(store, db, &id)?.unwrap_or(false);
     }
     Ok(changed)
 }
@@ -2059,7 +2103,8 @@ impl Store {
         Ok(view)
     }
     /// The safety net of the reconciliation loop: every run still in flight
-    /// is advanced, as each change already did in its own transaction.
+    /// is advanced, as each change already did in its own transaction, and
+    /// with it the runs waiting for it, each once (advance_each_once).
     pub(super) fn advance_runs(&self) -> Result<bool> {
         let ids: Vec<String> = {
             let db = self.db.read()?;
@@ -2077,10 +2122,7 @@ impl Store {
         }
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
-        let mut changed = false;
-        for id in ids {
-            changed |= advance(self, &tx, &id)?;
-        }
+        let changed = advance_each_once(self, &tx, &ids)?;
         tx.commit()?;
         Ok(changed)
     }

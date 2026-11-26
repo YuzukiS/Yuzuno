@@ -8,6 +8,7 @@ use super::*;
 use crate::{model::AgentDetail, store::Store};
 
 mod after_runs_tests;
+mod tick_once_tests;
 mod analysis_tests;
 mod analysis_integration;
 mod queued_tests;
