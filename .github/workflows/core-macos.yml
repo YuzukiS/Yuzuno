@@ -126,11 +126,16 @@ jobs:
 
       # --timings also writes target/cargo-timings/cargo-timing.html, which
       # the next step summarizes (YN-235). It changes nothing that is built.
+      # vm_stat and the swap in use, before and after, show in the log
+      # whether the build ran short of the runner's memory: its page-out,
+      # swap-out and compression counters count from the VM's boot.
       - name: Build
         id: build
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          { vm_stat; sysctl vm.swapusage; } || true
           cargo build --locked --all-targets --timings
+          { vm_stat; sysctl vm.swapusage; } || true
 
       # Report-only: how long each Cargo unit took, in this job's summary and
       # as one JSON line of this step's log. The report is not uploaded; a
