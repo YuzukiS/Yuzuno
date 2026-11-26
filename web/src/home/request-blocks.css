@@ -71,6 +71,7 @@
     "asks asks"
     "fact act"
     "now now"
+    "follow follow"
     "foot foot"
     "evidence evidence"
     "body body";
@@ -577,6 +578,7 @@
       "asks asks"
       "fact fact"
       "now now"
+      "follow follow"
       "foot act"
       "evidence evidence"
       "body body";
@@ -629,6 +631,19 @@
   /* Dark on the attention colour in either theme: the attention colour itself, mostly black. */
   color: color-mix(in srgb, var(--home-attention) 18%, black);
   font-weight: 600;
+}
+/* R-45 §3.3: waiting for a reply to the user's follow-up is not their to-do: its edge, an open dot, never solid. */
+.request-state[data-state="followUp"] {
+  border-color: var(--home-attention);
+  color: var(--home-attention-ink);
+}
+.request-state[data-state="followUp"]::before {
+  content: "";
+  box-sizing: border-box;
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid var(--home-attention);
+  border-radius: 50%;
 }
 .request-state[data-state="deliveryFailed"],
 .request-state[data-state="unconfirmed"] {
@@ -936,4 +951,151 @@
   border: 1px solid var(--line);
   background: transparent;
   color: var(--home-ink-2);
+}
+
+/* R-45 §3.2: the user's newest follow-up and what came of it, under the progress and before the foot (on a phone,
+   before the action too). Its whole edge is tinted by its state, never a side bar (R-38 §2.7): waiting, the
+   attention colour; answered, done's. */
+.request-follow {
+  grid-area: follow;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 2px 14px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--home-soft) 60%, transparent);
+}
+.request-follow:is([data-state="waiting"], [data-state="unsent"]) {
+  border-color: color-mix(in srgb, var(--home-attention) 55%, var(--line));
+}
+.request-follow[data-state="answered"] {
+  border-color: color-mix(in srgb, var(--state-done, var(--green)) 50%, var(--line));
+}
+.request-follow-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.request-follow-head b {
+  color: var(--ink);
+  font-weight: 600;
+}
+.request-follow-count {
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: calc(8px + var(--font-adjust, 3px));
+}
+.request-follow-said {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.request-follow-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 2px 8px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.request-follow-icon {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  border-radius: 5px;
+  background: var(--home-soft);
+  color: var(--home-ink-2);
+}
+.request-follow-status:is([data-kind="waiting"], [data-kind="unsent"]) .request-follow-icon {
+  background: color-mix(in srgb, var(--home-attention) 22%, transparent);
+  color: var(--home-attention-ink);
+}
+.request-follow-status[data-kind="answered"] .request-follow-icon {
+  background: color-mix(in srgb, var(--state-done, var(--green)) 24%, transparent);
+  color: var(--state-done, var(--green));
+}
+.request-follow-lines {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.request-follow-who {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.request-follow-who b {
+  color: var(--ink);
+  font-weight: 600;
+}
+/* "The project" (R-45 §3.2): who it is, the front desk or whom a follow-up went to, is in its tip; the dotted line says
+   there is one. */
+.request-follow-project {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: underline dotted color-mix(in srgb, var(--home-ink-2) 60%, transparent);
+  text-underline-offset: 3px;
+  cursor: help;
+}
+.request-follow-answer {
+  display: -webkit-box;
+  margin-top: 1px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+.request-follow-caveat,
+.request-follow-more {
+  display: block;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.request-follow-caveat {
+  font-style: italic;
+}
+.request-follow-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0;
+}
+
+/* R-45 §3.4: what each line of the conversation is, as to the follow-ups, on a row under its words. */
+.request-thread-tags {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+.request-thread-tag {
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--home-ink-2);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.request-thread-tag[data-tag="ok"] {
+  border-color: color-mix(in srgb, var(--state-done, var(--green)) 60%, var(--line));
+  color: var(--state-done, var(--green));
+}
+.request-thread-tag[data-tag="wait"] {
+  border-color: var(--home-attention);
+  color: var(--home-attention-ink);
+}
+.request-thread-tag[data-tag="link"] {
+  border-style: dashed;
 }

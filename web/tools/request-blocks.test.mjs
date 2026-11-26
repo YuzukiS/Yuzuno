@@ -5,8 +5,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  askUpFront, authorOf, barCells, blockCounts, blockOfSection, commonTasks, forYouTodo, isPlaceholder, pageBlocks, projectCardsCount, projectLine,
-  relatedRequests, splitLead,
+  askUpFront, authorOf, barCells, blockCounts, blockOfSection, commonTasks, followUpsOf, forYouTodo, isPlaceholder, pageBlocks, projectCardsCount,
+  projectLine, relatedRequests, splitLead,
 } from "../src/home/request-blocks.ts";
 import { summaryOf } from "../src/home/report/report-model.ts";
 
@@ -675,4 +675,104 @@ test("R-38 §2.5 a task's own progress is dated by when it was written: what cam
   const several = block(pageBlocks([r53], []).blocks, 53);
   assert.deepEqual(several.now, { kind: "progress", text: "新的进度。", task: "YN-242" });
   assert.deepEqual(several.stale?.facts, [{ kind: "followUp", count: 1 }]);
+});
+
+// R-45 (YN-233 §3.1–3.3): R-44 as it was, delivered and followed up twice after its report (synthetic data in its shape).
+const x232 = who("x232", "YN-232 · 只读调查");
+const deskTo = { agentId: "lead", name: "Dev Lead" };
+const execTo = { agentId: "x232", name: "YN-232 · 只读调查" };
+const F1 = "什么是未读规则？我没有点开看的意思吗？";
+const F2 = "什么情况？这个request不会更新回复我了吗？";
+function followUp(n, minutes, text, to, delivery = "accepted") {
+  return { n, text, textBlocks: null, images: [], files: [], at: at(minutes), messageId: `f${n}`, deliveredTo: to.map((t) => ({ ...t, delivery })) };
+}
+function r44({ replies = [followUp(1, 12, F1, [execTo]), followUp(2, 5, F2, [deskTo])], notes = [], state = "ended", progress = "已验收 core.39 的只读调查和界面对照记录。" } = {}) {
+  ids = 900;
+  const card = section("yn-232", "report", "R-44 · 侧栏状态：是未读规则，不是刷新慢", 3, 13, lead, { card: binding("YN-232", "done", null) });
+  const routedCard = withTask(routed(card, "YN-232", "done", null, [report("yn-232", 3, card.id)], 13), { progress });
+  const req = request(44, 20, state, [routedCard], {
+    replies, notes: [{ note: "我会先复现，再说明原因。", by: desk, at: at(19) }, ...notes],
+  });
+  return { req, card, b: block(pageBlocks([req], [card]).blocks, 44) };
+}
+
+test("R-45 a follow-up waiting for a reply: not the user's to accept, in progress, no next step; Core's lines and cards are no answer", () => {
+  const { req, b } = r44();
+  assert.deepEqual(b.follow.items.map((i) => [i.n, i.state]), [[1, "waiting"], [2, "waiting"]]);
+  assert.equal(b.follow.latest.n, 2);
+  assert.deepEqual([b.follow.answered, b.follow.waiting], [0, 2]);
+  assert.deepEqual(b.follow.latest.to, [deskTo]);
+  assert.deepEqual([b.state, b.group, b.next, b.action], ["followUp", "doing", null, "confirm"], "Confirm done stays, not the user's turn");
+  // A report delivered after a follow-up (at 13 min), its task done, the card's newer version and its progress answer none.
+  const done = r44({ replies: [followUp(1, 15, F1, [execTo])] });
+  assert.equal(done.b.follow.latest.state, "waiting");
+  assert.equal(done.b.state, "followUp");
+  // None: as before.
+  const none = r44({ replies: [] });
+  assert.deepEqual([none.b.follow, none.b.state, none.b.group, none.b.next?.kind], [null, "accept", "needs", "accept"]);
+  assert.equal(followUpsOf(req).items.length, 2);
+});
+
+test("R-45 a note answers only the follow-ups its replyTo names, the newest such note; the user's turn again once the newest is answered", () => {
+  const answer1 = { note: "对，就是这个意思：本机还没看过这一轮，侧栏就先显示 Between turns。", by: desk, at: at(11), replyTo: [1] };
+  const one = r44({ notes: [answer1] }).b;
+  assert.deepEqual(one.follow.items.map((i) => i.state), ["answered", "waiting"]);
+  assert.deepEqual(one.follow.items[0].note, { n: 2, note: answer1.note, by: desk, at: answer1.at });
+  assert.equal(one.state, "followUp", "its newest still waits");
+  const both = r44({ notes: [answer1, { note: "可以继续追问；漏了回来答你。", by: desk, at: at(3), replyTo: [2] }] }).b;
+  assert.deepEqual(both.follow.items.map((i) => i.state), ["answered", "answered"]);
+  assert.deepEqual([both.state, both.group, both.next?.kind, both.follow.answered], ["accept", "needs", "accept", 2]);
+  // Two notes name it: the newest.
+  const twice = r44({ notes: [{ ...answer1, at: at(11) }, { ...answer1, note: "补一句。", at: at(4) }] }).b;
+  assert.equal(twice.follow.items[0].note.note, "补一句。");
+  // replyTo [] names none: it neither answers this one nor is said after it unmarked.
+  const empty = r44({ notes: [{ note: "顺带一提。", by: desk, at: at(3), replyTo: [] }] }).b;
+  assert.deepEqual(empty.follow.items.map((i) => i.state), ["waiting", "waiting"]);
+});
+
+test("R-45 an unmarked note after follow-ups is said after them all alike, never matched by time; then the user's turn", () => {
+  const late = { note: "可以继续在 R-44 追问。之前我只交了报告，漏了回来答你。", by: desk, at: at(3) };
+  const { b } = r44({ notes: [late] });
+  assert.deepEqual(b.follow.items.map((i) => [i.state, i.note?.n, i.together]), [["later", 2, [1, 2]], ["later", 2, [1, 2]]],
+    "together 2: which it answers is not known");
+  assert.deepEqual([b.state, b.group], ["accept", "needs"], "someone spoke: the user decides");
+  assert.equal(b.follow.answered, 0, "not counted as answered");
+  // A note before a follow-up is no answer to it.
+  const before = r44({ replies: [followUp(1, 2, F1, [deskTo])], notes: [late] }).b;
+  assert.equal(before.follow.latest.state, "waiting");
+  // An older Core: no replyTo, no n, no names; the same.
+  const older = r44({ replies: [{ ...followUp(1, 12, F1, []), deliveredTo: [{ agentId: "x232", delivery: "accepted" }] }], notes: [late] }).b;
+  assert.deepEqual([older.follow.latest.state, older.follow.latest.to], ["later", [{ agentId: "x232", name: null }]]);
+});
+
+test("R-45 a follow-up not confirmed delivered, or refused; waiting replaces only For you to accept", () => {
+  const sending = r44({ replies: [followUp(1, 12, F1, [execTo]), followUp(2, 5, F2, [deskTo], "sending")] }).b;
+  assert.deepEqual([sending.follow.latest.state, sending.follow.latest.failed, sending.state], ["unsent", false, "followUp"]);
+  const refused = r44({ replies: [followUp(1, 5, F1, [deskTo], "rejected")] }).b;
+  assert.deepEqual([refused.follow.latest.state, refused.follow.latest.failed], ["unsent", true]);
+  const nobody = r44({ replies: [{ ...followUp(1, 5, F1, []) }] }).b;
+  assert.equal(nobody.follow.latest.state, "unsent", "sent to no one");
+  // The team on it: its label stays, the zone is under it.
+  const going = r44({ state: "doing" });
+  const team = block(pageBlocks([{ ...going.req, cards: [withTask(routed(going.card, "YN-232", "doing", x232))] }], [going.card]).blocks, 44);
+  assert.deepEqual([team.state, team.follow.latest.state], ["team", "waiting"]);
+  // No task: Core reopened it for the front desk (waiting), With the front desk stays.
+  const plain = request(46, 20, "waiting", [], { replies: [followUp(1, 1, "能改成 60 天吗？", [deskTo])],
+    notes: [{ note: "默认保留 30 天。", by: desk, at: at(18) }] });
+  const p = block(pageBlocks([plain], []).blocks, 46);
+  assert.deepEqual([p.state, p.follow.latest.state, p.fact.kind, p.fact.note], ["frontDesk", "waiting", "waiting", "默认保留 30 天。"]);
+});
+
+test("R-45 what came after the first follow-up is said once, by the follow-ups: not as R-43's reply or the fact", () => {
+  // Answered with no card, followed up, answered again by replyTo: the fact is the first answer, the zone the second.
+  const first = { note: "默认保留 30 天，到期滚动归档。", by: desk, at: at(18) };
+  const again = { note: "可以，改成 60 天。", by: desk, at: at(1), replyTo: [1] };
+  const r46 = request(46, 20, "answered", [], { replies: [followUp(1, 5, "能改成 60 天吗？", [deskTo])], notes: [first, again] });
+  const b = block(pageBlocks([r46], []).blocks, 46);
+  assert.deepEqual([b.fact.kind, b.fact.text, b.follow.latest.state, b.follow.latest.note.note, b.state], ["answered", first.note, "answered", again.note, "accept"]);
+  // A task with no progress yet: R-43's reply is the note before the first follow-up; with none before, none.
+  const r42 = (notes) => block(pageBlocks([request(42, 20, "doing", [withTask(routed(null, "YN-230", "doing", lead))],
+    { replies: [followUp(1, 5, "还要 JSON", [deskTo])], notes })], []).blocks, 42);
+  assert.equal(r42([first, { note: "JSON 也加。", by: desk, at: at(2) }]).reply.text, first.note);
+  assert.equal(r42([{ note: "JSON 也加。", by: desk, at: at(2) }]).reply, null);
 });

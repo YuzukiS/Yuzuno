@@ -19,12 +19,14 @@ import type { ProjectRequest } from "./project-talk-api";
 import { deckCard, deckItems, useDeckPacking } from "./deck-packing";
 import { DeliverableLine, type OpenDeliveredReport } from "./DeliverableLine";
 import { talkText } from "./talk-text";
-import { authorOf, openAsk, type BlockAction, type BlockFact, type BlockGroup, type ProjectBlock, type RequestBlock, type TaskRow, type Who } from "./request-blocks";
+import {
+  authorOf, openAsk, type BlockAction, type BlockFact, type BlockFollowUp, type BlockGroup, type ProjectBlock, type RequestBlock, type TaskRow, type Who,
+} from "./request-blocks";
 import { SectionCard } from "./SectionCard";
 import { withoutFormIds } from "./AskReply";
 import { HistoryBodyState } from "./HistoryBodyState";
 import { SummaryCard } from "./SummaryCard";
-import { DetailLists, EvidenceList, NextLine, NowLine, StaleLine, StateMark, progressText } from "./RequestProgress";
+import { DetailLists, EvidenceList, FollowUpZone, NextLine, NowLine, ProjectWord, StaleLine, StateMark, progressText, useFollowUpName } from "./RequestProgress";
 import type { Section } from "./types";
 import "./project-talk.css";
 import "./request-blocks.css";
@@ -87,8 +89,19 @@ export const blockText = strings(
     answeredAsk: (title: string, reply: string) => `Answered: ${title} → ${reply}`,
     thread: (n: number) => `Conversation ${n}`,
     you: "You",
-    followUp: "Your follow-up",
+    followUp: (n: number) => `Your follow-up #${n}`,
     projectSaid: "Project",
+    /** What each line of the conversation is, as to the follow-ups (R-45 §3.4); who, only in a tip. */
+    tag: {
+      delivered: "Delivered",
+      waiting: "Waiting for a reply",
+      answered: "Replied ↓",
+      unsent: "Not confirmed delivered",
+      failed: "Not delivered",
+      answers: (ns: number[]) => `Replies to ${ns.map((n) => `#${n}`).join(", ")}`,
+      unlinked: "Later note",
+      core: "Core's record · not a reply",
+    },
     line: { ask: (title: string) => `Asked: ${title}`, done: (title: string) => `Done: ${title}` },
     delivered: (title: string) => `What “${title}” delivered`,
     olderRequests: "Read older requests",
@@ -149,8 +162,18 @@ export const blockText = strings(
     answeredAsk: (title, reply) => `已答：${title} → ${reply}`,
     thread: (n) => `对话 ${n}`,
     you: "你",
-    followUp: "你追问",
+    followUp: (n) => `你追问 #${n}`,
     projectSaid: "项目",
+    tag: {
+      delivered: "已送达",
+      waiting: "等回复",
+      answered: "已回复 ↓",
+      unsent: "没确认送达",
+      failed: "送达失败",
+      answers: (ns) => `回复追问 ${ns.map((n) => `#${n}`).join("、")}`,
+      unlinked: "后续留言",
+      core: "Core 记录 · 不是回复",
+    },
     line: { ask: (title) => `提问：${title}`, done: (title) => `完成：${title}` },
     delivered: (title) => `「${title}」交付的结果`,
     olderRequests: "读更早的请求",
@@ -407,6 +430,9 @@ export function RequestBlockView({
   onToggle,
   onView,
   focus = null,
+  onShowThread,
+  onResendFollowUp,
+  resendingFollowUps,
   onAction,
   onShowBlock,
   busy = false,
@@ -422,8 +448,12 @@ export function RequestBlockView({
   onView: (view: BlockView) => void;
   /** The jump that landed in its conversation, whose lines stay marked; none since it folded. */
   focus?: ThreadFocus | null;
-  /** Shows request `n`'s conversation, landed on a follow-up (R-45 §3.4): the follow-up zone's way there (S1a). */
+  /** Shows request `n`'s conversation, landed on a follow-up (R-45 §3.4): the follow-up zone's way there. */
   onShowThread?: (n: number, focus?: Omit<ThreadFocus, "seq">) => void;
+  /** Sends the request's follow-up `m` again, as Core keeps it (R-45 §3.2). */
+  onResendFollowUp?: (n: number, m: number) => void;
+  /** Its follow-ups being sent again, by number. */
+  resendingFollowUps?: ReadonlySet<number>;
   /** The block's action; `focusKey` names the Ask an answer goes to. */
   onAction: (action: BlockAction, n: number, focusKey?: string) => void;
   /** A joined task's line: shows the block its card is under. */
@@ -453,7 +483,8 @@ export function RequestBlockView({
   // Its own open Ask is the fact, shown whole below: no line repeats its question.
   const askedHere = fact.kind === "ask" && fact.home === null && asks.length > 0;
   const elsewhere = block.askedElsewhere;
-  const settle: Settle | null = action === "confirm" ? "waiting" : block.group === "done" ? "confirmed" : null;
+  // Its follow-up not answered yet (R-45 §3.3): not the user's to confirm now, so nothing says it waits for them.
+  const settle: Settle | null = action === "confirm" ? (block.state === "followUp" ? null : "waiting") : block.group === "done" ? "confirmed" : null;
   const p = progressText(language);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   // R-38 §2.2: the first look is its progress and one next step. Without a summary, Core's own facts stand (an
@@ -511,12 +542,22 @@ export function RequestBlockView({
           {block.next && <NextLine next={block.next} onShowBlock={onShowBlock} common={common} />}
         </div>
       )}
+      {block.follow && (
+        <FollowUpZone
+          follow={block.follow}
+          front={request.frontAgentId}
+          readOnly={common.readOnly}
+          onShow={(m, marked) => onShowThread?.(request.n, { reply: m, with: marked })}
+          onResend={onResendFollowUp ? (m) => onResendFollowUp(request.n, m) : undefined}
+          resending={!!resendingFollowUps?.has(block.follow.latest.n)}
+        />
+      )}
       {action && action !== "follow" && !common.readOnly && (
         <div className="request-block-act">
           <span className="request-block-actions">
             <button
               type="button"
-              className="request-block-action is-primary"
+              className={`request-block-action${block.state === "followUp" ? "" : " is-primary"}`}
               data-action={action}
               aria-label={t.actionLabel(label, request.n)}
               disabled={busy}
@@ -634,7 +675,7 @@ export function RequestBlockView({
                 ))}
               </>
             ) : (
-              <RequestThread request={request} focus={focus} landed={landed} />
+              <RequestThread request={request} follow={block.follow} focus={focus} landed={landed} />
             )}
           </div>
           <button type="button" className="request-block-fold" aria-expanded="true" onClick={onToggle}>
@@ -807,15 +848,47 @@ function CardVersions({ section, onReport }: { section: Section; onReport: OpenD
 
 const reducedMotion = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+/** A conversation line's marks (R-45 §3.4), on a row of their own under its words; nothing without any. */
+function Tags({ tags }: { tags: (ReactNode | null)[] | null }) {
+  const shown = tags?.filter(Boolean) ?? [];
+  return shown.length ? <span className="request-thread-tags">{shown}</span> : null;
+}
+
 /**
  * A request's own conversation, oldest first, unfolded in its view (R-45 §3.4): its words, the project's notes,
  * follow-ups and Core's lines. A jump (`focus`) lands once on its follow-up, in the middle of Home's scroller clear of
  * the dock, with the focus; that line and the ones it names stay marked, and flash once as it lands (not under reduced
  * motion). A follow-up it does not have lands on the conversation itself.
  */
-function RequestThread({ request, focus, landed }: { request: ProjectRequest; focus: ThreadFocus | null; landed: MutableRefObject<number> }) {
+function RequestThread({ request, follow, focus, landed }: {
+  request: ProjectRequest; follow: BlockFollowUp | null; focus: ThreadFocus | null; landed: MutableRefObject<number>;
+}) {
   const language = useLanguage();
   const t = blockText(language);
+  const p = progressText(language).follow;
+  const nameOf = useFollowUpName();
+  const tag = (text: string, kind?: "ok" | "wait" | "link") => <span key={text} className="request-thread-tag" data-tag={kind}>{text}</span>;
+  // What each line is, as to the follow-ups (R-45 §3.4): a follow-up's delivery (whom, in its tip) and whether the
+  // project replied; a note, which follow-ups it replies to, or a later note naming none; Core's ending after the
+  // first follow-up, no reply. Only "the project" speaks; who that was is in its tip.
+  const firstFollowUp = Math.min(...request.replies.map((reply) => Date.parse(reply.at)));
+  const followTags = (m: number) => {
+    const item = follow?.items.find((i) => i.n === m);
+    if (!item) return null;
+    const delivered = (
+      <Tip key="delivered" content={<TipText title={p.toTip(p.list(item.to.map(nameOf)))} />}>
+        <span className="request-thread-tag">{t.tag.delivered}</span>
+      </Tip>
+    );
+    return [
+      item.state === "unsent" ? tag(item.failed ? t.tag.failed : t.tag.unsent, "wait") : delivered,
+      item.state === "waiting" ? tag(t.tag.waiting, "wait") : item.state === "answered" ? tag(t.tag.answered, "ok") : null,
+    ];
+  };
+  const noteTags = (note: ProjectRequest["notes"][number]) =>
+    Array.isArray(note.replyTo) && note.replyTo.length ? [tag(t.tag.answers(note.replyTo), "ok")]
+      : !Array.isArray(note.replyTo) && Date.parse(note.at) > firstFollowUp ? [tag(t.tag.unlinked, "link")]
+        : null;
   const list = useRef<HTMLOListElement>(null);
   const flash = useRef<(() => void) | null>(null);
   const items = conversation([request]).filter((item) => item.kind !== "looking");
@@ -856,23 +929,28 @@ function RequestThread({ request, focus, landed }: { request: ProjectRequest; fo
           case "reply":
             return (
               <li key={index} data-who="you" data-reply={item.reply.n} tabIndex={-1} {...mark}>
-                <b>{t.followUp}</b>
+                <b>{t.followUp(item.reply.n)}</b>
                 <MessageContent text={item.reply.text} blocks={item.reply.textBlocks ?? undefined} />
                 <When at={at} />
+                <Tags tags={followTags(item.reply.n)} />
               </li>
             );
           case "note":
             return (
               <li key={index} data-who="project" data-note={request.notes.indexOf(item.note) + 1} {...mark}>
-                <b>{t.projectSaid}</b>
+                <ProjectWord tip={p.deskTip(nameOf(item.note.by))}>{t.projectSaid}</ProjectWord>
                 <span>{item.note.note}</span>
                 <When at={at} />
+                <Tags tags={noteTags(item.note)} />
               </li>
             );
           case "line":
             return (
               <li key={index} data-who="core" {...mark}>
-                <span>{item.line.kind === "ask" ? t.line.ask(item.line.title) : t.line.done(item.line.title || item.line.task)}</span>
+                <span>
+                  {item.line.kind === "ask" ? t.line.ask(item.line.title) : t.line.done(item.line.title || item.line.task)}
+                  {item.line.kind === "done" && item.at > firstFollowUp && <> {tag(t.tag.core, "link")}</>}
+                </span>
                 <When at={at} />
               </li>
             );

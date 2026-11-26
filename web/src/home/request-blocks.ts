@@ -1,7 +1,7 @@
 import { changedSinceSeen } from "./brief-layout.ts";
 import { runsText, visibleRuns } from "./card-face.ts";
 import { summaryOf } from "./report/report-model.ts";
-import type { Deliverable, Delivery, ProjectRequest, RequestCard, RequestPull, RouteAgent } from "./project-talk-api";
+import type { Deliverable, Delivery, ProjectRequest, RequestCard, RequestPull, RequestReply, RouteAgent } from "./project-talk-api";
 import type { Section } from "./types";
 
 /**
@@ -142,15 +142,19 @@ export type RequestBlock = {
    * task's own progress), and newer than every card of its tasks; none otherwise. Without a task, its fact says it.
    */
   reply: { text: string; by: RouteAgent; at: string } | null;
+  /** The user's follow-ups and what came of each (R-45 §3.1); none without one. */
+  follow: BlockFollowUp | null;
 };
 
 /**
  * A request's status label (R-38 §2.3), the first of these that holds: done (the user confirmed it); its words'
- * delivery refused (deliveryFailed) or not confirmed; an open Ask of its own tasks (decide); settled and waiting for
- * the user's confirmation (accept); a task going on that waits for a condition (condition); one its team works on
- * now (team); else going on (going); no task yet (frontDesk).
+ * delivery refused (deliveryFailed) or not confirmed; an open Ask of its own tasks (decide); settled, and the user's
+ * newest follow-up not answered yet, its turn not the user's (followUp, R-45 §3.3); settled and waiting for the
+ * user's confirmation (accept); a task going on that waits for a condition (condition); one its team works on now
+ * (team); else going on (going); no task yet (frontDesk).
  */
-export type BlockState = "done" | "deliveryFailed" | "unconfirmed" | "decide" | "accept" | "condition" | "team" | "going" | "frontDesk";
+export type BlockState =
+  "done" | "deliveryFailed" | "unconfirmed" | "decide" | "followUp" | "accept" | "condition" | "team" | "going" | "frontDesk";
 
 /**
  * One outcome on a request's bar (R-38 §3): a step of the Plan its task's card names as `summary.progress`. Its text
@@ -229,6 +233,37 @@ export type StaleFact =
   | { kind: "followUp"; count: number };
 export type BlockStale = { at: string; facts: StaleFact[]; expired: boolean };
 
+/** Who a follow-up went to (R-45 §3.1): by ID, with its name as Core says it, when it does; said only in a tip (§3.2). */
+export type FollowUpTo = { agentId: string; name: string | null };
+
+/** A note of the front desk's as a follow-up reads it: its place among the request's notes (from 1), as Core lists them. */
+export type FollowUpNote = { n: number; note: string; by: RouteAgent; at: string };
+
+/**
+ * What came of one of the user's follow-ups (R-45 §3.1), the first of these that holds:
+ * - answered: a note names it in its `replyTo` (the newest such note);
+ * - unsent: none of its messages is known to have reached its Agent (`failed`: one was refused);
+ * - later: a note came after it that names no follow-up (an older Core's, or one written before replyTo), the first
+ *   such; `together` is how many follow-ups between that note and the one before it no note answered, this one among
+ *   them: which of them it answers is not known;
+ * - waiting: none of these, its Agents named.
+ * Core's lines, cards, reports and a task's progress never answer it.
+ */
+export type FollowUpItem = {
+  n: number;
+  text: string;
+  at: string;
+  to: FollowUpTo[];
+} & (
+  | { state: "answered"; note: FollowUpNote }
+  | { state: "unsent"; failed: boolean }
+  | { state: "later"; note: FollowUpNote; together: number[] }
+  | { state: "waiting" }
+);
+
+/** A request's follow-ups (R-45 §3.1): each, oldest first; the newest; how many are answered and how many wait. */
+export type BlockFollowUp = { latest: FollowUpItem; items: FollowUpItem[]; answered: number; waiting: number };
+
 /**
  * Every live section bound to no task a request has: the lead's overview, standing statuses, their Asks. It is no
  * request (R-27 §2): its open Asks stand in Needs you each on its own, its cards in the page's Project cards group.
@@ -252,6 +287,60 @@ const time = (iso: string | null | undefined) => {
 const reached = (delivery: Delivery) => delivery === "accepted" || delivery === "queued";
 
 const ended = (status: string) => status === "done" || status === "cancelled";
+
+/** A follow-up's Agents as Core names them; an older Core names only their IDs. */
+const toOf = (reply: RequestReply): FollowUpTo[] =>
+  reply.deliveredTo.map((d) => ({ agentId: d.agentId, name: d.name || null }));
+
+/**
+ * The user's follow-ups to `request` and what came of each (R-45 §3.1), by the rules of `FollowUpItem`; null without
+ * one. Only a note's own `replyTo` answers a follow-up: never its time, and never a card, a report, a result, a
+ * task's progress or Core's lines.
+ */
+export function followUpsOf(request: ProjectRequest): BlockFollowUp | null {
+  const replies = [...request.replies].sort((a, b) => a.n - b.n);
+  if (!replies.length) return null;
+  const notes = request.notes.map((note, index) => ({
+    shown: { n: index + 1, note: note.note, by: note.by, at: note.at } satisfies FollowUpNote,
+    replyTo: Array.isArray(note.replyTo) ? note.replyTo : null,
+  }));
+  const answerOf = (m: number) =>
+    notes.filter((note) => note.replyTo?.includes(m)).reduce<(typeof notes)[number] | null>((newest, note) =>
+      !newest || time(note.shown.at) >= time(newest.shown.at) ? note : newest, null);
+  const items = replies.map((reply): FollowUpItem => {
+    const base = { n: reply.n, text: reply.text, at: reply.at, to: toOf(reply) };
+    const answer = answerOf(reply.n);
+    if (answer) return { ...base, state: "answered", note: answer.shown };
+    if (!reply.deliveredTo.some((d) => reached(d.delivery)))
+      return { ...base, state: "unsent", failed: reply.deliveredTo.some((d) => d.delivery === "rejected") };
+    const later = notes.find((note) => note.replyTo === null && time(note.shown.at) > time(reply.at));
+    if (later) {
+      // The follow-ups since the note before it that no note answers: it is said after each of them alike.
+      const since = Math.max(0, ...notes.filter((note) => time(note.shown.at) < time(later.shown.at)).map((note) => time(note.shown.at)));
+      const together = replies
+        .filter((other) => other.n === reply.n || (time(other.at) > since && time(other.at) < time(later.shown.at) && !answerOf(other.n)))
+        .map((other) => other.n);
+      return { ...base, state: "later", note: later.shown, together };
+    }
+    return { ...base, state: "waiting" };
+  });
+  return {
+    latest: items.at(-1)!,
+    items,
+    answered: items.filter((item) => item.state === "answered").length,
+    waiting: items.filter((item) => item.state === "waiting").length,
+  };
+}
+
+/**
+ * The front desk's note a request's first look says (R-45 §3.3): its newest before the user's first follow-up, so
+ * that what came after is said once, by the follow-ups; with no follow-up, its newest.
+ */
+function noteBefore(request: ProjectRequest) {
+  if (!request.replies.length) return request.notes.at(-1) ?? null;
+  const first = Math.min(...request.replies.map((reply) => time(reply.at)));
+  return request.notes.filter((note) => time(note.at) < first).at(-1) ?? null;
+}
 
 const taskOf = (section: Section) => section.card?.task.id ?? null;
 
@@ -397,7 +486,8 @@ function factOf(request: ProjectRequest, rows: readonly TaskRow[], delivered: re
       action: home === null ? null : "answer",
     };
   }
-  const note = request.notes.at(-1);
+  // What came after the user's first follow-up is said by the follow-ups (R-45 §3.3), not again here.
+  const note = noteBefore(request) ?? request.notes.at(-1);
   if (request.state === "answered") return { fact: { kind: "answered", text: note?.note ?? "", at: note?.at ?? request.createdAt }, action: "confirm" };
   const going = rows.filter((row) => !ended(row.task.status) && !row.task.archived);
   const finished = request.state === "ended" || request.state === "done";
@@ -441,8 +531,10 @@ function factOf(request: ProjectRequest, rows: readonly TaskRow[], delivered: re
  * Needs you only for what is the user's to do here (R-38 §2.4): an open Ask of its own tasks, words not delivered,
  * or a settled request to confirm. An Ask of a task it joined counts under the request that task is shown under.
  */
-const groupOf = (request: ProjectRequest, fact: BlockFact): BlockGroup => {
+const groupOf = (request: ProjectRequest, fact: BlockFact, state: BlockState): BlockGroup => {
   if (request.state === "done") return "done";
+  // Its turn is not the user's while their follow-up waits for an answer (R-45 §3.3).
+  if (state === "followUp") return "doing";
   if ((fact.kind === "ask" && fact.home === null) || fact.kind === "unconfirmed" || request.state === "ended" || request.state === "answered")
     return "needs";
   return "doing";
@@ -565,12 +657,16 @@ export function barCells(segments: readonly Segment[], most = BAR_CELLS): BarCel
 }
 
 /** The block's status label (R-38 §2.3), from its own tasks (`own`) and those it joined. */
-function stateOf(request: ProjectRequest, own: readonly TaskRow[], joined: readonly TaskRow[]): BlockState {
+function stateOf(request: ProjectRequest, own: readonly TaskRow[], joined: readonly TaskRow[], follow: BlockFollowUp | null): BlockState {
   if (request.state === "done") return "done";
   if (request.delivery === "rejected") return "deliveryFailed";
   if (!reached(request.delivery)) return "unconfirmed";
   if (openAsks(own).length) return "decide";
-  if (request.state === "ended" || request.state === "answered") return "accept";
+  if (request.state === "ended" || request.state === "answered") {
+    // Settled before the user followed it up, and that follow-up not answered yet: not theirs to accept now (R-45 §3.3).
+    const latest = follow?.latest.state;
+    return latest === "waiting" || latest === "unsent" ? "followUp" : "accept";
+  }
   const rows = [...own, ...joined];
   if (!rows.length) return "frontDesk";
   const on = rows.filter(going);
@@ -583,7 +679,8 @@ function stateOf(request: ProjectRequest, own: readonly TaskRow[], joined: reado
 function nextOf(state: BlockState, own: readonly TaskRow[], joined: readonly TaskRow[], segments: readonly Segment[]): BlockNext | null {
   if (state === "decide") return { kind: "ask" };
   if (state === "accept") return { kind: "accept" };
-  if (state === "done" || state === "unconfirmed" || state === "deliveryFailed") return null;
+  // The follow-up zone says whom its follow-up waits for (R-45 §3.3).
+  if (state === "done" || state === "unconfirmed" || state === "deliveryFailed" || state === "followUp") return null;
   const elsewhere = openAsks(joined)[0];
   if (elsewhere)
     return { kind: "elsewhere", task: elsewhere.row.task.id, home: elsewhere.row.home, title: elsewhere.ask.ask?.question || elsewhere.ask.title };
@@ -649,16 +746,17 @@ function relayed(rows: readonly TaskRow[]): RelayStep[] {
 }
 
 /** A block's progress parts (R-38 §2): from its own tasks, else (none of its own) those it joined. */
-function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joined: readonly TaskRow[]) {
+function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joined: readonly TaskRow[], follow: BlockFollowUp | null) {
   const rows = own.length ? own : joined;
   const bar = barOf(rows);
-  const state = stateOf(request, own, joined);
+  const state = stateOf(request, own, joined, follow);
   let now: BlockNow = bar?.now ?? null;
   const written = bar ? undefined : progressRow(rows);
   if (!now && written) now = { kind: "progress", text: splitLead(written.task.progress)!.head, task: written.task.id };
   const segments = bar?.now.segments ?? [];
   const newest = bar?.sources.reduce((a, b) => (time(b.updatedAt) > time(a.updatedAt) ? b : a));
-  const note = request.notes.at(-1);
+  // R-43's reply is from before the user's first follow-up; what came after is the follow-up zone's (R-45 §3.3).
+  const note = noteBefore(request);
   const reply =
     !now && rows.length && note?.note.trim() && rows.every((row) => !row.card || time(row.card.updatedAt) < time(note.at))
       ? { text: note.note.trim(), by: note.by, at: note.at }
@@ -682,6 +780,7 @@ function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joine
       : written
         ? staleOf(request, rows, written.task.progressAt, false)
         : null,
+    follow,
   };
 }
 
@@ -708,11 +807,12 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
       .sort((a, b) => time(b.deliverables?.reportedAt) - time(a.deliverables?.reportedAt))
       .map((c) => ({ task: c.task.id, title: rows.get(c.task.id)?.title ?? c.task.id, items: c.deliverables!.items }));
     const { fact, action } = factOf(request, mine, delivered);
-    const group = groupOf(request, fact);
     const own = mine.flatMap((row) => [row.card, ...row.asks]).filter((s): s is Section => !!s && !s.history);
     const tasks = mine.filter((row) => row.home === request.n);
     const joined = mine.filter((row) => row.home !== request.n);
     const elsewhere = openAsks(joined);
+    const progress = requestProgress(request, tasks, joined, followUpsOf(request));
+    const group = groupOf(request, fact, progress.state);
     blocks.push({
       kind: "request",
       key: `r${request.n}`,
@@ -728,7 +828,7 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
       tasks,
       joined,
       unread: own.some(changedSinceSeen),
-      ...requestProgress(request, tasks, joined),
+      ...progress,
       last: Math.max(
         time(request.createdAt),
         ...own.map((s) => time(s.updatedAt)),

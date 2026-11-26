@@ -51,13 +51,15 @@ function Page({requests, sections, readOnly}) {
     setOpen((was) => { const next = new Set(was); if (!next.delete(key)) next.add(key); return next; });
   };
   const show = (key, to) => { setViews((was) => new Map(was).set(key, to)); setOpen((was) => new Set(was).add(key)); };
-  window.jump = (n, at) => flushSync(() => { show('r' + n, 'thread'); setFocus({ ...at, block: 'r' + n, seq: (window.jumps = (window.jumps ?? 0) + 1) }); });
+  const showThread = (n, at) => { show('r' + n, 'thread'); setFocus({ ...at, block: 'r' + n, seq: (window.jumps = (window.jumps ?? 0) + 1) }); };
+  window.jump = (n, at) => flushSync(() => showThread(n, at));
   const choose = (key, on) => setOpen((was) => { if (was.has(key) === on) return was; const next = new Set(was); if (on) next.add(key); else next.delete(key); return next; });
   const upFront = useAsksUpFront([...blocks.flatMap((block) => block.asks), ...(project?.asks ?? [])]);
   const common = {projectId: 'p1', workspaceId: 'ws', agents: window.agents, readOnly: !!readOnly, onSeen: async () => {}, onChanged: () => {},
     onReport: (link) => window.calls.push({report: link}), upFront};
   return <div>{blocks.map((block) => <RequestBlockView key={block.key} block={block} open={open.has(block.key)} onToggle={() => toggle(block.key)}
     view={views.get(block.key)} onView={(to) => show(block.key, to)} focus={focus?.block === block.key ? focus : null}
+    onShowThread={showThread} onResendFollowUp={(n, m) => window.calls.push({resend: n, reply: m})}
     onAction={(action, n, key) => window.calls.push({action, n, key: key ?? null})} onShowBlock={(n) => window.calls.push({show: n})} common={common}/>)}
     {project && <div className="needs"><ProjectAsks block={project} common={common}/></div>}
     {project && <ProjectCards block={project} count={projectCardsCount(project, project.asks.filter((ask) => !upFront(ask)).length, null)}
@@ -935,4 +937,124 @@ test("R-38 §2.2 opened, Details list the hand-offs its lead planned after the o
     assert.equal(page.block(31).dataset.group, "doing", "a planned step of the user's is no to-do");
     assert.deepEqual(page.errors, []);
   }
+});
+
+// R-45 §3.2–3.4: R-44 as it was, delivered and followed up twice (synthetic data in its shape), in three states: the
+// newest follow-up waiting for a reply, answered by a note that names it, and an unmarked note said after both.
+function r44(kind) {
+  id = 400;
+  const exec = { agentId: "x", name: "YN-91 · Design" };
+  const lead = { agentId: "d", name: "Dev Lead" };
+  const card = section("yn-91", "report", "R-44 · the sidebar's rule", 13, { card: bind("YN-91", "done", null) });
+  const reply = (n, minutes, text, to) => ({ n, text, textBlocks: null, images: [], files: [], at: ago(minutes), messageId: `f${n}`,
+    deliveredTo: [{ ...to, delivery: "accepted" }] });
+  const notes = [{ note: "I'll reproduce it first.", by: desk, at: ago(19) },
+    ...(kind === "answered" ? [{ note: "Yes: until you look at the turn, the row says Between turns.", by: desk, at: ago(11), replyTo: [2] }] : []),
+    ...(kind === "later" ? [{ note: "Ask on here any time; I missed coming back.", by: desk, at: ago(3) }] : [])];
+  return {
+    requests: [request(44, 20, "ended", [{ ...routed(card, "YN-91", "done", null, [{ kind: "report", title: "R-44", note: null, key: "yn-91", version: 3,
+      sectionId: card.id, state: "live", currentVersion: 3 }], 13), task: { id: "YN-91", status: "done", archived: false, progress: "Read-only check done." } }], {
+      replies: [reply(1, 13, "What is the unread rule?", exec), reply(2, 12, "Will this request not answer me?", lead)], notes,
+      lines: [{ kind: "done", task: "YN-91", status: "done", at: ago(12.5), cardSectionId: card.id, title: "R-44" }],
+    })],
+    sections: [card],
+  };
+}
+
+test("R-45 the first look says the newest follow-up and what came of it, in both languages; waiting is not the user's to accept", async () => {
+  for (const lang of ["en", "zh"]) {
+    const page = mount({ lang });
+    const t = (en, zh) => (lang === "en" ? en : zh);
+    page.window.renderPage(r44("waiting"));
+    await tick();
+    const b = page.block(44);
+    const zone = b.querySelector(".request-follow");
+    assert.equal(zone.dataset.state, "waiting");
+    assert.match(page.text(zone.querySelector(".request-follow-head")), t(/^You followed up 2 times · newest · .+ago2 follow-ups · 0 replied$/, /^你追问 2 次 · 最近一条 · .+前共 2 条 · 0 条已回复$/));
+    assert.equal(page.text(zone.querySelector(".request-follow-said")), "Will this request not answer me?");
+    // The user's choice on YN-233: only the project replies; no Agent is named in the words.
+    assert.match(page.text(zone.querySelector(".request-follow-lines")),
+      t(/^Delivered · waiting for the project to reply · waiting 12 min1 more waits for the project's reply$/, /^已送达 · 等项目回复 · 已等 12 分钟另 1 条也在等项目回复$/));
+    assert.doesNotMatch(page.text(zone), /Dev Lead|YN-91/);
+    assert.equal(page.text(zone.querySelector(".request-follow-project")), t("the project", "项目"), "who it is, in its tip");
+    assert.equal(page.text(b.querySelector(".request-state")), t("Waiting for a reply", "等回复"));
+    assert.equal(b.dataset.group, "doing");
+    const confirm = b.querySelector('.request-block-action[data-action="confirm"]');
+    assert.ok(confirm && !confirm.classList.contains("is-primary"), "Confirm done stays, not as the main action");
+    assert.equal(b.querySelector(".request-block-settle"), null, "nothing says it waits for the user to confirm");
+    assert.equal(b.querySelector(".request-next"), null);
+    // The block's foot still counts the whole conversation once: words, 1 note, 2 follow-ups, Core's line.
+    assert.equal(page.text(b.querySelector('.request-block-foot [data-view="thread"]')), t("Conversation 5", "对话 5"));
+    assert.deepEqual(page.errors, []);
+  }
+});
+
+test("R-45 answered and an unmarked note: who said what, the latter said not to name a follow-up; the user's turn again", async () => {
+  const page = mount();
+  page.window.renderPage(r44("answered"));
+  await tick();
+  let zone = page.block(44).querySelector(".request-follow");
+  assert.equal(zone.dataset.state, "answered");
+  assert.match(page.text(zone.querySelector(".request-follow-lines")), /^The project replied · .+ agoYes: until you look at the turn, the row says Between turns\.$/);
+  assert.equal(page.text(page.block(44).querySelector(".request-state")), "For you to accept");
+  assert.ok(page.block(44).querySelector('.request-block-action[data-action="confirm"]').classList.contains("is-primary"));
+  page.window.renderPage(r44("later"));
+  await tick();
+  zone = page.block(44).querySelector(".request-follow");
+  assert.equal(zone.dataset.state, "later");
+  assert.match(page.text(zone.querySelector(".request-follow-lines")), /^The project added a note · .+ agoAsk on here any time; I missed coming back\.Not marked as a reply to any follow-up$/);
+  assert.equal(page.text(page.block(44).querySelector(".request-state")), "For you to accept");
+  const zh = mount({ lang: "zh" });
+  zh.window.renderPage(r44("later"));
+  await tick();
+  assert.match(zh.text(zh.block(44).querySelector(".request-follow-lines")), /^项目后续留言 · .+前Ask on here any time; I missed coming back\.这条留言没有标明回复的是哪条追问$/);
+  assert.deepEqual([...page.errors, ...zh.errors], []);
+});
+
+test("R-45 Show in the conversation opens it at the follow-up, it and what came of it marked; each line says what it is", async () => {
+  const page = mount();
+  page.window.renderPage(r44("later"));
+  await tick();
+  const link = page.block(44).querySelector(".request-follow-foot .talk-link");
+  assert.equal(link.getAttribute("aria-label"), "Show follow-up #2 in the conversation");
+  link.click();
+  await tick();
+  const b = page.block(44);
+  assert.equal(b.querySelector(".request-block-body").dataset.view, "thread");
+  assert.equal(page.document.activeElement, b.querySelector('.request-thread > li[data-reply="2"]'));
+  assert.deepEqual([...b.querySelectorAll(".request-thread > li[data-focus]")].map((li) => li.dataset.threadItem), ["reply:1", "reply:2", "note:2"],
+    "both follow-ups and the note said after them");
+  const tags = (key) => [...b.querySelectorAll(`.request-thread > li[data-thread-item="${key}"] .request-thread-tag`)].map(page.text);
+  assert.deepEqual(tags("reply:1"), ["Delivered"]);
+  assert.deepEqual(tags("reply:2"), ["Delivered"]);
+  assert.deepEqual(tags("note:2"), ["Later note"]);
+  assert.deepEqual(tags("note:1"), [], "a note before the follow-ups is none of theirs");
+  assert.deepEqual(tags("line:0"), ["Core's record · not a reply"]);
+  assert.equal(page.text(b.querySelector('.request-thread > li[data-note="2"] > b')), "Project", "only the project speaks; who, in its tip");
+  assert.equal(page.text(b.querySelector('.request-thread > li[data-reply="2"] > b')), "Your follow-up #2");
+  // Waiting and answered: their own marks; the answer names what it answers.
+  page.window.renderPage(r44("answered"));
+  await tick();
+  assert.deepEqual(tags("reply:2"), ["Delivered", "Replied ↓"]);
+  assert.deepEqual(tags("reply:1"), ["Delivered", "Waiting for a reply"]);
+  assert.deepEqual(tags("note:2"), ["Replies to #2"]);
+  assert.deepEqual(page.errors, []);
+});
+
+test("R-45 a follow-up not confirmed delivered: said so with Send again, which sends that one again; none read only", async () => {
+  const data = r44("waiting");
+  data.requests[0].replies[1].deliveredTo[0].delivery = "sending";
+  const page = mount();
+  page.window.renderPage(data);
+  await tick();
+  const zone = page.block(44).querySelector(".request-follow");
+  assert.equal(zone.dataset.state, "unsent");
+  assert.equal(page.text(zone.querySelector(".request-follow-lines")), "Not confirmed delivered · Send again");
+  assert.equal(page.text(page.block(44).querySelector(".request-state")), "Waiting for a reply");
+  zone.querySelector(".request-follow-lines button").click();
+  assert.deepEqual(page.calls().at(-1), { resend: 44, reply: 2 });
+  page.window.renderPage({ ...data, readOnly: true });
+  await tick();
+  assert.equal(page.block(44).querySelector(".request-follow-lines button"), null);
+  assert.deepEqual(page.errors, []);
 });

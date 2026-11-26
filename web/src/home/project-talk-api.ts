@@ -112,8 +112,15 @@ export type RequestReply = {
   files: HomeFile[];
   at: string;
   messageId: string;
-  deliveredTo: { agentId: string; delivery: Delivery }[];
+  /** Who it went to and how each message stands; each one's name now (R-45), none from an older Core. */
+  deliveredTo: { agentId: string; delivery: Delivery; name?: string }[];
 };
+
+/**
+ * One of the front desk's notes (progress.rs `notes`): its number and the user's follow-ups it answers (`replyTo`,
+ * R-45), as its author named them; null, or none from an older Core, when it named none.
+ */
+export type RequestNote = { n?: number; note: string; by: RouteAgent; at: string; replyTo?: number[] | null };
 
 /** A request as the Project's page reads it (project_requests.rs `view`). */
 export type ProjectRequest = {
@@ -132,7 +139,7 @@ export type ProjectRequest = {
   messageId: string;
   delivery: Delivery;
   replies: RequestReply[];
-  notes: { note: string; by: RouteAgent; at: string }[];
+  notes: RequestNote[];
   routes: RouteEvent[];
   cards: RequestCard[];
   /**
