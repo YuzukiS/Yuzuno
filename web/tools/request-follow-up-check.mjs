@@ -4,10 +4,12 @@
 // Four states of that request, each at 1180 px and on a 390 px phone, in English and Chinese, and once with reduced
 // motion:
 //  - waiting: the newest follow-up delivered, no note names it: Waiting for a reply, in progress, Confirm done not the
-//    main action, nothing saying it waits for the user, no next step; who it waits for, and since when;
-//  - answered: a note names it in replyTo: who answered and what; For you to accept again;
-//  - legacy: R-44 as it is, a note after both follow-ups naming none: said after them, said to name none, not counted
-//    as answered;
+//    main action, nothing saying it waits for the user, no next step; that it waits for the project's reply, and since
+//    when;
+//  - answered: a note names it in replyTo: the project's reply; For you to accept again;
+//  - legacy: R-44 as it is, a note after both follow-ups naming none: the project's later note, said to reply to none,
+//    not counted as replied;
+// Only the project speaks in the zone (the user's choice on YN-233): no Agent's name in its words.
 //  - unsent: the newest not confirmed delivered: said so, with Send again, never "delivered".
 // Then Show in the conversation: the block opens at its conversation, the follow-up in view (on a phone, above the
 // dock) with the focus, it and what came of it marked, the mark flashing once (not with reduced motion). Nothing is
@@ -104,22 +106,22 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 /** What each state's first look and jump must say, in each language. */
 const words = {
   en: {
-    waiting: { state: "Waiting for a reply", group: "doing", lines: /^Delivered to Dev Lead · no answer yet · waiting 5 min1 more went to YN-232 · 只读调查, closed before answering; no one will answer it$/,
-      head: /^You followed up 2 times · newest · 5 min ago2 follow-ups · 0 answered$/, marked: ["reply:2"] },
-    answered: { state: "For you to accept", group: "needs", lines: new RegExp(`^Dev Lead answered · 2 min ago${ANSWER}$`), head: /· 1 answered$/,
+    waiting: { state: "Waiting for a reply", group: "doing", lines: /^Delivered · waiting for the project to reply · waiting 5 min1 more waits for the project's reply$/,
+      head: /^You followed up 2 times · newest · 5 min ago2 follow-ups · 0 replied$/, marked: ["reply:2"] },
+    answered: { state: "For you to accept", group: "needs", lines: new RegExp(`^The project replied · 2 min ago${ANSWER}$`), head: /· 1 replied$/,
       marked: ["reply:2", "note:2"] },
-    legacy: { state: "For you to accept", group: "needs", lines: new RegExp(`^Then Dev Lead said · 3 min ago${LATE}Not marked as answering a follow-up$`),
-      head: /· 0 answered$/, marked: ["reply:1", "reply:2", "note:2"] },
-    unsent: { state: "Waiting for a reply", group: "doing", lines: /^Not confirmed delivered · Send again$/, head: /· 0 answered$/, marked: ["reply:2"] },
+    legacy: { state: "For you to accept", group: "needs", lines: new RegExp(`^The project added a note · 3 min ago${LATE}Not marked as a reply to any follow-up$`),
+      head: /· 0 replied$/, marked: ["reply:1", "reply:2", "note:2"] },
+    unsent: { state: "Waiting for a reply", group: "doing", lines: /^Not confirmed delivered · Send again$/, head: /· 0 replied$/, marked: ["reply:2"] },
     show: "Show in the conversation →",
   },
   "zh-Hans": {
-    waiting: { state: "等答复", group: "doing", lines: /^已送达 Dev Lead · 还没有答复 · 已等 5 分钟另 1 条的原收件人 YN-232 · 只读调查 已关闭，没人会答$/,
-      head: /^你追问 2 次 · 最近一条 · 5 分钟前共 2 条 · 0 条已答$/, marked: ["reply:2"] },
-    answered: { state: "等你验收", group: "needs", lines: new RegExp(`^Dev Lead 答复 · 2 分钟前${ANSWER}$`), head: /· 1 条已答$/, marked: ["reply:2", "note:2"] },
-    legacy: { state: "等你验收", group: "needs", lines: new RegExp(`^之后 Dev Lead 说 · 3 分钟前${LATE}没有标明回答哪一条追问$`), head: /· 0 条已答$/,
+    waiting: { state: "等回复", group: "doing", lines: /^已送达 · 等项目回复 · 已等 5 分钟另 1 条也在等项目回复$/,
+      head: /^你追问 2 次 · 最近一条 · 5 分钟前共 2 条 · 0 条已回复$/, marked: ["reply:2"] },
+    answered: { state: "等你验收", group: "needs", lines: new RegExp(`^项目回复 · 2 分钟前${ANSWER}$`), head: /· 1 条已回复$/, marked: ["reply:2", "note:2"] },
+    legacy: { state: "等你验收", group: "needs", lines: new RegExp(`^项目后续留言 · 3 分钟前${LATE}这条留言没有标明回复的是哪条追问$`), head: /· 0 条已回复$/,
       marked: ["reply:1", "reply:2", "note:2"] },
-    unsent: { state: "等答复", group: "doing", lines: /^没确认送达 · 再发一次$/, head: /· 0 条已答$/, marked: ["reply:2"] },
+    unsent: { state: "等回复", group: "doing", lines: /^没确认送达 · 再发一次$/, head: /· 0 条已回复$/, marked: ["reply:2"] },
     show: "在对话中查看 →",
   },
 };
@@ -247,6 +249,8 @@ async function check(run, scenario) {
     assert.match(first.head, w.head, JSON.stringify(first));
     assert.equal(first.said, F2);
     assert.match(first.lines, w.lines, JSON.stringify(first));
+    // The user's choice on YN-233: only the project replies; no Agent is named in the zone's words.
+    assert.doesNotMatch(await text(zone), /Dev Lead|YN-232/, "no Agent named in the zone");
     assert.equal(first.state, w.state);
     assert.equal(first.group, w.group);
     assert.equal(first.inNeeds, w.group === "needs" ? 1 : 0, "in Needs you only when it is the user's turn");

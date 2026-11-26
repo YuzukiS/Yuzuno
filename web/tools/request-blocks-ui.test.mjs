@@ -943,8 +943,8 @@ test("R-38 §2.2 opened, Details list the hand-offs its lead planned after the o
 // newest follow-up waiting for a reply, answered by a note that names it, and an unmarked note said after both.
 function r44(kind) {
   id = 400;
-  const exec = { agentId: "x", name: "YN-91 · Design", closed: false };
-  const lead = { agentId: "d", name: "Dev Lead", closed: false };
+  const exec = { agentId: "x", name: "YN-91 · Design" };
+  const lead = { agentId: "d", name: "Dev Lead" };
   const card = section("yn-91", "report", "R-44 · the sidebar's rule", 13, { card: bind("YN-91", "done", null) });
   const reply = (n, minutes, text, to) => ({ n, text, textBlocks: null, images: [], files: [], at: ago(minutes), messageId: `f${n}`,
     deliveredTo: [{ ...to, delivery: "accepted" }] });
@@ -970,11 +970,14 @@ test("R-45 the first look says the newest follow-up and what came of it, in both
     const b = page.block(44);
     const zone = b.querySelector(".request-follow");
     assert.equal(zone.dataset.state, "waiting");
-    assert.match(page.text(zone.querySelector(".request-follow-head")), t(/^You followed up 2 times · newest · .+ago2 follow-ups · 0 answered$/, /^你追问 2 次 · 最近一条 · .+前共 2 条 · 0 条已答$/));
+    assert.match(page.text(zone.querySelector(".request-follow-head")), t(/^You followed up 2 times · newest · .+ago2 follow-ups · 0 replied$/, /^你追问 2 次 · 最近一条 · .+前共 2 条 · 0 条已回复$/));
     assert.equal(page.text(zone.querySelector(".request-follow-said")), "Will this request not answer me?");
+    // The user's choice on YN-233: only the project replies; no Agent is named in the words.
     assert.match(page.text(zone.querySelector(".request-follow-lines")),
-      t(/^Delivered to Dev Lead · no answer yet · waiting 12 min1 more waits for YN-91 · Design too$/, /^已送达 Dev Lead · 还没有答复 · 已等 12 分钟另 1 条也在等 YN-91 · Design$/));
-    assert.equal(page.text(b.querySelector(".request-state")), t("Waiting for a reply", "等答复"));
+      t(/^Delivered · waiting for the project to reply · waiting 12 min1 more waits for the project's reply$/, /^已送达 · 等项目回复 · 已等 12 分钟另 1 条也在等项目回复$/));
+    assert.doesNotMatch(page.text(zone), /Dev Lead|YN-91/);
+    assert.equal(page.text(zone.querySelector(".request-follow-project")), t("the project", "项目"), "who it is, in its tip");
+    assert.equal(page.text(b.querySelector(".request-state")), t("Waiting for a reply", "等回复"));
     assert.equal(b.dataset.group, "doing");
     const confirm = b.querySelector('.request-block-action[data-action="confirm"]');
     assert.ok(confirm && !confirm.classList.contains("is-primary"), "Confirm done stays, not as the main action");
@@ -992,19 +995,19 @@ test("R-45 answered and an unmarked note: who said what, the latter said not to 
   await tick();
   let zone = page.block(44).querySelector(".request-follow");
   assert.equal(zone.dataset.state, "answered");
-  assert.match(page.text(zone.querySelector(".request-follow-lines")), /^Dev Lead answered · .+ agoYes: until you look at the turn, the row says Between turns\.$/);
+  assert.match(page.text(zone.querySelector(".request-follow-lines")), /^The project replied · .+ agoYes: until you look at the turn, the row says Between turns\.$/);
   assert.equal(page.text(page.block(44).querySelector(".request-state")), "For you to accept");
   assert.ok(page.block(44).querySelector('.request-block-action[data-action="confirm"]').classList.contains("is-primary"));
   page.window.renderPage(r44("later"));
   await tick();
   zone = page.block(44).querySelector(".request-follow");
   assert.equal(zone.dataset.state, "later");
-  assert.match(page.text(zone.querySelector(".request-follow-lines")), /^Then Dev Lead said · .+ agoAsk on here any time; I missed coming back\.Not marked as answering a follow-up$/);
+  assert.match(page.text(zone.querySelector(".request-follow-lines")), /^The project added a note · .+ agoAsk on here any time; I missed coming back\.Not marked as a reply to any follow-up$/);
   assert.equal(page.text(page.block(44).querySelector(".request-state")), "For you to accept");
   const zh = mount({ lang: "zh" });
   zh.window.renderPage(r44("later"));
   await tick();
-  assert.match(zh.text(zh.block(44).querySelector(".request-follow-lines")), /^之后 Dev Lead 说 · .+前Ask on here any time; I missed coming back\.没有标明回答哪一条追问$/);
+  assert.match(zh.text(zh.block(44).querySelector(".request-follow-lines")), /^项目后续留言 · .+前Ask on here any time; I missed coming back\.这条留言没有标明回复的是哪条追问$/);
   assert.deepEqual([...page.errors, ...zh.errors], []);
 });
 
@@ -1022,18 +1025,19 @@ test("R-45 Show in the conversation opens it at the follow-up, it and what came 
   assert.deepEqual([...b.querySelectorAll(".request-thread > li[data-focus]")].map((li) => li.dataset.threadItem), ["reply:1", "reply:2", "note:2"],
     "both follow-ups and the note said after them");
   const tags = (key) => [...b.querySelectorAll(`.request-thread > li[data-thread-item="${key}"] .request-thread-tag`)].map(page.text);
-  assert.deepEqual(tags("reply:1"), ["Delivered to YN-91 · Design"]);
-  assert.deepEqual(tags("reply:2"), ["Delivered to Dev Lead"]);
-  assert.deepEqual(tags("note:2"), ["Not marked as answering a follow-up"]);
+  assert.deepEqual(tags("reply:1"), ["Delivered"]);
+  assert.deepEqual(tags("reply:2"), ["Delivered"]);
+  assert.deepEqual(tags("note:2"), ["Later note"]);
   assert.deepEqual(tags("note:1"), [], "a note before the follow-ups is none of theirs");
-  assert.deepEqual(tags("line:0"), ["Core's record · not an answer"]);
+  assert.deepEqual(tags("line:0"), ["Core's record · not a reply"]);
+  assert.equal(page.text(b.querySelector('.request-thread > li[data-note="2"] > b')), "Project", "only the project speaks; who, in its tip");
   assert.equal(page.text(b.querySelector('.request-thread > li[data-reply="2"] > b')), "Your follow-up #2");
   // Waiting and answered: their own marks; the answer names what it answers.
   page.window.renderPage(r44("answered"));
   await tick();
-  assert.deepEqual(tags("reply:2"), ["Delivered to Dev Lead", "Answered ↓"]);
-  assert.deepEqual(tags("reply:1"), ["Delivered to YN-91 · Design", "Waiting for a reply"]);
-  assert.deepEqual(tags("note:2"), ["Answers follow-up #2"]);
+  assert.deepEqual(tags("reply:2"), ["Delivered", "Replied ↓"]);
+  assert.deepEqual(tags("reply:1"), ["Delivered", "Waiting for a reply"]);
+  assert.deepEqual(tags("note:2"), ["Replies to #2"]);
   assert.deepEqual(page.errors, []);
 });
 

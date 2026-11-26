@@ -679,8 +679,8 @@ test("R-38 §2.5 a task's own progress is dated by when it was written: what cam
 
 // R-45 (YN-233 §3.1–3.3): R-44 as it was, delivered and followed up twice after its report (synthetic data in its shape).
 const x232 = who("x232", "YN-232 · 只读调查");
-const deskTo = { agentId: "lead", name: "Dev Lead", closed: false };
-const execTo = { agentId: "x232", name: "YN-232 · 只读调查", closed: false };
+const deskTo = { agentId: "lead", name: "Dev Lead" };
+const execTo = { agentId: "x232", name: "YN-232 · 只读调查" };
 const F1 = "什么是未读规则？我没有点开看的意思吗？";
 const F2 = "什么情况？这个request不会更新回复我了吗？";
 function followUp(n, minutes, text, to, delivery = "accepted") {
@@ -742,7 +742,7 @@ test("R-45 an unmarked note after follow-ups is said after them all alike, never
   assert.equal(before.follow.latest.state, "waiting");
   // An older Core: no replyTo, no n, no names; the same.
   const older = r44({ replies: [{ ...followUp(1, 12, F1, []), deliveredTo: [{ agentId: "x232", delivery: "accepted" }] }], notes: [late] }).b;
-  assert.deepEqual([older.follow.latest.state, older.follow.latest.to], ["later", [{ agentId: "x232", name: null, closed: false }]]);
+  assert.deepEqual([older.follow.latest.state, older.follow.latest.to], ["later", [{ agentId: "x232", name: null }]]);
 });
 
 test("R-45 a follow-up not confirmed delivered, or refused; waiting replaces only For you to accept", () => {

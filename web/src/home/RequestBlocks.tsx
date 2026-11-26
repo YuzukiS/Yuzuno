@@ -26,7 +26,7 @@ import { SectionCard } from "./SectionCard";
 import { withoutFormIds } from "./AskReply";
 import { HistoryBodyState } from "./HistoryBodyState";
 import { SummaryCard } from "./SummaryCard";
-import { DetailLists, EvidenceList, FollowUpZone, NextLine, NowLine, StaleLine, StateMark, progressText, useFollowUpName } from "./RequestProgress";
+import { DetailLists, EvidenceList, FollowUpZone, NextLine, NowLine, ProjectWord, StaleLine, StateMark, progressText, useFollowUpName } from "./RequestProgress";
 import type { Section } from "./types";
 import "./project-talk.css";
 import "./request-blocks.css";
@@ -91,16 +91,16 @@ export const blockText = strings(
     you: "You",
     followUp: (n: number) => `Your follow-up #${n}`,
     projectSaid: "Project",
-    /** What each line of the conversation is, as to the follow-ups (R-45 §3.4). */
+    /** What each line of the conversation is, as to the follow-ups (R-45 §3.4); who, only in a tip. */
     tag: {
-      delivered: (who: string) => `Delivered to ${who}`,
+      delivered: "Delivered",
       waiting: "Waiting for a reply",
-      answered: "Answered ↓",
+      answered: "Replied ↓",
       unsent: "Not confirmed delivered",
       failed: "Not delivered",
-      answers: (ns: number[]) => `Answers follow-up ${ns.map((n) => `#${n}`).join(", ")}`,
-      unlinked: "Not marked as answering a follow-up",
-      core: "Core's record · not an answer",
+      answers: (ns: number[]) => `Replies to ${ns.map((n) => `#${n}`).join(", ")}`,
+      unlinked: "Later note",
+      core: "Core's record · not a reply",
     },
     line: { ask: (title: string) => `Asked: ${title}`, done: (title: string) => `Done: ${title}` },
     delivered: (title: string) => `What “${title}” delivered`,
@@ -165,14 +165,14 @@ export const blockText = strings(
     followUp: (n) => `你追问 #${n}`,
     projectSaid: "项目",
     tag: {
-      delivered: (who) => `已送达 ${who}`,
-      waiting: "等答复",
-      answered: "已答 ↓",
+      delivered: "已送达",
+      waiting: "等回复",
+      answered: "已回复 ↓",
       unsent: "没确认送达",
       failed: "送达失败",
-      answers: (ns) => `答复追问 ${ns.map((n) => `#${n}`).join("、")}`,
-      unlinked: "未标明回答哪条追问",
-      core: "Core 记录 · 不是答复",
+      answers: (ns) => `回复追问 ${ns.map((n) => `#${n}`).join("、")}`,
+      unlinked: "后续留言",
+      core: "Core 记录 · 不是回复",
     },
     line: { ask: (title) => `提问：${title}`, done: (title) => `完成：${title}` },
     delivered: (title) => `「${title}」交付的结果`,
@@ -545,6 +545,7 @@ export function RequestBlockView({
       {block.follow && (
         <FollowUpZone
           follow={block.follow}
+          front={request.frontAgentId}
           readOnly={common.readOnly}
           onShow={(m, marked) => onShowThread?.(request.n, { reply: m, with: marked })}
           onResend={onResendFollowUp ? (m) => onResendFollowUp(request.n, m) : undefined}
@@ -864,17 +865,23 @@ function RequestThread({ request, follow, focus, landed }: {
 }) {
   const language = useLanguage();
   const t = blockText(language);
+  const p = progressText(language).follow;
   const nameOf = useFollowUpName();
   const tag = (text: string, kind?: "ok" | "wait" | "link") => <span key={text} className="request-thread-tag" data-tag={kind}>{text}</span>;
-  // What each line is, as to the follow-ups (R-45 §3.4): a follow-up's delivery and whether it is answered; a note,
-  // which follow-ups it answers, or that it names none though said after one; Core's ending after the first, no answer.
+  // What each line is, as to the follow-ups (R-45 §3.4): a follow-up's delivery (whom, in its tip) and whether the
+  // project replied; a note, which follow-ups it replies to, or a later note naming none; Core's ending after the
+  // first follow-up, no reply. Only "the project" speaks; who that was is in its tip.
   const firstFollowUp = Math.min(...request.replies.map((reply) => Date.parse(reply.at)));
   const followTags = (m: number) => {
     const item = follow?.items.find((i) => i.n === m);
     if (!item) return null;
-    const open = item.to.filter((to) => !to.closed);
+    const delivered = (
+      <Tip key="delivered" content={<TipText title={p.toTip(p.list(item.to.map(nameOf)))} />}>
+        <span className="request-thread-tag">{t.tag.delivered}</span>
+      </Tip>
+    );
     return [
-      item.state === "unsent" ? tag(item.failed ? t.tag.failed : t.tag.unsent, "wait") : tag(t.tag.delivered((open.length ? open : item.to).map(nameOf).join(language === "zh-Hans" ? "、" : ", "))),
+      item.state === "unsent" ? tag(item.failed ? t.tag.failed : t.tag.unsent, "wait") : delivered,
       item.state === "waiting" ? tag(t.tag.waiting, "wait") : item.state === "answered" ? tag(t.tag.answered, "ok") : null,
     ];
   };
@@ -931,7 +938,7 @@ function RequestThread({ request, follow, focus, landed }: {
           case "note":
             return (
               <li key={index} data-who="project" data-note={request.notes.indexOf(item.note) + 1} {...mark}>
-                <b>{t.projectSaid}</b>
+                <ProjectWord tip={p.deskTip(nameOf(item.note.by))}>{t.projectSaid}</ProjectWord>
                 <span>{item.note.note}</span>
                 <When at={at} />
                 <Tags tags={noteTags(item.note)} />

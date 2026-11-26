@@ -26,21 +26,24 @@ export const progressText = strings(
       frontDesk: "With the front desk",
     } as Record<BlockState, string>,
     /** The follow-up zone (R-45 §3.2). */
+    /** The follow-up zone (R-45 §3.2): the project replies, never an Agent by name (the user's choice on YN-233). */
     follow: {
       label: "Your follow-up and what came of it",
       one: "You followed up",
       many: (n: number) => `You followed up ${n} times · newest`,
-      count: (n: number, answered: number) => `${n} follow-ups · ${answered} answered`,
-      delivered: "Delivered to", noAnswer: "no answer yet",
+      count: (n: number, replied: number) => `${n} follow-ups · ${replied} replied`,
+      project: "the project", projectFirst: "The project",
+      waiting: (project: ReactNode) => <>Delivered · waiting for {project} to reply</>,
       waited: (time: string) => `waiting ${time}`,
-      others: (k: number, who: string) => `${k} more ${k === 1 ? "waits" : "wait"} for ${who} too`,
-      othersClosed: (k: number, who: string) => `${k} more went to ${who}, closed before answering; no one will answer ${k === 1 ? "it" : "them"}`,
-      closed: (who: string) => `${who} was closed before answering; no one will answer it`,
-      answered: "answered", later: "Then", said: "said",
-      caveat: "Not marked as answering a follow-up",
+      others: (k: number) => `${k} more ${k === 1 ? "waits" : "wait"} for the project's reply`,
+      replied: (project: ReactNode) => <>{project} replied</>,
+      later: (project: ReactNode) => <>{project} added a note</>,
+      caveat: "Not marked as a reply to any follow-up",
       unsent: "Not confirmed delivered", failed: "Not delivered", resend: "Send again",
       show: "Show in the conversation →",
       showLabel: (n: number) => `Show follow-up #${n} in the conversation`,
+      deskTip: (who: string) => `The project's front desk: ${who}`,
+      toTip: (names: string) => `Delivered to: ${names}`,
       list: (names: string[]) => names.join(", "),
     },
     segment: {
@@ -103,24 +106,26 @@ export const progressText = strings(
   },
   {
     state: {
-      done: "已完成", deliveryFailed: "送达失败", unconfirmed: "未确认送达", decide: "等你决定", followUp: "等答复", accept: "等你验收", condition: "等条件",
+      done: "已完成", deliveryFailed: "送达失败", unconfirmed: "未确认送达", decide: "等你决定", followUp: "等回复", accept: "等你验收", condition: "等条件",
       team: "团队在办", going: "进行中", frontDesk: "前台在看",
     },
     follow: {
-      label: "你的追问和答复",
+      label: "你的追问和回复",
       one: "你追问",
       many: (n) => `你追问 ${n} 次 · 最近一条`,
-      count: (n, answered) => `共 ${n} 条 · ${answered} 条已答`,
-      delivered: "已送达", noAnswer: "还没有答复",
+      count: (n, replied) => `共 ${n} 条 · ${replied} 条已回复`,
+      project: "项目", projectFirst: "项目",
+      waiting: (project) => <>已送达 · 等{project}回复</>,
       waited: (time) => `已等 ${time}`,
-      others: (k, who) => `另 ${k} 条也在等 ${who}`,
-      othersClosed: (k, who) => `另 ${k} 条的原收件人 ${who} 已关闭，没人会答`,
-      closed: (who) => `原收件人 ${who} 已关闭，没人会答`,
-      answered: "答复", later: "之后", said: "说",
-      caveat: "没有标明回答哪一条追问",
+      others: (k) => `另 ${k} 条也在等项目回复`,
+      replied: (project) => <>{project}回复</>,
+      later: (project) => <>{project}后续留言</>,
+      caveat: "这条留言没有标明回复的是哪条追问",
       unsent: "没确认送达", failed: "送达失败", resend: "再发一次",
       show: "在对话中查看 →",
       showLabel: (n) => `在对话中查看追问 #${n}`,
+      deskTip: (who) => `项目的前台：${who}`,
+      toTip: (names) => `送达：${names}`,
       list: (names) => names.join("、"),
     },
     segment: { available: "可用", done: "完成", merged: "已合入 · 安装待核实", doing: "在做", blocked: "等条件", todo: "未开始" },
@@ -468,13 +473,22 @@ export function RelatedRequests({ related, onShowBlock }: { related: readonly { 
 }
 
 /**
- * Who a follow-up went to, or who answered it (R-45 §3.2): the Agent's name as the page knows it, else as Core named
- * it, else "an Agent". The one place the follow-up zone and the conversation's marks name anyone.
+ * An Agent's name as the page knows it, else as Core named it, else "an Agent" (R-45 §3.2). The words name only the
+ * project, which replies to the user (the user's choice on YN-233): a name is said in the tip of "the project" only.
  */
 export function useFollowUpName() {
   const agents = useContext(CardAgents);
   const someone = talkText(useLanguage()).someone;
   return (who: FollowUpTo | RouteAgent) => agents.get(who.agentId)?.name || who.name || someone;
+}
+
+/** "The project" in the words, its tip saying who that is (R-45 §3.2): the front desk, or whom a follow-up went to. */
+export function ProjectWord({ tip, children }: { tip: string; children: ReactNode }) {
+  return (
+    <Tip content={<TipText title={tip} />}>
+      <b className="request-follow-project">{children}</b>
+    </Tip>
+  );
 }
 
 const FOLLOW_ICON: Record<FollowUpItem["state"], typeof Hourglass> = {
@@ -483,12 +497,16 @@ const FOLLOW_ICON: Record<FollowUpItem["state"], typeof Hourglass> = {
 
 /**
  * The user's newest follow-up and what came of it, in the block's first look (R-45 §3.2): how many there are and how
- * many are answered; its words, two lines at most; then whom it waits for and since when, or who answered and what
- * (three lines at most), or what was said after it that names no follow-up, said so, or that it is not confirmed
- * delivered, with Send again. Its link opens the request's conversation at it. Nothing for a request with none.
+ * many the project replied to; its words, two lines at most; then that it waits for the project's reply and since when,
+ * or the project's reply (three lines at most), or the project's later note, said to reply to none, or that it is not
+ * confirmed delivered, with Send again. Only "the project" speaks here; its tip names the front desk, or, for a
+ * follow-up that went to someone else (before R-45), whom it went to. Its link opens the request's conversation at it.
+ * Nothing for a request with none.
  */
-export function FollowUpZone({ follow, onShow, onResend, resending = false, readOnly = false }: {
+export function FollowUpZone({ follow, front, onShow, onResend, resending = false, readOnly = false }: {
   follow: BlockFollowUp;
+  /** The request's front desk, by ID (`frontAgentId`). */
+  front: string;
   /** Opens the conversation at follow-up `n`, the lines named with it marked. */
   onShow: (n: number, marked: string[]) => void;
   /** Sends follow-up `n` again as Core keeps it. */
@@ -501,31 +519,32 @@ export function FollowUpZone({ follow, onShow, onResend, resending = false, read
   const time = useTimeDisplay();
   const nameOf = useFollowUpName();
   const { latest, items } = follow;
-  const names = (to: readonly FollowUpTo[]) => t.list(to.map(nameOf));
   const when = (at: string) => (
     <Tip content={<TipText title={absolute(at, time)} />} describe={false}>
       <time dateTime={at}>{relative(at, language)}</time>
     </Tip>
   );
-  // The other follow-ups still waiting: those an open Agent has, and those whose every Agent is closed, no one's now.
-  const others = items.filter((item) => item.n !== latest.n && item.state === "waiting");
-  const stillOpen = others.filter((item) => item.to.some((to) => !to.closed));
-  const noOne = others.filter((item) => !item.to.some((to) => !to.closed));
-  const whoOf = (list: readonly FollowUpItem[], open: boolean) =>
-    names([...new Map(list.flatMap((item) => item.to).filter((to) => to.closed !== open).map((to) => [to.agentId, to])).values()]);
+  // Who "the project" is: whoever wrote the note, as the front desk; for a follow-up waiting, its front desk, or, when
+  // it went to others, them.
+  const project = (word: string, by: RouteAgent | null) => {
+    const to = latest.to;
+    const tip = by ? t.deskTip(nameOf(by))
+      : to.length && to.every((agent) => agent.agentId === front) ? t.deskTip(nameOf(to[0]))
+        : to.length ? t.toTip(t.list(to.map(nameOf))) : t.deskTip(nameOf({ agentId: front, name: "" }));
+    return <ProjectWord tip={tip}>{word}</ProjectWord>;
+  };
+  const others = items.filter((item) => item.n !== latest.n && item.state === "waiting").length;
   const Icon = FOLLOW_ICON[latest.state];
   let status: ReactNode;
   switch (latest.state) {
     case "waiting": {
-      const open = latest.to.filter((to) => !to.closed);
       const seconds = Math.max(60, (Date.now() - Date.parse(latest.at)) / 1000);
-      status = open.length ? (
+      status = (
         <>
-          <span>{t.delivered} <b>{names(open)}</b> · {t.noAnswer}</span>{" "}
+          <span>{t.waiting(project(t.project, null))}</span>{" "}
           <span className="request-follow-who">· {t.waited(duration(seconds, language))}</span>
+          {others > 0 && <span className="request-follow-more">{t.others(others)}</span>}
         </>
-      ) : (
-        <span>{t.closed(names(latest.to))}</span>
       );
       break;
     }
@@ -548,7 +567,7 @@ export function FollowUpZone({ follow, onShow, onResend, resending = false, read
     case "answered":
       status = (
         <>
-          <span className="request-follow-who"><b>{nameOf(latest.note.by)}</b> {t.answered} · {when(latest.note.at)}</span>
+          <span className="request-follow-who">{t.replied(project(t.projectFirst, latest.note.by))} · {when(latest.note.at)}</span>
           <span className="request-follow-answer">{latest.note.note}</span>
         </>
       );
@@ -556,7 +575,7 @@ export function FollowUpZone({ follow, onShow, onResend, resending = false, read
     case "later":
       status = (
         <>
-          <span className="request-follow-who">{t.later} <b>{nameOf(latest.note.by)}</b> {t.said} · {when(latest.note.at)}</span>
+          <span className="request-follow-who">{t.later(project(t.projectFirst, latest.note.by))} · {when(latest.note.at)}</span>
           <span className="request-follow-answer">{latest.note.note}</span>
           <span className="request-follow-caveat">{t.caveat}</span>
         </>
@@ -580,8 +599,6 @@ export function FollowUpZone({ follow, onShow, onResend, resending = false, read
         <span className="request-follow-icon" aria-hidden="true"><Icon size={12} /></span>
         <p className="request-follow-lines">
           {status}
-          {latest.state === "waiting" && stillOpen.length > 0 && <span className="request-follow-more">{t.others(stillOpen.length, whoOf(stillOpen, true))}</span>}
-          {latest.state === "waiting" && noOne.length > 0 && <span className="request-follow-more">{t.othersClosed(noOne.length, whoOf(noOne, false))}</span>}
         </p>
       </div>
       <p className="request-follow-foot">

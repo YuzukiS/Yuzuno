@@ -112,8 +112,8 @@ export type RequestReply = {
   files: HomeFile[];
   at: string;
   messageId: string;
-  /** Who it went to and how each message stands; each one's name now and whether it is closed (R-45), none from an older Core. */
-  deliveredTo: { agentId: string; delivery: Delivery; name?: string; closed?: boolean }[];
+  /** Who it went to and how each message stands; each one's name now (R-45), none from an older Core. */
+  deliveredTo: { agentId: string; delivery: Delivery; name?: string }[];
 };
 
 /**

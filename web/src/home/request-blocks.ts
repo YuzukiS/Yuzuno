@@ -233,8 +233,8 @@ export type StaleFact =
   | { kind: "followUp"; count: number };
 export type BlockStale = { at: string; facts: StaleFact[]; expired: boolean };
 
-/** Who a follow-up went to (R-45 §3.1): by ID, with its name and whether it is closed as Core says them, when it does. */
-export type FollowUpTo = { agentId: string; name: string | null; closed: boolean };
+/** Who a follow-up went to (R-45 §3.1): by ID, with its name as Core says it, when it does; said only in a tip (§3.2). */
+export type FollowUpTo = { agentId: string; name: string | null };
 
 /** A note of the front desk's as a follow-up reads it: its place among the request's notes (from 1), as Core lists them. */
 export type FollowUpNote = { n: number; note: string; by: RouteAgent; at: string };
@@ -290,7 +290,7 @@ const ended = (status: string) => status === "done" || status === "cancelled";
 
 /** A follow-up's Agents as Core names them; an older Core names only their IDs. */
 const toOf = (reply: RequestReply): FollowUpTo[] =>
-  reply.deliveredTo.map((d) => ({ agentId: d.agentId, name: d.name || null, closed: d.closed === true }));
+  reply.deliveredTo.map((d) => ({ agentId: d.agentId, name: d.name || null }));
 
 /**
  * The user's follow-ups to `request` and what came of each (R-45 §3.1), by the rules of `FollowUpItem`; null without

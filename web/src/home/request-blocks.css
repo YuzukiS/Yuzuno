@@ -1041,6 +1041,15 @@
   color: var(--ink);
   font-weight: 600;
 }
+/* "The project" (R-45 §3.2): who it is, the front desk or whom a follow-up went to, is in its tip; the dotted line says
+   there is one. */
+.request-follow-project {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: underline dotted color-mix(in srgb, var(--home-ink-2) 60%, transparent);
+  text-underline-offset: 3px;
+  cursor: help;
+}
 .request-follow-answer {
   display: -webkit-box;
   margin-top: 1px;
