@@ -277,13 +277,10 @@ const originalKey = (agentId: string, turnId: string, itemId: string) => [reques
 /**
  * The answer as the user gave it (T-9, hr5), from its snapshot: the option
  * chosen, the user's words, or a form's answers by field. The conversation's
- * reply and Home's answered ask (YN-223) draw it alike. `brief`: only what
- * was chosen, as a folded answer card shows it: the option, or the form's
- * answers without its title; words alone, their first lines.
+ * reply and a resolved Ask in Home's History (YN-223) draw it alike.
  */
-export function ReplyAnswer({ snapshot, brief = false }: { snapshot: HomeReplySnapshot; brief?: boolean }) {
+export function ReplyAnswer({ snapshot }: { snapshot: HomeReplySnapshot }) {
   const t = useStrings(homeReplyText);
-  const chosen = !!snapshot.choice || !!snapshot.form;
   return (
     <div className="home-reply-answer">
       {snapshot.choice && (
@@ -292,10 +289,10 @@ export function ReplyAnswer({ snapshot, brief = false }: { snapshot: HomeReplySn
           {snapshot.choice.label}
         </p>
       )}
-      {snapshot.text && (!brief || !chosen) && <Words text={snapshot.text} lines={brief ? 2 : undefined} />}
+      {snapshot.text && <Words text={snapshot.text} />}
       {snapshot.form && (
         <>
-          {!brief && <p className="home-reply-form-title">{t.answersTo(snapshot.form.title)}</p>}
+          <p className="home-reply-form-title">{t.answersTo(snapshot.form.title)}</p>
           <dl>
             {snapshot.form.fields.map((field) => (
               <div key={field.id}>
@@ -308,7 +305,7 @@ export function ReplyAnswer({ snapshot, brief = false }: { snapshot: HomeReplySn
                       {[field.answer].flat().map((label, n) => <li key={n}>{label}</li>)}
                     </ul>
                   ) : (
-                    <Words text={String(field.answer)} lines={brief ? 2 : undefined} />
+                    <Words text={String(field.answer)} />
                   )}
                 </dd>
               </div>
@@ -322,16 +319,19 @@ export function ReplyAnswer({ snapshot, brief = false }: { snapshot: HomeReplySn
 
 /** The user's words as Markdown (YN-201: a table is a table), folded after
  * six lines behind "Show all", never cut: folded, only their start is drawn
- * (`foldSource`), and shown all, the whole. `lines`: a folded answer card's
- * first lines only, with no Show all: the whole is one unfold away. */
-export function Words({ text, lines }: { text: string; lines?: number }) {
+ * (`foldSource`), and shown all, the whole. `lines`: an answer card's line,
+ * its first lines only, with no Show all: the whole is in its record, which
+ * `onLong` says there is more for (YN-230). `whole`: that record, the whole
+ * at once, with no Show all of its own. */
+export function Words({ text, lines, whole = false, onLong }: { text: string; lines?: number; whole?: boolean; onLong?: (long: boolean) => void }) {
   const t = useStrings(homeReplyText);
   const words = useRef<HTMLDivElement>(null);
   const [overflow, setOverflow] = useState(false);
   const [all, setAll] = useState(false);
   const start = useMemo(() => foldSource(text), [text]);
-  const long = start.length < text.length || overflow;
-  const shownAll = all && !lines;
+  const long = !whole && (start.length < text.length || overflow);
+  const shownAll = whole || (all && !lines);
+  useEffect(() => onLong?.(long), [long, onLong]);
   useLayoutEffect(() => {
     const element = words.current;
     if (!element || shownAll) return;

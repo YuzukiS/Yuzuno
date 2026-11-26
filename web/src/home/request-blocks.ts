@@ -203,7 +203,12 @@ export type BlockNext =
   | { kind: "step"; text: string; task: string; who: Who | null };
 
 export type DetailItem = { task: string; name: string; detail: string | null; state: Segment["state"]; facts: PullFact[] };
-export type BlockDetails = { got: DetailItem[]; left: DetailItem[] };
+/**
+ * One hand-off its lead planned after the outcomes (R-38 §2.2): a step not done of the Plan its task's card names as
+ * `summary.relay`, by task when several tasks have one. A plan, never a to-do: a step of the user's is words here.
+ */
+export type RelayStep = { task: string; text: string; state: PlanStep["state"] };
+export type BlockDetails = { got: DetailItem[]; left: DetailItem[]; relay: RelayStep[] };
 
 export type BlockEvidence = {
   /** Merged and in the release (Core kept the commit ancestry). */
@@ -474,6 +479,21 @@ export function progressCard(row: TaskRow): { section: Section; steps: PlanStep[
   return best;
 }
 
+/**
+ * A task's planned relay (R-38 §2.2): of its live cards and Asks, the newest whose summary names a Plan as its relay,
+ * that Plan's steps not done; none without one. Only what its lead wrote there: nothing is read from words or events.
+ */
+function relayOf(row: TaskRow): PlanStep[] {
+  const candidates = [row.card, ...row.earlier, ...row.asks].filter((s): s is Section => !!s && !s.history);
+  let best: { section: Section; steps: PlanStep[] } | null = null;
+  for (const section of candidates) {
+    const named = summaryOf(section)?.relay;
+    const steps = named ? stepsOf(section, named) : [];
+    if (steps.length && (!best || time(section.updatedAt) > time(best.section.updatedAt))) best = { section, steps };
+  }
+  return best?.steps.filter((step) => step.state !== "done") ?? [];
+}
+
 /** A step's text as its name and, after the first " — ", its detail. */
 function split(text: string) {
   const at = text.indexOf(" — ");
@@ -592,13 +612,13 @@ function evidenceOf(rows: readonly TaskRow[]): BlockEvidence {
 
 /**
  * Whether the progress was written before later facts Core knows (R-38 §2.5): PRs merged, results reported, tasks
- * ended and the user's follow-ups after the newest card it was read from, at most three kinds; `expired` when that
- * card is a status past its validity. None without a bar: a task's own progress carries no time to compare.
+ * ended and the user's follow-ups after it was written, at most three kinds. `written` is when: for a bar, the newest
+ * card it was read from, `expired` when such a card is a status past its validity; for a task's own progress, when
+ * the task's activity says it was written. None when that is not known.
  */
-function staleOf(request: ProjectRequest, rows: readonly TaskRow[], sources: readonly Section[]): BlockStale | null {
-  if (!sources.length) return null;
-  const newest = sources.reduce((a, b) => (time(b.updatedAt) > time(a.updatedAt) ? b : a));
-  const at = time(newest.updatedAt);
+function staleOf(request: ProjectRequest, rows: readonly TaskRow[], written: string | null | undefined, expired: boolean): BlockStale | null {
+  const at = time(written);
+  if (!written || !at) return null;
   const facts: StaleFact[] = [];
   const merged = [...new Set(rows.flatMap((row) => row.prs).filter((pr) => pr.state === "merged" && time(pr.mergedAt) > at).map((pr) => pr.number))];
   if (merged.length) facts.push({ kind: "merged", prs: merged });
@@ -608,8 +628,24 @@ function staleOf(request: ProjectRequest, rows: readonly TaskRow[], sources: rea
   if (followUps) facts.push({ kind: "followUp", count: followUps });
   const kinds = [...new Set(facts.map((fact) => fact.kind))].slice(0, 3);
   const kept = facts.filter((fact) => kinds.includes(fact.kind));
-  const expired = sources.some((section) => !!section.status?.stale);
-  return kept.length || expired ? { at: newest.updatedAt, facts: kept, expired } : null;
+  return kept.length || expired ? { at: written, facts: kept, expired } : null;
+}
+
+/**
+ * The task whose own progress a block shows (R-38 §2.3): of those going on, else of all, the one whose progress was
+ * written last; one with no known time counts as older than any known, ties kept in order.
+ */
+function progressRow(rows: readonly TaskRow[]): TaskRow | undefined {
+  const written = rows.filter((row) => splitLead(row.task.progress)?.head);
+  const pool = written.some(going) ? written.filter(going) : written;
+  return pool.reduce<TaskRow | undefined>((best, row) => (!best || time(row.task.progressAt) > time(best.task.progressAt) ? row : best), undefined);
+}
+
+/** `rows`' planned relays in their order, each step named by its task when several tasks plan one. */
+function relayed(rows: readonly TaskRow[]): RelayStep[] {
+  const planned = rows.map((row) => ({ row, steps: relayOf(row) })).filter(({ steps }) => steps.length);
+  return planned.flatMap(({ row, steps }) =>
+    steps.map((step) => ({ task: row.task.id, text: planned.length > 1 ? `${shortOf(row)} · ${step.text}` : step.text, state: step.state })));
 }
 
 /** A block's progress parts (R-38 §2): from its own tasks, else (none of its own) those it joined. */
@@ -618,11 +654,8 @@ function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joine
   const bar = barOf(rows);
   const state = stateOf(request, own, joined);
   let now: BlockNow = bar?.now ?? null;
-  if (!now) {
-    const row = rows.find((r) => going(r) && r.task.progress) ?? rows.find((r) => r.task.progress);
-    const head = splitLead(row?.task.progress)?.head;
-    if (row && head) now = { kind: "progress", text: head, task: row.task.id };
-  }
+  const written = bar ? undefined : progressRow(rows);
+  if (!now && written) now = { kind: "progress", text: splitLead(written.task.progress)!.head, task: written.task.id };
   const segments = bar?.now.segments ?? [];
   const newest = bar?.sources.reduce((a, b) => (time(b.updatedAt) > time(a.updatedAt) ? b : a));
   const note = request.notes.at(-1);
@@ -640,10 +673,15 @@ function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joine
       ? {
           got: segments.filter((s) => DONE_STATES.has(s.state)).map(({ task, name, detail, state, facts }) => ({ task, name, detail, state, facts })),
           left: segments.filter((s) => !DONE_STATES.has(s.state)).map(({ task, name, detail, state, facts }) => ({ task, name, detail, state, facts })),
+          relay: relayed(rows),
         }
       : null,
     evidence: evidenceOf(rows),
-    stale: staleOf(request, rows, bar?.sources ?? []),
+    stale: bar
+      ? staleOf(request, rows, newest?.updatedAt, bar.sources.some((section) => !!section.status?.stale))
+      : written
+        ? staleOf(request, rows, written.task.progressAt, false)
+        : null,
   };
 }
 

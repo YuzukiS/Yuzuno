@@ -166,6 +166,12 @@ export function ProjectHome({
   // The requests "Talk to the project" reads, for the blocks and the cards' "See words" (YN-86 §4.5).
   // null until "Talk to the project" has read them once.
   const [talkRequests, setTalkRequests] = useState<readonly ProjectRequest[] | null>(null);
+  // Whether they were read: none read because the read failed is not none to read (R-38 §2.1, the lead's 12534).
+  const [requestsKnown, setRequestsKnown] = useState(false);
+  const takeRequests = useCallback((read: readonly ProjectRequest[], known: boolean) => {
+    setTalkRequests(read);
+    setRequestsKnown(known);
+  }, []);
   const [installed, setInstalled] = useState<InstalledFacts | null>(null);
   const requests = useMemo(() => talkRequests ?? [], [talkRequests]);
   const [reveal, setReveal] = useState<{ n: number; seq: number } | null>(null);
@@ -562,6 +568,8 @@ export function ProjectHome({
       {projectBlock && <ProjectAsks block={projectBlock} common={common} />}
     </>
   );
+  // The requests' read failed: neither "none" nor "nothing here" can be said.
+  const unread = talkRequests !== null && !requestsKnown;
   const empty = !needsShown && !groups.doing.length && !groups.done.length && !projectBlock && !restOfHistory.length;
   return (
     <ProjectTalkLink.Provider value={talkLink}>
@@ -645,7 +653,7 @@ export function ProjectHome({
         leadCount={editorIds?.length ?? 0}
         onNavigate={onNavigate}
         reveal={reveal}
-        onRequests={setTalkRequests}
+        onRequests={takeRequests}
         onInstalled={setInstalled}
         onOlder={setOlder}
         onBusy={setBusy}
@@ -662,7 +670,7 @@ export function ProjectHome({
       <div className="project-home-body" hidden={view === "chat"}>
         <div className="project-home-main" id={`project-requests-${id}`}>
           {arrival && !arrival.inCard && arrival.note}
-          {empty && <p className="home-note home-brief-empty">{t.noContent}</p>}
+          {empty && !unread && <p className="home-note home-brief-empty">{t.noContent}</p>}
           <div className="request-blocks">
             {needsShown > 0 ? (
               <section className="request-group" data-group="needs" aria-label={tb.groups.needs}>
@@ -671,6 +679,9 @@ export function ProjectHome({
                 </h2>
                 {needs}
               </section>
+            ) : unread ? (
+              // The requests could not be read: what waits for the user is not known, so never "none" (R-38 §2.1).
+              <p className="request-group-none" data-group="needs" data-unknown="">{tb.needsUnknown}</p>
             ) : talkRequests !== null && !empty ? (
               // R-38 §2.1: nothing for the user is said once, quietly; nothing counts it.
               <p className="request-group-none" data-group="needs">{tb.needsNone}</p>

@@ -1,6 +1,7 @@
 //! Explicit, bounded GitHub Actions monitoring. This is a remote Jobs source,
 //! never an executor, local resource reservation, or task-completion mechanism.
 mod admission;
+pub(crate) mod archive;
 mod client;
 mod live;
 pub(crate) mod lifecycle;
@@ -27,6 +28,9 @@ use tokio::sync::{Mutex, Notify};
 /// x-poll-interval, Retry-After and rate-limit reset still come first.
 pub(super) const ACTIVE_SECONDS: i64 = 30;
 pub(super) const DONE_SECONDS: i64 = 300;
+/// How long one subscription monitors: seven days from its request, which a
+/// new request renews (the product's choice).
+pub(super) const MONITOR_SECONDS: i64 = 7 * 86400;
 /// A scheduled check reuses run reads younger than this, which watches of one
 /// PR share. It stays below ACTIVE_SECONDS, so a due watch reads anew.
 const SHARED_SECONDS: i64 = 25;
@@ -62,6 +66,9 @@ pub(crate) struct State {
     // Short, bounded reuse of failed one-off reads, including auth/network
     // failures which have no successful body in the shared ETag cache.
     run_failures: Mutex<std::collections::HashMap<String, (i64, String)>>,
+    /// The history sweep (R-39): the cursor of its next pass (0: none under
+    /// way) and when the next sweep may start.
+    archive: Mutex<(i64, i64)>,
 }
 /// One observation of a watch. `checked` is when GitHub answered the oldest
 /// run read behind it (a 304 counts as an answer); `wait` is when GitHub's
@@ -851,8 +858,9 @@ async fn tick(ws: &Arc<Workspace>) -> Result<bool> {
     if flushed {
         changed(ws);
     }
+    let sweeping = sweep_history(ws).await;
     let Some(w) = ws.stored(|s| s.ci_due()).await? else {
-        return Ok(flushed);
+        return Ok(flushed || sweeping);
     };
     let result = tokio::time::timeout(Duration::from_secs(60), async {
         let _slot = ws.github.slots.acquire().await?;
@@ -878,6 +886,31 @@ async fn tick(ws: &Arc<Workspace>) -> Result<bool> {
         changed(ws);
     }
     Ok(true)
+}
+/// One pass of the history sweep, when one is under way or due (R-39).
+/// Answers whether the sweep has more to look at. A failed pass ends the
+/// sweep, which starts again at the next one.
+async fn sweep_history(ws: &Arc<Workspace>) -> bool {
+    let now = chrono::Utc::now().timestamp();
+    let mut sweep = ws.ci.archive.lock().await;
+    let (after, due) = *sweep;
+    if after == 0 && now < due {
+        return false;
+    }
+    match ws.stored(move |s| s.ci_archive_pass(after, now)).await {
+        Ok(pass) => {
+            *sweep = match pass.next {
+                Some(next) => (next, due),
+                None => (0, now + archive::SWEEP_SECONDS),
+            };
+            pass.next.is_some()
+        }
+        Err(e) => {
+            eprintln!("CI history archive: {e:#}");
+            *sweep = (0, now + archive::SWEEP_SECONDS);
+            false
+        }
+    }
 }
 /// Notes each run read: the oldest GitHub answer and GitHub's poll interval.
 #[derive(Default)]
@@ -1091,7 +1124,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         make(
             "ci_list",
-            "Read cached GitHub Actions runs and persistent subscriptions in Jobs. Without agentId or taskId it covers every Agent's subscriptions; runs come newest first, 50 per page (follow nextBefore while hasMore). Subscriptions come on the first page only (without before): the active ones, or with subscriptions \"all\" the newest 200 including ended ones with their closure reasons; activeSubscriptionCount counts the active ones. Includes actual and watched SHA, last observation, errors and expiry. Reading never asks GitHub (ci_refresh does); ci_subscribe mails you when a run finishes.",
+            "Read cached GitHub Actions runs and persistent subscriptions in Jobs. Without agentId or taskId it covers every Agent's subscriptions; runs come newest first, 50 per page (follow nextBefore while hasMore). Subscriptions come on the first page only (without before): the active ones, or with subscriptions \"all\" the newest 200 including ended ones with their closure reasons (archived: true once archived, a week after they ended); activeSubscriptionCount counts the active ones. Includes actual and watched SHA, last observation, errors and expiry. Reading never asks GitHub (ci_refresh does); ci_subscribe mails you when a run finishes.",
             json!({"agentId":string,"taskId":task_reference,"before":{"type":"integer"},"subscriptions":{"type":"string","enum":["active","all"],"default":"active"}}),
             vec![],
         ),

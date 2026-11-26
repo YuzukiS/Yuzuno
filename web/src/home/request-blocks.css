@@ -863,6 +863,21 @@
 .request-evidence-at {
   color: var(--home-ink-2);
 }
+/* R-38 §2.2: the hand-offs its lead plans after the outcomes, in order, as words; nothing here is a to-do. */
+.request-relay {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
+}
+.request-relay li + li::before {
+  content: "→ ";
+  color: var(--home-ink-2);
+}
 @media (max-width: 640px) {
   .request-bar {
     grid-template-columns: minmax(0, 1fr);

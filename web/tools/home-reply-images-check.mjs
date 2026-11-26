@@ -258,9 +258,11 @@ try {
         return { choice: reply.choice, images: reply.images.length };
       });
 
-      await check(`${view.name}: an answered Ask's card shows the images its reply took`, async () => {
+      await check(`${view.name}: an answered Ask's card shows the images its reply took, in its record (YN-230)`, async () => {
         const done = card(page, "done");
-        const images = done.locator(".home-answer .input-image img");
+        // The images make its record hold more than its line: one toggle opens it.
+        await done.locator(".home-answer .home-answer-toggle").click();
+        const images = done.locator(".home-answer .home-answer-record .input-image img");
         await images.nth(1).waitFor();
         // Thumbnails load lazily: in view first, then loaded.
         await done.scrollIntoViewIfNeeded();

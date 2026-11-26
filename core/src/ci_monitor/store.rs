@@ -1,4 +1,5 @@
-use super::{ACTIVE_SECONDS, DONE_SECONDS, Observed, Subscribe};
+use super::archive::{self, Place};
+use super::{ACTIVE_SECONDS, DONE_SECONDS, MONITOR_SECONDS, Observed, Subscribe};
 use crate::{
     collaboration_store as collaboration, github::client::Repository, model::now, store::Store,
 };
@@ -19,6 +20,9 @@ const SAME_SCANNED: i64 = 200;
 /// the newest, the oldest giving way to a new one (R-39). The note reads the
 /// newest SAME_SCANNED of a workflow, so older ones are only its spare.
 const FAILURES_KEPT: i64 = 10000;
+/// The most runs one observation records: GitHub's list of a head as Core
+/// reads it (10 pages of 100) and the 10 unfinished attempts it reads again.
+pub(super) const OBSERVED_RUNS: usize = 1010;
 
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS ci_watches(id TEXT PRIMARY KEY, next_poll INTEGER NOT NULL, failures INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL);
@@ -36,6 +40,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS ci_run_failures_workflow ON ci_run_failures(repository_id,workflow_id);")?;
     super::lifecycle::migrate(db)?;
     super::admission::migrate(db)?;
+    archive::migrate(db)?;
     Ok(())
 }
 fn cooldown(db: &Connection) -> Result<i64> {
@@ -63,25 +68,32 @@ fn untimed(w: &Value) -> Value {
     w
 }
 fn watch(db: &Connection, id: &str) -> Result<Value> {
+    watch_in(db, id, Place::Main)
+}
+fn watch_in(db: &Connection, id: &str, place: Place) -> Result<Value> {
     let raw: String = db
-        .query_row("SELECT data FROM ci_watches WHERE id=?1", [id], |r| {
+        .query_row(&format!("SELECT data FROM {} WHERE id=?1", place.watches()), [id], |r| {
             r.get(0)
         })
         .context("CI watch not found")?;
     Ok(serde_json::from_str(&raw)?)
 }
+/// A subscription as readers see it, from the main tables or the archive
+/// (R-39), which says so with archived: true.
 pub(crate) fn subscription(db: &Connection, id: &str) -> Result<Value> {
-    let (raw, active, expires): (String, bool, i64) = db
-        .query_row(
-            "SELECT data,active,expires FROM ci_subscriptions WHERE id=?1",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .context("CI subscription not found")?;
+    let place = archive::subscription_place(db, id)?.context("CI subscription not found")?;
+    let (raw, active, expires): (String, bool, i64) = db.query_row(
+        &format!("SELECT data,active,expires FROM {} WHERE id=?1", place.subscriptions()),
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
     let mut v: Value = serde_json::from_str(&raw)?;
     v["active"] = json!(active && expires > chrono::Utc::now().timestamp());
-    v["interests"] = super::lifecycle::interests(db, id)?;
-    v["watch"] = watch(db, v["watchId"].as_str().unwrap())?;
+    v["interests"] = super::lifecycle::interests(db, id, place)?;
+    v["watch"] = watch_in(db, v["watchId"].as_str().context("Missing CI watch")?, place)?;
+    if place == Place::Archive {
+        v["archived"] = json!(true);
+    }
     Ok(v)
 }
 /// The request as its caller sent it, which is what is kept and what a retry
@@ -209,14 +221,16 @@ fn same_failures(db: &Connection, rid: &str) -> Result<Vec<Value>> {
         return Ok(Vec::new());
     };
     let mine: Vec<Value> = serde_json::from_str(&mine)?;
-    let mut q = db.prepare("SELECT f.run_id,f.data,r.data FROM ci_run_failures f JOIN ci_runs r ON r.id=f.run_id WHERE f.repository_id=?1 AND f.workflow_id=?2 AND f.run_id<>?3 ORDER BY f.rowid DESC LIMIT ?4")?;
+    // An attempt's run may be archived (R-39).
+    let mut q = db.prepare("SELECT f.run_id,f.data,COALESCE((SELECT data FROM ci_runs WHERE id=f.run_id),(SELECT data FROM ci_runs_archive WHERE id=f.run_id)) FROM ci_run_failures f WHERE f.repository_id=?1 AND f.workflow_id=?2 AND f.run_id<>?3 ORDER BY f.rowid DESC LIMIT ?4")?;
     let rows = q
         .query_map(params![repository, workflow, rid, SAME_SCANNED], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut same = Vec::new();
     for (key, failed, run) in rows {
+        let Some(run) = run else { continue };
         let failed: Vec<Value> = serde_json::from_str(&failed)?;
         let Some(hit) = failed.iter().find(|f| {
             mine.iter().any(|m| m["key"] == f["key"] && m["step"] == f["step"])
@@ -380,6 +394,9 @@ impl Store {
         } else {
             format!("{}:{kind}:{number}:{}", repo.id, input.expected_sha)
         };
+        // An archived target comes back whole before anything is asked of it,
+        // its receipts with it (R-39).
+        archive::restore_watch(&tx, &wid)?;
         let epoch = chrono::Utc::now().timestamp();
         let mine: Option<(String, bool)> = tx
             .query_row(
@@ -405,9 +422,9 @@ impl Store {
         tx.execute("INSERT INTO ci_watches(id,next_poll,data) VALUES(?1,0,?2) ON CONFLICT(id) DO UPDATE SET next_poll=MIN(next_poll,?3),failures=0",params![wid,w.to_string(),epoch+30])?;
         super::admission::admitted(&tx, &task, &wid, agent_id)?;
         let id = mine.map_or_else(|| uuid::Uuid::new_v4().to_string(), |m| m.0);
-        let expires = chrono::Utc::now() + chrono::Duration::days(7);
+        let expires = chrono::Utc::now() + chrono::Duration::seconds(MONITOR_SECONDS);
         let sub = json!({"id":id,"watchId":wid,"agentId":agent_id,"agent":recipient,"taskId":task,"taskRef":reference,"source":source,"createdAt":now(),"expiresAt":expires.to_rfc3339(),"active":true});
-        tx.execute("INSERT INTO ci_subscriptions(id,watch_id,agent_id,task_id,active,expires,data) VALUES(?1,?2,?3,?4,1,?5,?6) ON CONFLICT(id) DO UPDATE SET active=1,expires=excluded.expires,data=excluded.data",params![id,wid,agent_id,task,expires.timestamp(),sub.to_string()])?;
+        tx.execute(&format!("INSERT INTO ci_subscriptions(rowid,id,watch_id,agent_id,task_id,active,expires,data) VALUES({},?1,?2,?3,?4,1,?5,?6) ON CONFLICT(id) DO UPDATE SET active=1,expires=excluded.expires,data=excluded.data", archive::NEXT_SUBSCRIPTION),params![id,wid,agent_id,task,expires.timestamp(),sub.to_string()])?;
         tx.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'ci_subscribe',?2,?3,?4)",params![actor_key(actor),input.request_id,as_sent(&input)?.to_string(),json!({"subscriptionId":id}).to_string()])?;
         super::lifecycle::register(
             &tx,
@@ -460,15 +477,26 @@ impl Store {
         let task = task
             .map(|t| collaboration::task_key(&db, t).map(|v| v.0))
             .transpose()?;
-        let ids = if before.is_some() {
-            Vec::new()
-        } else {
-            let mut q=db.prepare("SELECT id FROM ci_subscriptions WHERE (?1 IS NULL OR agent_id=?1) AND (?2 IS NULL OR task_id=?2) AND (?3 OR (active=1 AND expires>?4)) ORDER BY rowid DESC LIMIT 201")?;
-            let ids = q
-                .query_map(params![agent, task, all, chrono::Utc::now().timestamp()], |r| r.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            ids
+        let mut ids: Vec<(String, i64)> = Vec::new();
+        // Archived ones (R-39) ended long ago: none is active.
+        let places: &[Place] = match (before, all) {
+            (Some(_), _) => &[],
+            (None, false) => &[Place::Main],
+            (None, true) => &[Place::Main, Place::Archive],
         };
+        for place in places {
+            let mut q = db.prepare(&format!(
+                "SELECT id,{order} FROM {table} WHERE (?1 IS NULL OR agent_id=?1) AND (?2 IS NULL OR task_id=?2) AND (?3 OR (active=1 AND expires>?4)) ORDER BY {order} DESC LIMIT 201",
+                order = place.order(),
+                table = place.subscriptions()
+            ))?;
+            ids.extend(
+                q.query_map(params![agent, task, all, chrono::Utc::now().timestamp()], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
+            );
+        }
+        ids.sort_by(|a, b| b.1.cmp(&a.1));
+        let ids: Vec<String> = ids.into_iter().take(201).map(|i| i.0).collect();
         let more = ids.len() > 200;
         let subscriptions = ids
             .iter()
@@ -482,17 +510,27 @@ impl Store {
             params![agent, task, chrono::Utc::now().timestamp()],
             |r| r.get(0),
         )?;
-        let mut q=db.prepare(&format!("SELECT DISTINCT r.seq,r.data,{RUN_WATCHED} FROM ci_runs r JOIN ci_watch_runs w ON w.run_id=r.id JOIN ci_subscriptions s ON s.watch_id=w.watch_id WHERE (?1 IS NULL OR s.agent_id=?1) AND (?2 IS NULL OR s.task_id=?2) AND (?3 IS NULL OR r.seq<?3) ORDER BY r.seq DESC LIMIT 51"))?;
-        let mut runs = q
-            .query_map(params![agent, task, before], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, bool>(2)?,
-                ))
-            })?
-            .map(|row| {
-                let (seq, raw, watched) = row?;
+        // The runs of the main tables' subscriptions, then of archived ones:
+        // those a live watch keeps in the main table, and archived runs.
+        let scope = "(?1 IS NULL OR s.agent_id=?1) AND (?2 IS NULL OR s.task_id=?2) AND (?3 IS NULL OR r.seq<?3) ORDER BY r.seq DESC LIMIT 51";
+        let mut rows: Vec<(i64, String, bool)> = Vec::new();
+        for sql in [
+            format!("SELECT DISTINCT r.seq,r.data,{RUN_WATCHED} FROM ci_runs r JOIN ci_watch_runs w ON w.run_id=r.id JOIN ci_subscriptions s ON s.watch_id=w.watch_id WHERE {scope}"),
+            format!("SELECT DISTINCT r.seq,r.data,{RUN_WATCHED} FROM ci_runs r JOIN ci_watch_runs_archive w ON w.run_id=r.id JOIN ci_subscriptions_archive s ON s.watch_id=w.watch_id WHERE {scope}"),
+            format!("SELECT DISTINCT r.seq,r.data,0 FROM ci_runs_archive r JOIN ci_watch_runs_archive w ON w.run_id=r.id JOIN ci_subscriptions_archive s ON s.watch_id=w.watch_id WHERE {scope}"),
+        ] {
+            let mut q = db.prepare(&sql)?;
+            rows.extend(
+                q.query_map(params![agent, task, before], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
+            );
+        }
+        rows.sort_by(|a, b| b.0.cmp(&a.0));
+        rows.dedup_by_key(|r| r.0);
+        let mut runs = rows
+            .into_iter()
+            .take(51)
+            .map(|(seq, raw, watched)| {
                 let mut v: Value = serde_json::from_str(&raw)?;
                 v["cursor"] = json!(seq);
                 v["runWatched"] = json!(watched);
@@ -530,9 +568,7 @@ impl Store {
             .map(|t| collaboration::task_key(&db, t).map(|v| v.0))
             .transpose()?;
         if let Some(run) = run {
-            db.query_row("SELECT 1 FROM ci_runs WHERE id=?1", [run], |_| Ok(()))
-                .optional()?
-                .context("Actions run not found; subscribe to its PR or run first")?;
+            archive::run(&db, run)?.context("Actions run not found; subscribe to its PR or run first")?;
         }
         let mut q = db.prepare("SELECT w.id,w.failures,?1 IS NOT NULL AS linked FROM ci_watches w WHERE (?1 IS NULL OR EXISTS(SELECT 1 FROM ci_watch_runs r WHERE r.watch_id=w.id AND r.run_id=?1)) AND EXISTS(SELECT 1 FROM ci_subscriptions s WHERE s.watch_id=w.id AND s.active=1 AND s.expires>?2 AND (?1 IS NOT NULL OR ((?3 IS NULL OR s.agent_id=?3) AND (?4 IS NULL OR s.task_id=?4)))) ORDER BY w.next_poll,w.id")?;
         let rows = q
@@ -560,13 +596,21 @@ impl Store {
     }
     pub(super) fn ci_run(&self, id: &str) -> Result<Value> {
         let db = self.db.read()?;
-        let (raw, watched): (String, bool) = db
+        let main: Option<(String, bool)> = db
             .query_row(
                 &format!("SELECT r.data,{RUN_WATCHED} FROM ci_runs r WHERE r.id=?1"),
                 [id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .context("Actions run not found; subscribe to its PR or run first")?;
+            .optional()?;
+        // An archived run is watched by no one (R-39).
+        let (raw, watched) = match main {
+            Some(found) => found,
+            None => (
+                archive::run(&db, id)?.context("Actions run not found; subscribe to its PR or run first")?.0,
+                false,
+            ),
+        };
         let mut run: Value = serde_json::from_str(&raw)?;
         run["runWatched"] = json!(watched);
         Ok(run)
@@ -576,8 +620,7 @@ impl Store {
     pub(super) fn ci_refresh_run(&self, run: Value) -> Result<bool> {
         let db = self.db.write()?;
         let id = run["id"].as_str().context("Missing run key")?;
-        let raw: String =
-            db.query_row("SELECT data FROM ci_runs WHERE id=?1", [id], |r| r.get(0))?;
+        let (raw, archived) = archive::run(&db, id)?.context("Actions run not found")?;
         let old: Value = serde_json::from_str(&raw)?;
         ensure!(
             ["id", "repositoryId", "runId", "attempt", "headSha"]
@@ -603,7 +646,7 @@ impl Store {
         let changed =
             old["rawStatus"] != run["rawStatus"] || old["conclusion"] != run["conclusion"];
         db.execute(
-            "UPDATE ci_runs SET data=?2 WHERE id=?1",
+            &format!("UPDATE {} SET data=?2 WHERE id=?1", if archived { "ci_runs_archive" } else { "ci_runs" }),
             params![id, run.to_string()],
         )?;
         Ok(changed)
@@ -658,7 +701,7 @@ impl Store {
                 excluded,
                 ..
             }) => {
-                ensure!(runs.len() <= 1010, "CI run observation exceeded its bound");
+                ensure!(runs.len() <= OBSERVED_RUNS, "CI run observation exceeded its bound");
                 // Whether this observation saw anything new: a run or attempt
                 // not seen before, or a changed status or conclusion.
                 let mut changed = false;
@@ -671,6 +714,8 @@ impl Store {
                         "CI observation does not match watched repository/commit"
                     );
                     let rid = run["id"].as_str().context("Missing run key")?;
+                    // A run an archived watch saw comes back first (R-39).
+                    archive::restore_run(&tx, rid)?;
                     let previous: Option<String> = tx
                         .query_row("SELECT data FROM ci_runs WHERE id=?1", [rid], |r| r.get(0))
                         .optional()?;

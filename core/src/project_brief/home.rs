@@ -678,7 +678,12 @@ fn form_answers(row: &sections::Row, reply: &FormReply, text: &str) -> Result<Va
         lines.push(format!("- {shown_label}: {}", if said.is_empty() { "(no answer)" } else { said.as_str() }));
         // JSON.stringify's order: the form's fields.
         ids.push(format!("{}:{value}", Value::from(id)));
-        kept.push(json!({"id":id,"label":shown_label,"type":field["type"],"answer":answer}));
+        let mut answered = json!({"id":id,"label":shown_label,"type":field["type"],"answer":answer});
+        // A choice's options as this version offered them (YN-230): what the user did not choose, beside what they did.
+        if let Some(options) = offered(field) {
+            answered["options"] = options;
+        }
+        kept.push(answered);
     }
     let title = form["title"].as_str().unwrap_or_default();
     let canonical = format!("Answers to \u{201c}{title}\u{201d}:\n{}\n\n{{\"formId\":{},\"answers\":{{{}}}}}",
@@ -687,6 +692,15 @@ fn form_answers(row: &sections::Row, reply: &FormReply, text: &str) -> Result<Va
         return Err(refused("form_mismatch: the reply's text does not say these answers".into()));
     }
     Ok(json!({"id":reply.form_id,"title":title,"fields":kept}))
+}
+
+/// A choice field's options by label, in its order, as `form_answers` reads an option's label; none for words.
+fn offered(field: &Value) -> Option<Value> {
+    if !matches!(field["type"].as_str(), Some("single" | "multi")) {
+        return None;
+    }
+    let options = field["options"].as_array().into_iter().flatten();
+    Some(json!(options.filter_map(|o| o["label"].as_str().or(o["id"].as_str())).collect::<Vec<_>>()))
 }
 
 /// An answered ask's reply as the user gave it to the version it answers (YN-223): the snapshot Core kept with it; or,
@@ -698,12 +712,35 @@ fn answered(row: &sections::Row, project: &str, kept: &sections::KeptReply) -> O
         return None;
     }
     if let Some(snapshot) = &kept.snapshot {
-        return Some(snapshot.clone());
+        return Some(with_options(snapshot.clone(), row, kept));
     }
     let form = kept.form.as_ref().filter(|form| row.replied_ask() && form["version"].as_i64() == Some(row.version))?;
     let reply: FormReply = serde_json::from_value(json!({"formId": form["formId"], "answers": form["answers"]})).ok()?;
     let answers = form_answers(row, &reply, row.reply_text.as_deref()?).ok()?;
     Some(snapshot(project, Some(row), None, None, None, Some(answers)))
+}
+
+/// A snapshot kept before Core kept a form's choice options with it (YN-230): each choice field without them gets the
+/// options of the very version answered, the version its answers by id were kept with (reply_form), while the ask is
+/// still that version and its form is the one answered (same form, field, kind and label). Otherwise (another version,
+/// even of a form with the same id, or a reply that kept no answers by id) its fields stay as kept: only the answers.
+fn with_options(mut snapshot: Value, row: &sections::Row, kept: &sections::KeptReply) -> Value {
+    let form = &row.data["ask"]["reply"]["form"];
+    let same = kept.form.as_ref().is_some_and(|by_id| by_id["version"].as_i64() == Some(row.version) && by_id["formId"] == form["id"]);
+    if !same || snapshot["form"]["id"] != form["id"] {
+        return snapshot;
+    }
+    let fields = form["fields"].as_array().map(Vec::as_slice).unwrap_or_default();
+    for field in snapshot["form"]["fields"].as_array_mut().into_iter().flatten() {
+        if field.get("options").is_some() {
+            continue;
+        }
+        let asked = fields.iter().find(|f| f["id"] == field["id"] && f["type"] == field["type"] && f["label"].as_str().unwrap_or(f["id"].as_str().unwrap_or_default()) == field["label"]);
+        if let Some(options) = asked.and_then(offered) {
+            field["options"] = options;
+        }
+    }
+    snapshot
 }
 
 /// The option of an ask's reply with this id: (id, label).

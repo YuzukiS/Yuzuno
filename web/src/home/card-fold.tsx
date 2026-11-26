@@ -67,7 +67,8 @@ export function FoldButton({
 /**
  * Unfolds the collapsed cards that hold `target`, and its own, by their fold
  * buttons, so a jump to it (Needs you, Open in…, a reply's Open on Home)
- * shows it rather than a header; those cards stay expanded. A closed
+ * shows it rather than a header; those cards stay expanded. An answered
+ * Ask's card opens its answer record. A closed
  * `<details>` that holds it, as a project's team details hold the sections
  * kept out of view, opens too: its content is drawn already. Whether any
  * card was unfolded: the target is drawn on the next frame.
@@ -86,5 +87,9 @@ export function unfoldAround(target: HTMLElement) {
     hidden.push(body);
   const folds = [...document.querySelectorAll<HTMLButtonElement>(".home-fold")];
   for (const body of hidden) folds.find((fold) => fold.getAttribute("aria-controls") === body.id)?.click();
-  return hidden.length > 0;
+  // An answered Ask's card (YN-230): a jump to it is to what it holds, so its answer record opens, by its one toggle.
+  // Coming back to Home shows it closed; only such a jump, or the user, opens it.
+  const record = target.querySelector<HTMLButtonElement>(":scope > .home-answer .home-answer-toggle[aria-expanded='false']");
+  record?.click();
+  return hidden.length > 0 || !!record;
 }

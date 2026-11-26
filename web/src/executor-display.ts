@@ -1,3 +1,4 @@
+import { restingEnd } from "./attention.ts";
 import type { ExecutorLifecycle } from "./executor-lifecycle";
 import type { Agent } from "./types";
 
@@ -88,10 +89,10 @@ export type ExecutorView = {
 };
 
 export type ExecutorFacts = {
-  agent: Pick<Agent, "status" | "pendingCount" | "closedAt" | "disconnectedAt">;
+  /** Its last Turn's end is Core's (`lastTurnEnd`): whether this device has
+   * shown it changes nothing here (YN-232). */
+  agent: Pick<Agent, "status" | "pendingCount" | "closedAt" | "disconnectedAt" | "lastTurnEnd">;
   lifecycle: ExecutorLifecycle;
-  /** Its last Turn's end this device has not shown (T-42). */
-  unseen?: "finished" | "failed" | null;
   /** The label of an idle Agent's unfinished Job or CI work, as the row reads it. */
   waiting?: string | null;
   pr?: ExecutorPR | null;
@@ -113,7 +114,8 @@ const time = (iso: string | null | undefined) => {
  * with why; 4. closed: stopped; 5. queued or starting: queued;
  * 6. requests or questions waiting, a gate's ask on Home (T-43 S4), or a
  * runtime waiting: needs you, for how long (what it asks is its work summary);
- * 7. its Turn failed: failed; 8. offline or disconnected: stopped;
+ * 7. its Turn failed (its runtime in error, or its last Turn failed and none
+ * runs since): failed, read or not; 8. offline or disconnected: stopped;
  * 9. delivering (its result in, its task in review): review, at its PR, else
  * awaiting release; 10. otherwise working: its task's blocker, a result to
  * check, its PR, or its unfinished Jobs and CI.
@@ -143,7 +145,7 @@ export function executorView(facts: ExecutorFacts): ExecutorView {
   }
   // What it asks is the row's work summary, under this line: said once.
   if (agent.pendingCount > 0 || agent.status === "waiting" || facts.asking) return view("needsYou", null, null, facts.waitingSince ?? null);
-  if (agent.status === "error" || facts.unseen === "failed") return view("failed", { kind: "turnFailed" });
+  if (agent.status === "error" || restingEnd(agent) === "failed") return view("failed", { kind: "turnFailed" });
   if (agent.status === "offline" || agent.disconnectedAt) return view("stopped", { kind: "offline" });
   if (lifecycle.state === "delivering") return view("review", pr ? { kind: "pr", status: pr.status } : { kind: "awaitingRelease" });
   if (lifecycle.blocked) return view("working", { kind: "blocked", text: lifecycle.blocked });

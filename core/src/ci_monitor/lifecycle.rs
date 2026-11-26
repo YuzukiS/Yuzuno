@@ -11,9 +11,12 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS ci_interests_owner ON ci_interests(owner,active);")?;
     Ok(())
 }
-pub(super) fn interests(db: &Connection, id: &str) -> Result<Value> {
-    let mut q =
-        db.prepare("SELECT data FROM ci_interests WHERE subscription_id=?1 ORDER BY rowid")?;
+pub(super) fn interests(db: &Connection, id: &str, place: super::archive::Place) -> Result<Value> {
+    let mut q = db.prepare(&format!(
+        "SELECT data FROM {} WHERE subscription_id=?1 ORDER BY {}",
+        place.interests(),
+        place.order()
+    ))?;
     let rows = q
         .query_map([id], |r| r.get::<_, String>(0))?
         .map(|r| Ok(serde_json::from_str::<Value>(&r?)?))

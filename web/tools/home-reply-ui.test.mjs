@@ -715,3 +715,23 @@ test("on a phone, Back to your reply is a 44px target too", async (t) => {
   assert.equal(note(page).dataset.layout, "phone");
   assert.deepEqual(page.errors, []);
 });
+
+// R-38 §2.1 (the lead's comment 12534): a Project whose requests could not be read is not one with none for the user.
+// Read and empty, Needs you says none, quietly; not read, it says so, and the page never says it has nothing.
+test("on a Project's page, requests that could not be read never read as Needs you · none", async (t) => {
+  // Not read, with no card either: still not "nothing here". Read and empty, with a card: none for the user.
+  for (const [status, body, sections, said] of [
+    [500, { error: "unavailable" }, [], "Needs you · requests could not be read"],
+    [200, { requests: [], hasMore: false }, [section("other", 40, 1)], "Needs you · none"],
+  ]) {
+    const page = mount({ respond: (url) => (/\/requests(\?|$)/.test(url) ? { status, body }
+      : { body: url === "/api/home" ? homeData(sections) : url === "/api/machine-load" ? machine : { repositories: [], links: [] } }) });
+    t.after(page.close);
+    page.window.renderHome({ origin: projectOrigin, back, n: 1 });
+    const line = await until(() => page.document.querySelector(".request-group-none"), `${status}: its Needs you line`);
+    assert.equal(line.textContent.trim(), said);
+    assert.equal(line.hasAttribute("data-unknown"), status !== 200);
+    assert.equal(page.document.querySelector(".home-brief-empty"), null, "the page never says it has nothing");
+    assert.deepEqual(page.errors, []);
+  }
+});

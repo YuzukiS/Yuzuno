@@ -93,6 +93,7 @@ export const blockText = strings(
     delivered: (title: string) => `What “${title}” delivered`,
     olderRequests: "Read older requests",
     needsNone: "Needs you · none",
+    needsUnknown: "Needs you · requests could not be read",
   },
   {
     groups: { needs: "等你", doing: "进行中", done: "已完成" },
@@ -154,6 +155,7 @@ export const blockText = strings(
     delivered: (title) => `「${title}」交付的结果`,
     olderRequests: "读更早的请求",
     needsNone: "等你 · 无",
+    needsUnknown: "等你 · 请求暂时读不到",
   },
 );
 
@@ -358,6 +360,8 @@ function AnsweredAsk({ section, common }: { section: Section; common: BlockCommo
             <SectionCard
               section={section}
               answer
+              // Opened from its line, the record of that answer is what the user asked for (YN-230).
+              record
               projectId={common.projectId}
               workspaceId={common.workspaceId}
               agents={common.agents}
