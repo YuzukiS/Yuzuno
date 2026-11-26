@@ -244,10 +244,11 @@ async function run(buildName, dist) {
     await page.waitForTimeout(1_000);
     phases.push(await measure("back"));
 
-    // View JSON on the last result shown, then Copy.
-    const target = ids.at(-1);
-    const opened = await page.evaluate(async (id) => {
-      const card = document.querySelector(`.turn-results .interactive-result[data-result-id="${id}"]`);
+    // View JSON on the last result drawn (the conversation reopens where it
+    // was left, T-166), then Copy.
+    const opened = await page.evaluate(async () => {
+      const card = [...document.querySelectorAll(".turn-results .interactive-result[data-result-id]")].filter((el) => el.querySelector(".result-content")).at(-1);
+      const id = card.dataset.resultId;
       const details = card.querySelector(".result-original");
       card.scrollIntoView({ block: "center" });
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -264,8 +265,9 @@ async function run(buildName, dist) {
       });
       await new Promise((r) => requestAnimationFrame(r));
       const frame = performance.now();
-      return { shownMs: shownAt - start, frameMs: frame - start, made: window.__pretty - before, preChars: details.querySelector("pre").textContent.length };
-    }, target);
+      return { id, shownMs: shownAt - start, frameMs: frame - start, made: window.__pretty - before, preChars: details.querySelector("pre").textContent.length };
+    });
+    const target = opened.id;
     await page.locator(`.turn-results .interactive-result[data-result-id="${target}"] .result-original button.copy-button`).click();
     await page.waitForFunction(() => window.__copied.length > 0, null, { timeout: 10_000 });
     const copied = await page.evaluate(() => window.__copied.at(-1));
