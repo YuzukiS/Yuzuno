@@ -267,7 +267,7 @@ async fn a_follow_up_goes_to_the_front_desk_while_its_request_is_not_routed() {
     // b is the front desk: its head says how to answer the follow-up, by its number (R-45).
     let head = follow_up_head(&workspace, "Code", &project, 1, 1, true);
     assert!(head.starts_with("Follow-up #1 to request R-1 from the user"), "{head}");
-    assert!(head.contains("project_route request R-1 with replyTo [1]"), "{head}");
+    assert!(head.contains("project_route with request R-1, your note as the answer and replyTo [1]"), "{head}");
     assert_eq!(sent.input.text, format!("{head}\n\n{text}"));
     let moved = &sent.input.text_blocks.as_ref().unwrap()[0];
     assert_eq!(utf16(&sent.input.text, moved.start, moved.end), "PASTED");

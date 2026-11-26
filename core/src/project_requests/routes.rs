@@ -107,16 +107,19 @@ pub(crate) fn tool_definition() -> Value {
     let line = |what: &str| json!({"type":"string","minLength":1,"maxLength":MAX_LINE,"description":what});
     json!({
         "name":TOOL,
-        "description":"For your Project's front desk only: route the user's request R-n to cards, or answer it, as one recorded step. Core copies the user's words byte for byte into each new task's description and each hand-off message; you add only title, note and why. Each route is done once per (request, its index): send the same routes again and none is done twice (one that failed is tried again where it stopped), so a call with the routes already done only changes the title. Routes, done in order, one failing never undoing another:\n- card + executor {templateId, tier?, machineId?}, materials?, body?: a new task, dispatched to a new executor as your own task_create and task_dispatch would (the user's templates and routing apply; materials and body go to that dispatch only, checked before the route is recorded), then its card key: the task's key in lowercase, where its executor writes the card. For code, give materials.worktree (made inside the Project's folder), a full baseSha and repositoryId, else it starts in the Project's folder (yuzuno_guide topic delivery);\n- card + agentId: a new task and card for an open member of the Project (yourself: no message);\n- existing + cardKey: the request joins that task's card, live or not written yet; its words go to the Agent answering for it;\n- answer: no task, no card: your note is the whole answer, and the request shows as answered. Only for a question you answer now in one or two sentences from what you already know (a state, a result, where something is). Never for work (code, a fix, research, design, a review, a release) or a choice the user must make: route those to cards. When unsure, make a card.\nWhere: development coordination (code, merges, releases, across cards) to the standing lead's card (existing, or card + agentId); research, design, comparison or audit to card + executor (templates investigation, design, decision-memo); the same matter as an existing card: existing, saying why. Do not research or design yourself; routing to yourself is recorded too.",
-        "inputSchema":{"type":"object","additionalProperties":false,"required":["request","title","note","routes"],"properties":{
+        "description":"For your Project's front desk only: route the user's request R-n to cards, or answer it, as one recorded step. Core copies the user's words byte for byte into each new task's description and each hand-off message; you add only title, note and why. Each route is done once per (request, its index): send the same routes again and none is done twice (one that failed is tried again where it stopped), so a repeat only changes the title. To answer follow-ups only: request, note, replyTo. Routes, in order, one failing undoing none:\n- card + executor {templateId, tier?, machineId?}, materials?, body?: a new task, dispatched to a new executor as your own task_create and task_dispatch would (the user's templates and routing apply; materials and body go to that dispatch only, checked before the route is recorded), then its card key: the task's key in lowercase, where its executor writes the card. For code, give materials.worktree (made inside the Project's folder), a full baseSha and repositoryId, else it starts in the Project's folder (yuzuno_guide topic delivery);\n- card + agentId: a new task and card for an open member of the Project (yourself: no message);\n- existing + cardKey: the request joins that task's card, live or not written yet; its words go to the Agent answering for it;\n- answer: no task, no card: your note is the whole answer, and the request shows as answered. Only for a question you answer now in one or two sentences from what you already know (a state, a result, where something is). Never for work (code, a fix, research, design, a review, a release) or a choice the user must make: route those to cards. When unsure, make a card.\nWhere: development coordination (code, merges, releases, across cards) to the standing lead's card (existing, or card + agentId); research, design, comparison or audit to card + executor (templates investigation, design, decision-memo); the same matter as an existing card: existing, saying why. Do not research or design yourself; routing to yourself is recorded too.",
+        "inputSchema":{"type":"object","additionalProperties":false,"required":["request","note"],"properties":{
             "request":{"type":"string","description":"R-12, as Core's message names the request."},
-            "title":line("A short phrase, like a task title, saying what the request is; not the user's words, not where it goes. The user knows the request by it."),
+            "title":line("With routes: a short phrase, like a task title, saying what the request is; not the user's words, not where it goes. \
+                The user knows the request by it. Left out with replyTo alone: the title stays."),
             "note":line("Your reply in the user's conversation, one or two short sentences."),
             "replyTo":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"integer","minimum":1},
                 "description":"The user's follow-ups your note answers, by number, as Core's message names each (follow-up #m): every one must be \
-                    this request's, or nothing is done. The user's page shows your note as their answer. Leave it out for a note that \
-                    answers none; a card, result or report is no answer."},
-            "routes":{"type":"array","minItems":1,"maxItems":MAX_ROUTES,"items":{"type":"object","additionalProperties":false,"required":["kind","why"],"properties":{
+                    this request's, or nothing is done. The user's page shows your note as their answer. With replyTo, title and routes may be \
+                    left out: the call then only adds your answer, and no route is done, sent again or retried. Leave replyTo out for a note \
+                    that answers none; a card, result or report is no answer."},
+            "routes":{"type":"array","minItems":1,"maxItems":MAX_ROUTES,"description":"Required, with title, unless replyTo answers \
+                follow-ups alone.","items":{"type":"object","additionalProperties":false,"required":["kind","why"],"properties":{
                 "kind":{"type":"string","enum":[CARD,EXISTING,ANSWER]},
                 "why":line("Why this route: shown with it to the user and sent to who takes it."),
                 "title":line("card: the new task's and card's title; at most 300 bytes in UTF-8, as a task's title."),
@@ -274,12 +277,14 @@ pub(super) fn json(db: &Connection, row: &RouteRow) -> Result<Value> {
 #[derive(Clone, Debug)]
 struct Call {
     n: i64,
-    title: String,
+    /// None for an answer alone (R-45): the request keeps its title.
+    title: Option<String>,
     note: String,
     /// The follow-ups the note answers (R-45), by number, ascending, each
     /// once; None when it names none.
     reply_to: Option<Vec<i64>>,
-    /// Each route as `route` checked it: what is kept and compared.
+    /// Each route as `route` checked it: what is kept and compared. Empty
+    /// for an answer alone, which records no route and does none.
     routes: Vec<Value>,
 }
 
@@ -313,13 +318,21 @@ fn parse(input: &Value) -> Result<Call> {
         bail!("invalid_input: unknown argument {key}");
     }
     let n = request_number(input.get("request"))?;
+    let reply_to = reply_to(input.get("replyTo"))?;
+    // An answer to follow-ups alone (R-45): request, note and replyTo, no
+    // title or routes. Anything else is a routing call, as before.
+    if reply_to.is_some() && input.get("routes").is_none() {
+        ensure!(input.get("title").is_none(),
+            "invalid_input: an answer alone (replyTo without routes) keeps the request's title; leave title out, or send it with the routes");
+        let note = line(input, "note", "")?;
+        return Ok(Call { n, title: None, note, reply_to, routes: vec![] });
+    }
     let title = line(input, "title", "")?;
     let note = line(input, "note", "")?;
-    let reply_to = reply_to(input.get("replyTo"))?;
     let given = input.get("routes").and_then(Value::as_array).context("invalid_input: routes is a list of routes")?;
     ensure!((1..=MAX_ROUTES).contains(&given.len()), "invalid_input: routes has 1 to {MAX_ROUTES} routes, not {}", given.len());
     let routes = given.iter().enumerate().map(|(index, given)| route(index, given)).collect::<Result<Vec<_>>>()?;
-    Ok(Call { n, title, note, reply_to, routes })
+    Ok(Call { n, title: Some(title), note, reply_to, routes })
 }
 
 /// replyTo (R-45): absent, or one or more follow-up numbers, each a whole
@@ -549,20 +562,31 @@ fn record(store: &Store, actor: &str, call: &Call) -> Result<Ctx> {
             }
         }
     }
-    tx.execute("UPDATE project_requests SET title=?2 WHERE id=?1", params![request.id, call.title])?;
-    // The newest note said again is no new note, as before: unless it now
-    // answers follow-ups it did not (R-45), a new note with them. The same
-    // note with the same replyTo again is the same note.
-    let last: Option<(i64, String, Option<String>)> = tx
-        .query_row("SELECT n,note,reply_to FROM project_request_notes WHERE request_id=?1 ORDER BY n DESC LIMIT 1", [&request.id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    if let Some(title) = &call.title {
+        tx.execute("UPDATE project_requests SET title=?2 WHERE id=?1", params![request.id, title])?;
+    }
+    // A note that names no follow-up said again as the newest is no new note,
+    // as before. One that answers follow-ups (R-45), kept with them ascending
+    // and each once, is the same answer as any of this request's from the
+    // same author with the same words and the same follow-ups, whenever it
+    // was written; the same words for other follow-ups are a new answer.
+    // No earlier note is changed: one written before replyTo stays one that
+    // names none.
+    let last: Option<(i64, String)> = tx
+        .query_row("SELECT n,note FROM project_request_notes WHERE request_id=?1 ORDER BY n DESC LIMIT 1", [&request.id],
+            |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;
     let reply_to = call.reply_to.as_ref().map(serde_json::to_string).transpose()?;
-    let said = last.as_ref().is_some_and(|(_, note, answered)| *note == call.note && (reply_to.is_none() || *answered == reply_to));
+    let said = match &reply_to {
+        None => last.as_ref().is_some_and(|(_, note)| *note == call.note),
+        Some(reply_to) => tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_request_notes WHERE request_id=?1 AND by_agent_id=?2 AND note=?3 AND reply_to=?4)",
+            params![request.id, actor, call.note, reply_to], |r| r.get(0))?,
+    };
     if !said {
         tx.execute(
             "INSERT INTO project_request_notes(request_id,n,note,by_agent_id,at,reply_to) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![request.id, last.map_or(1, |(n, ..)| n + 1), call.note, actor, at, reply_to],
+            params![request.id, last.map_or(1, |(n, _)| n + 1), call.note, actor, at, reply_to],
         )?;
     }
     let todo = of_request(&tx, &request.id)?

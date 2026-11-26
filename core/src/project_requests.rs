@@ -181,8 +181,8 @@ pub(crate) fn request_head(workspace: &str, project: &str, project_id: &str, n: 
 pub(crate) fn follow_up_head(workspace: &str, project: &str, project_id: &str, n: i64, m: i64, desk: bool) -> String {
     let answer = if desk {
         format!(
-            " Answer it where the user reads it: project_route request R-{n} with replyTo [{m}], your note the answer and \
-             your recorded routes as they were; a card, result or report is no answer."
+            " Answer it where the user reads it: project_route with request R-{n}, your note as the answer and replyTo [{m}] \
+             (no title or routes needed); a card, result or report is no answer."
         )
     } else {
         String::new()
