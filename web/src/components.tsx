@@ -17,8 +17,8 @@ import { Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useS
 import * as Dialog from "@radix-ui/react-dialog";
 import { DialogExitGhost } from "./DialogExitGhost";
 import { Tip, TipText } from "./Tip";
-import { markdownHtml } from "./markdown";
-import DOMPurify from "dompurify";
+import { proseHtml } from "./prose-html";
+import { ProseBlocks } from "./prose-blocks";
 import {
   ArrowUpRight,
   Check,
@@ -323,79 +323,76 @@ function messageOf(element: Element): { turnId: string; itemId?: string } | unde
 export function Prose({
   text,
   onFile,
+  live,
 }: {
   text: string;
   onFile?: (path: string, line?: number) => void;
+  /** More of the text is still coming (an Agent's reply being written). */
+  live?: boolean;
 }) {
-  const html = useMemo(
-    () => ({
-      __html: DOMPurify.sanitize(
-        markdownHtml(text),
-        {
-          USE_PROFILES: { html: true },
-          FORBID_TAGS: ["img", "form", "input", "button", "iframe", "style"],
-          FORBID_ATTR: ["style"],
-          // DOMPurify's default URI policy plus file:// and basename.ext:line.
-          // Otherwise a bare filename with a line is mistaken for a URI scheme.
-          ALLOWED_URI_REGEXP:
-            /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix):|file:\/\/|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$)|[a-z][\w.\-]*\.[\w.\-]+:-?\d+(?::\d+)?$)/i,
-        },
-      ),
-    }),
-    [text],
-  );
+  // Text still being written when first shown keeps the blocks already drawn
+  // as more arrives (ProseBlocks, YN-234), also once it is whole; other text
+  // is drawn whole each time.
+  const [streamed] = useState(!!live);
+  const links = useMessageLinks();
+  const onClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const link = (e.target as HTMLElement).closest("a");
+    if (!link) return;
+    const href = link.getAttribute("href") || "";
+    // A link to a message opens it here, never as a web page (T-166).
+    const message = links && parseMessageLink(href);
+    if (message) {
+      e.preventDefault();
+      links.open(message);
+      return;
+    }
+    // So does a link to a Home report (T-18), with Back to this message.
+    const report = links && parseReportLink(href);
+    if (report) {
+      e.preventDefault();
+      links.openReport(report, messageOf(link));
+      return;
+    }
+    if (/^(https?:|mailto:)/i.test(href)) {
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      return;
+    }
+    e.preventDefault();
+    if (href && !href.startsWith("#")) {
+      // Separate the location before decoding so escaped # and : in a
+      // filename remain part of its path. Retain the existing column form.
+      const location =
+        /#L(-?\d+).*$/i.exec(href) || /:(-?\d+)(?::\d+)?$/.exec(href);
+      let path = (location ? href.slice(0, location.index) : href).replace(
+        /^file:\/\//i,
+        "",
+      );
+      try {
+        path = decodeURIComponent(path);
+      } catch {
+        /* Keep malformed paths visible to the artifact endpoint. */
+      }
+      onFile?.(path, location ? Number(location[1]) : undefined);
+    }
+  };
+  return streamed ? <LiveProse text={text} live={!!live} onClick={onClick} /> : <WholeProse text={text} onClick={onClick} />;
+}
+function WholeProse({ text, onClick }: { text: string; onClick: React.MouseEventHandler<HTMLDivElement> }) {
+  const html = useMemo(() => ({ __html: proseHtml(text) }), [text]);
   // Words streaming onto the end of a reply fade in rather than pop.
   const root = useRef<HTMLDivElement>(null);
   useStreamReveal(root, text);
-  const links = useMessageLinks();
-  return (
-    <div
-      ref={root}
-      className="prose"
-      dangerouslySetInnerHTML={html}
-      onClick={(e) => {
-        const link = (e.target as HTMLElement).closest("a");
-        if (!link) return;
-        const href = link.getAttribute("href") || "";
-        // A link to a message opens it here, never as a web page (T-166).
-        const message = links && parseMessageLink(href);
-        if (message) {
-          e.preventDefault();
-          links.open(message);
-          return;
-        }
-        // So does a link to a Home report (T-18), with Back to this message.
-        const report = links && parseReportLink(href);
-        if (report) {
-          e.preventDefault();
-          links.openReport(report, messageOf(link));
-          return;
-        }
-        if (/^(https?:|mailto:)/i.test(href)) {
-          link.target = "_blank";
-          link.rel = "noreferrer";
-          return;
-        }
-        e.preventDefault();
-        if (href && !href.startsWith("#")) {
-          // Separate the location before decoding so escaped # and : in a
-          // filename remain part of its path. Retain the existing column form.
-          const location =
-            /#L(-?\d+).*$/i.exec(href) || /:(-?\d+)(?::\d+)?$/.exec(href);
-          let path = (location ? href.slice(0, location.index) : href).replace(
-            /^file:\/\//i,
-            "",
-          );
-          try {
-            path = decodeURIComponent(path);
-          } catch {
-            /* Keep malformed paths visible to the artifact endpoint. */
-          }
-          onFile?.(path, location ? Number(location[1]) : undefined);
-        }
-      }}
-    />
-  );
+  return <div ref={root} className="prose" dangerouslySetInnerHTML={html} onClick={onClick} />;
+}
+function LiveProse({ text, live, onClick }: { text: string; live: boolean; onClick: React.MouseEventHandler<HTMLDivElement> }) {
+  // React draws no children here: ProseBlocks does, before the browser paints.
+  const root = useRef<HTMLDivElement>(null);
+  const blocks = useRef<ProseBlocks | null>(null);
+  useLayoutEffect(() => {
+    (blocks.current ??= new ProseBlocks(root.current!)).show(text, !live);
+  }, [text, live]);
+  return <div ref={root} className="prose" onClick={onClick} />;
 }
 export function itemText(item: NativeItem): string {
   if (item.type === "userMessage")
