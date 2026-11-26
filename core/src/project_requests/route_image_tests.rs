@@ -110,24 +110,26 @@ Why")), "{description}");
     assert_eq!((lab.sent("lead"), lab.sent("member")), (1, 1));
 }
 
+// R-45: a follow-up, its images with it, goes to the front desk only, also
+// once the request is on cards; a front desk that takes no images refuses it,
+// nothing sent or kept.
 #[tokio::test]
-async fn a_follow_up_with_images_goes_to_each_agent_answering_for_the_cards_or_to_none() {
+async fn a_follow_up_with_images_goes_to_the_front_desk_or_to_none() {
     let lab = lab();
     let n = lab.say("导出要 CSV", "m1").await;
     lab.route("desk", n, "导出", "好。", vec![to_agent("导出代码", "lead", "开发协调"), to_agent("导出文档", "member", "写文档")]).await.unwrap();
     let images = vec![attached(&lab, 1)];
     let after = follow_up(&lab.ws, &lab.project, n, with(lab.words("看这张", "f1"), &images)).await.unwrap();
     let to: Vec<_> = after["reply"]["deliveredTo"].as_array().unwrap().iter().map(|d| d["agentId"].clone()).collect();
-    assert_eq!(to, [json!("lead"), json!("member")]);
-    for agent in ["lead", "member"] {
-        assert_eq!(lab.receipt(agent, "f1").unwrap().input.images, images, "{agent}");
-        assert!(holds(&lab, agent, &images), "{agent} has its own copy");
-    }
-    // One of them takes no images: none is sent any of it, and nothing is kept.
-    lab.ws.store.update("member", "test/harness", &json!({}), |d| d.agent.harness = "plain-text".into()).unwrap();
+    assert_eq!(to, [json!("desk")]);
+    assert_eq!(lab.receipt("desk", "f1").unwrap().input.images, images);
+    assert!(holds(&lab, "desk", &images), "the front desk has its own copy");
+    assert!(lab.receipt("lead", "f1").is_none() && lab.receipt("member", "f1").is_none());
+    // It takes no images: nothing is sent, and nothing is kept.
+    lab.ws.store.update("desk", "test/harness", &json!({}), |d| d.agent.harness = "plain-text".into()).unwrap();
     let error = follow_up(&lab.ws, &lab.project, n, with(lab.words("再看这张", "f2"), &images)).await.unwrap_err();
-    assert!(error.to_string().starts_with("images_unsupported: Member answers for this request"), "{error}");
-    assert!(lab.receipt("lead", "f2").is_none() && lab.receipt("member", "f2").is_none());
+    assert!(error.to_string().starts_with("images_unsupported: Desk answers for this request"), "{error}");
+    assert!(lab.receipt("desk", "f2").is_none());
     assert_eq!(lab.request(n)["replies"].as_array().unwrap().len(), 1);
 }
 

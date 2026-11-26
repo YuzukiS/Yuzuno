@@ -58,7 +58,7 @@ async fn a_note_answers_the_follow_ups_it_names_and_saying_it_again_is_the_same_
     assert_eq!(notes(&lab, n).len(), 4, "the same author, words and follow-ups: the same answer, whenever it was written");
     let sends = || (lab.count("SELECT COUNT(*) FROM collaboration_messages"), lab.count("SELECT COUNT(*) FROM agent_receipts"));
     assert_eq!(sends(), (mail, sent), "an answer sends nothing");
-    // The same words to a later follow-up are its answer. (The follow-up itself is a message to who answers for the card.)
+    // The same words to a later follow-up are its answer. (The follow-up itself is a message to the front desk.)
     follow(&lab, n, "还有 YAML", "f3").await;
     let (mail, sent) = sends();
     answer_alone(&lab, "desk", n, "JSON 和 XML 都加。", json!([3])).await.unwrap();
@@ -146,30 +146,41 @@ async fn notes_from_before_reply_to_read_as_answering_none() {
     assert_eq!(lab.request(n)["state"], "answered");
 }
 
-// A follow-up's message names it by its number. The front desk's says how to
-// answer it, by that number; an Agent answering for a card is told only the
-// number. The page reads who it went to by name, and whether they are closed.
+// A follow-up's message names it by its number, and tells the front desk,
+// which alone gets it (R-45, the user's choice on YN-233), how to reply to
+// it. The page reads whom it went to by name. A follow-up kept from before,
+// sent again under its client ID to an Agent that is not the front desk now,
+// carries only its number.
 #[tokio::test]
-async fn a_follow_ups_head_numbers_it_and_tells_only_the_front_desk_how_to_answer() {
+async fn a_follow_ups_head_numbers_it_and_tells_the_front_desk_how_to_reply() {
     let lab = lab();
     let carded = lab.say("导出要 CSV", "m1").await;
-    lab.route("desk", carded, "导出", "好。", vec![to_agent("导出代码", "lead", "开发协调")]).await.unwrap();
+    let made = lab.route("desk", carded, "导出", "好。", vec![to_agent("导出代码", "lead", "开发协调")]).await.unwrap();
     let reply = follow(&lab, carded, "还要 JSON", "f1").await;
     let to = &reply["deliveredTo"];
-    assert_eq!((to.as_array().unwrap().len(), to[0]["agentId"].clone(), to[0]["name"].clone(), to[0]["closed"].clone()),
-        (1, json!("lead"), json!("Lead"), json!(false)), "{to}");
-    assert!(to[0]["delivery"].is_string(), "with how its message stands: {to}");
-    let text = lab.receipt("lead", "f1").unwrap().input.text;
+    assert_eq!((to.as_array().unwrap().len(), to[0]["agentId"].clone(), to[0]["name"].clone()), (1, json!("desk"), json!("Desk")), "{to}");
+    assert!(to[0]["delivery"].is_string() && to[0].get("closed").is_none(), "how its message stands, and its name only: {to}");
+    let text = lab.receipt("desk", "f1").unwrap().input.text;
     assert!(text.starts_with("Follow-up #1 to request R-1 from the user"), "{text}");
-    assert!(!text.contains("project_route"), "only the front desk answers in the conversation: {text}");
+    assert!(text.contains("project_route with request R-1, your note as the reply and replyTo [1] (no title or routes needed)"), "{text}");
+    assert!(text.contains(&format!("Its tasks and who answers for each now: {} (Lead);", made["routes"][0]["task"].as_str().unwrap())), "{text}");
+    assert!(lab.receipt("lead", "f1").is_none(), "not to who answers for the card");
     let plain = lab.say("README 做完了吗", "m2").await;
     follow(&lab, plain, "英文版呢？", "f2").await;
     follow(&lab, plain, "还有日文版", "f3").await;
     let text = lab.receipt("desk", "f3").unwrap().input.text;
     assert!(text.starts_with("Follow-up #2 to request R-2 from the user"), "{text}");
-    assert!(text.contains("project_route with request R-2, your note as the answer and replyTo [2]"), "{text}");
-    lab.ws.store.update("lead", "test/closed", &json!({}), |d| d.agent.closed_at = Some(crate::model::now())).unwrap();
-    assert_eq!(lab.request(carded)["replies"][0]["deliveredTo"][0]["closed"], true);
+    assert!(text.contains("replyTo [2]") && !text.contains("Its tasks"), "{text}");
+    // Kept from before R-45, to the Agent then answering for the card: sent again there, with its number only.
+    let request: String = lab.ws.store.db.read().unwrap()
+        .query_row("SELECT id FROM project_requests WHERE project_id=?1 AND n=?2", params![lab.project, carded], |r| r.get(0)).unwrap();
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO project_request_replies(request_id,n,text,text_blocks,at,message_id,delivered_to,images,files)
+         VALUES(?1,2,'旧的追问',NULL,?2,'old','[\"lead\"]',NULL,NULL)", params![request, crate::model::now()]).unwrap();
+    follow_up(&lab.ws, &lab.project, carded, lab.words("旧的追问", "old")).await.unwrap();
+    let text = lab.receipt("lead", "old").unwrap().input.text;
+    assert!(text.starts_with("Follow-up #2 to request R-1 from the user") && !text.contains("project_route"), "{text}");
+    assert!(lab.receipt("desk", "old").is_none());
 }
 
 // Alone, an answer adds only itself: the request keeps its title and its
