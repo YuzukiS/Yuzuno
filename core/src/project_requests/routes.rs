@@ -92,6 +92,14 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
         }
     }
     db.execute_batch("CREATE INDEX IF NOT EXISTS project_routes_owed ON project_routes(at) WHERE attachments='owed';")?;
+    // reply_to (R-45): the follow-ups a note answers, by their numbers, as a
+    // JSON array; NULL for a note that named none, as every note before it
+    // did. Older Cores ignore it.
+    let has: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_request_notes') WHERE name='reply_to')", [], |r| r.get(0))?;
+    if !has {
+        db.execute_batch("ALTER TABLE project_request_notes ADD COLUMN reply_to TEXT")?;
+    }
     Ok(())
 }
 
@@ -104,6 +112,10 @@ pub(crate) fn tool_definition() -> Value {
             "request":{"type":"string","description":"R-12, as Core's message names the request."},
             "title":line("A short phrase, like a task title, saying what the request is; not the user's words, not where it goes. The user knows the request by it."),
             "note":line("Your reply in the user's conversation, one or two short sentences."),
+            "replyTo":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"integer","minimum":1},
+                "description":"The user's follow-ups your note answers, by number, as Core's message names each (follow-up #m): every one must be \
+                    this request's, or nothing is done. The user's page shows your note as their answer. Leave it out for a note that \
+                    answers none; a card, result or report is no answer."},
             "routes":{"type":"array","minItems":1,"maxItems":MAX_ROUTES,"items":{"type":"object","additionalProperties":false,"required":["kind","why"],"properties":{
                 "kind":{"type":"string","enum":[CARD,EXISTING,ANSWER]},
                 "why":line("Why this route: shown with it to the user and sent to who takes it."),
@@ -264,6 +276,9 @@ struct Call {
     n: i64,
     title: String,
     note: String,
+    /// The follow-ups the note answers (R-45), by number, ascending, each
+    /// once; None when it names none.
+    reply_to: Option<Vec<i64>>,
     /// Each route as `route` checked it: what is kept and compared.
     routes: Vec<Value>,
 }
@@ -294,16 +309,33 @@ fn request_number(value: Option<&Value>) -> Result<i64> {
 
 fn parse(input: &Value) -> Result<Call> {
     let object = input.as_object().context("invalid_input: expected an object")?;
-    if let Some(key) = object.keys().find(|key| !matches!(key.as_str(), "request" | "title" | "note" | "routes")) {
+    if let Some(key) = object.keys().find(|key| !matches!(key.as_str(), "request" | "title" | "note" | "routes" | "replyTo")) {
         bail!("invalid_input: unknown argument {key}");
     }
     let n = request_number(input.get("request"))?;
     let title = line(input, "title", "")?;
     let note = line(input, "note", "")?;
+    let reply_to = reply_to(input.get("replyTo"))?;
     let given = input.get("routes").and_then(Value::as_array).context("invalid_input: routes is a list of routes")?;
     ensure!((1..=MAX_ROUTES).contains(&given.len()), "invalid_input: routes has 1 to {MAX_ROUTES} routes, not {}", given.len());
     let routes = given.iter().enumerate().map(|(index, given)| route(index, given)).collect::<Result<Vec<_>>>()?;
-    Ok(Call { n, title, note, routes })
+    Ok(Call { n, title, note, reply_to, routes })
+}
+
+/// replyTo (R-45): absent, or one or more follow-up numbers, each a whole
+/// number from 1; kept ascending, each once. Whether the request has them is
+/// `record`'s to check.
+fn reply_to(value: Option<&Value>) -> Result<Option<Vec<i64>>> {
+    let Some(value) = value else { return Ok(None) };
+    let given = value.as_array().context("invalid_input: replyTo is a list of follow-up numbers, e.g. [2]")?;
+    ensure!(!given.is_empty(), "invalid_input: replyTo names at least one follow-up; leave it out for a note that answers none");
+    let mut numbers = given
+        .iter()
+        .map(|m| m.as_i64().filter(|m| *m > 0).with_context(|| format!("invalid_input: replyTo has {m}; a follow-up's number is a whole number from 1")))
+        .collect::<Result<Vec<_>>>()?;
+    numbers.sort_unstable();
+    numbers.dedup();
+    Ok(Some(numbers))
 }
 
 /// One route, checked and written as it is kept: its text without spaces
@@ -477,6 +509,19 @@ fn record(store: &Store, actor: &str, call: &Call) -> Result<Ctx> {
         .query_row(&format!("SELECT {REQUEST} FROM project_requests WHERE project_id=?1 AND n=?2"), params![project, call.n], request_row)
         .optional()?
         .with_context(|| format!("request_not_found: {name} has no request R-{}. Nothing was routed", call.n))?;
+    // Every follow-up the note answers is one of this request's (R-45): one it
+    // does not have refuses the call before anything is written.
+    if let Some(reply_to) = &call.reply_to {
+        let mut has = tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM project_request_replies WHERE request_id=?1 AND n=?2)")?;
+        for m in reply_to {
+            ensure!(
+                has.query_row(params![request.id, m], |r| r.get::<_, bool>(0))?,
+                "invalid_input: replyTo names follow-up #{m}, which R-{} does not have; name only its own follow-ups, by the number \
+                 Core's message gave each. Nothing was routed",
+                call.n
+            );
+        }
+    }
     let known = of_request(&tx, &request.id)?;
     let at = crate::model::now();
     for (index, route) in call.routes.iter().enumerate() {
@@ -505,13 +550,19 @@ fn record(store: &Store, actor: &str, call: &Call) -> Result<Ctx> {
         }
     }
     tx.execute("UPDATE project_requests SET title=?2 WHERE id=?1", params![request.id, call.title])?;
-    let last: Option<(i64, String)> = tx
-        .query_row("SELECT n,note FROM project_request_notes WHERE request_id=?1 ORDER BY n DESC LIMIT 1", [&request.id], |r| Ok((r.get(0)?, r.get(1)?)))
+    // The newest note said again is no new note, as before: unless it now
+    // answers follow-ups it did not (R-45), a new note with them. The same
+    // note with the same replyTo again is the same note.
+    let last: Option<(i64, String, Option<String>)> = tx
+        .query_row("SELECT n,note,reply_to FROM project_request_notes WHERE request_id=?1 ORDER BY n DESC LIMIT 1", [&request.id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .optional()?;
-    if last.as_ref().is_none_or(|(_, note)| *note != call.note) {
+    let reply_to = call.reply_to.as_ref().map(serde_json::to_string).transpose()?;
+    let said = last.as_ref().is_some_and(|(_, note, answered)| *note == call.note && (reply_to.is_none() || *answered == reply_to));
+    if !said {
         tx.execute(
-            "INSERT INTO project_request_notes(request_id,n,note,by_agent_id,at) VALUES(?1,?2,?3,?4,?5)",
-            params![request.id, last.map_or(1, |(n, _)| n + 1), call.note, actor, at],
+            "INSERT INTO project_request_notes(request_id,n,note,by_agent_id,at,reply_to) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![request.id, last.map_or(1, |(n, ..)| n + 1), call.note, actor, at, reply_to],
         )?;
     }
     let todo = of_request(&tx, &request.id)?

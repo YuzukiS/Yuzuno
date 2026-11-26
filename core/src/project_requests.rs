@@ -174,11 +174,22 @@ pub(crate) fn request_head(workspace: &str, project: &str, project_id: &str, n: 
     )
 }
 
-/// What a follow-up's Agent reads before its words.
-pub(crate) fn follow_up_head(workspace: &str, project: &str, project_id: &str, n: i64) -> String {
+/// What a follow-up's Agent reads before its words: the follow-up by its
+/// number m (R-45). The front desk (`desk`) reads too how to answer it where
+/// the user reads it, by that number: no other Agent answers in the
+/// request's conversation.
+pub(crate) fn follow_up_head(workspace: &str, project: &str, project_id: &str, n: i64, m: i64, desk: bool) -> String {
+    let answer = if desk {
+        format!(
+            " Answer it where the user reads it: project_route request R-{n} with replyTo [{m}], your note the answer and \
+             your recorded routes as they were; a card, result or report is no answer."
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "Follow-up to request R-{n} from the user, in the project {project} (Workspace {workspace}, Project {project_id}); \
-         the user's words travel as they are:"
+        "Follow-up #{m} to request R-{n} from the user, in the project {project} (Workspace {workspace}, Project {project_id}).{answer} \
+         The user's words travel as they are:"
     )
 }
 
@@ -647,7 +658,7 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
     let gate = lock(ws, project).await;
     let _held = gate.lock().await;
     let (id, said) = (project.to_owned(), words.clone());
-    let (place, request, reply) = ws.stored(move |store| {
+    let (place, request, reply, desk) = ws.stored(move |store| {
         let mut writer = store.db.write()?;
         let tx = writer.transaction()?;
         let place = place(&tx, &id, &said)?;
@@ -662,7 +673,8 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
         if let Some(found) = found {
             ensure!(found.text == said.text && found.text_blocks == said.text_blocks && found.images == said.images
                 && found.files == said.files, "This clientMessageId was already used for another message");
-            return Ok((place, request, found));
+            let desk = front_desk::in_project(&tx, &id)?.effective_agent_id;
+            return Ok((place, request, found, desk));
         }
         refuse_archived(&place)?;
         let to = follow_up_to(&tx, &id, &request.id)?;
@@ -678,13 +690,14 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
             params![request.id, reply.n, reply.text, kept_blocks(&reply.text_blocks)?, reply.at, reply.message_id,
                 serde_json::to_string(&reply.delivered_to)?, kept_images(&reply.images)?, kept_files(&reply.files)?],
         )?;
+        let desk = front_desk::in_project(&tx, &id)?.effective_agent_id;
         tx.commit()?;
-        Ok((place, request, reply))
+        Ok((place, request, reply, desk))
     }).await?;
-    let head = follow_up_head(&place.workspace, &place.name, project, request.n);
     let origin = json!({"kind":ORIGIN,"projectId":project,"requestId":request.id,"request":request.n,"reply":reply.n,"workspaceId":place.workspace});
     let mut receipts = Vec::new();
     for agent in &reply.delivered_to {
+        let head = follow_up_head(&place.workspace, &place.name, project, request.n, reply.n, desk.as_deref() == Some(agent.as_str()));
         let sent = send(ws, project, agent, &reply.message_id, &reply.files, false, origin.clone(), |turn| {
             message(&reply.message_id, &head, &reply.text, reply.text_blocks.as_deref(), &reply.images, turn)
         }).await;
@@ -762,9 +775,20 @@ fn delivery(db: &Connection, request: &str, agent: &str, client: &str, reply: Op
         .flatten())
 }
 
+/// A follow-up as the page reads it: each Agent it went to with how its
+/// message stands, its name now ("" once deleted) and whether it is closed
+/// (R-45), so the page names who was told.
 fn reply_view(db: &Connection, request: &str, reply: Reply) -> Result<Value> {
     let delivered_to = reply.delivered_to.iter()
-        .map(|agent| Ok(json!({"agentId":agent,"delivery":delivery(db, request, agent, &reply.message_id, Some(reply.n))?})))
+        .map(|agent| {
+            let (name, closed): (Option<String>, bool) = db
+                .query_row("SELECT json_extract(data,'$.agent.name'),json_extract(data,'$.agent.closedAt') IS NOT NULL FROM agents WHERE id=?1",
+                    [agent], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()?
+                .unwrap_or((None, true));
+            Ok(json!({"agentId":agent,"name":name.unwrap_or_default(),"closed":closed,
+                "delivery":delivery(db, request, agent, &reply.message_id, Some(reply.n))?}))
+        })
         .collect::<Result<Vec<_>>>()?;
     Ok(json!({"n":reply.n,"text":reply.text,"textBlocks":reply.text_blocks,"images":reply.images,"files":reply.files,"at":reply.at,
         "messageId":reply.message_id,"deliveredTo":delivered_to}))
