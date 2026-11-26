@@ -4,7 +4,8 @@
 // with every API answered here (no Core, no daily window or data):
 //   - 1 row or 50 rows in two Projects, the rail beside a Project's page;
 //   - quiet (no events), one Agent streaming, or five at once, each Agent's
-//     entry every 250 ms as Core sends it (core/src/events.rs);
+//     entry 250–310 ms after its last, as Core sends at most every 250 ms
+//     (core/src/events.rs), with the same fixed jitter for every build;
 //   - per run: the rows React drew (a probe pass, through React's DevTools
 //     hook), the renderer's main-thread time (CDP Performance metrics), the
 //     renderer and GPU processes' CPU time (/proc), and how long a progress
@@ -89,7 +90,8 @@ async function processCpu(marker) {
   for (const entry of await readdir("/proc")) {
     if (!/^\d+$/.test(entry)) continue;
     try {
-      const cmdline = (await readFile(`/proc/${entry}/cmdline`, "utf8")).split("\0");
+      // Chromium retitles its children (one string, spaces between), so read it whole.
+      const cmdline = (await readFile(`/proc/${entry}/cmdline`, "utf8")).split("\0").join(" ");
       const stat = await readFile(`/proc/${entry}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
       procs.set(Number(entry), { pid: Number(entry), ppid: Number(fields[1]), cpu: (Number(fields[11]) + Number(fields[12])) / tick, cmdline });
@@ -97,16 +99,17 @@ async function processCpu(marker) {
       /* gone */
     }
   }
-  const root = [...procs.values()].find((p) => p.cmdline.some((arg) => arg === marker));
-  if (!root) return null;
+  // The browser this run started (and a launcher before it, if any), and everything under it.
+  const roots = new Set([...procs.values()].filter((p) => p.cmdline.includes(marker)).map((p) => p.pid));
+  if (!roots.size) return null;
   const under = (p) => {
-    for (let at = p; at; at = procs.get(at.ppid)) if (at.pid === root.pid) return true;
+    for (let at = p; at; at = procs.get(at.ppid)) if (roots.has(at.pid)) return true;
     return false;
   };
   const byRole = {};
   for (const p of procs.values()) {
     if (!under(p)) continue;
-    const type = p.cmdline.find((arg) => arg.startsWith("--type="))?.slice(7) ?? "browser";
+    const type = /--type=([\w-]+)/.exec(p.cmdline)?.[1] ?? "browser";
     const role = type === "utility" ? "utility" : type;
     byRole[role] = (byRole[role] || 0) + p.cpu;
   }
@@ -119,6 +122,7 @@ async function run(buildName, dist, scenario, { probe }) {
   const marker = `--yn234-run=${randomUUID()}`;
   const browser = await chromium.launch({ headless: true, executablePath: browserBin, args: [marker] });
   const errors = [];
+  const emptyAnswered = new Set();
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: "reduce", locale: "en-US", timezoneId: "UTC" });
     await context.addInitScript(({ agents, probe }) => {
@@ -213,7 +217,10 @@ async function run(buildName, dist, scenario, { probe }) {
               workSummary: { text: `${listed.name} is on step ${n}.`, kind: "progress", source: "agent", turnId: `t-${id}`, itemId: `m-${id}` } };
             sent.get(id).push({ n, at: performance.now() });
             send({ type: "agent.progress", agentId: id, rev: r, lastSeq: r, agent });
-            timers.push(setTimeout(tick, every));
+            // Core sends an entry at most every 250 ms; when, after that, varies.
+            // The same fixed jitter (0–60 ms) for every build, so arrivals do
+            // not line up with the batch's own 250 ms wait.
+            timers.push(setTimeout(tick, every + ((n * 7919 + index * 104729) % 61)));
           };
           timers.push(setTimeout(tick, (every * index) / Math.max(1, ids.length)));
         });
@@ -234,6 +241,8 @@ async function run(buildName, dist, scenario, { probe }) {
       const path = url.pathname;
       if (url.host !== HOST) return route.abort();
       if (request.method() !== "GET") return route.fulfill({ status: 500, json: { error: "not answered by this fixture" } });
+      // No Codex plan usage here, as from a Core that has none to tell.
+      if (/^\/api\/agents\/[^/]+\/codex\/usage$/.test(path)) return route.fulfill({ status: 404, json: { error: "No usage" } });
       const detail = path.match(/^\/api\/agents\/(a\d\d)$/);
       if (detail) {
         const agent = agents.find((a) => a.id === detail[1]);
@@ -250,7 +259,10 @@ async function run(buildName, dist, scenario, { probe }) {
       }[path];
       if (json) return route.fulfill({ json });
       if (/^\/api\/projects\/[^/]+\/requests$/.test(path)) return route.fulfill({ json: { requests: [], hasMore: false } });
-      if (path.startsWith("/api/")) return route.fulfill({ json: {} });
+      if (path.startsWith("/api/")) {
+        emptyAnswered.add(path);
+        return route.fulfill({ json: {} });
+      }
       const file = resolve(dist, `.${path === "/" ? "/index.html" : path}`);
       assert.ok(file.startsWith(dist + "/"));
       try {
@@ -270,7 +282,12 @@ async function run(buildName, dist, scenario, { probe }) {
       window.__stream.onopen?.({});
       window.__stream.onmessage?.({ data: JSON.stringify({ type: "reset", reason: "open" }), lastEventId: "" });
     });
-    await page.locator('[data-project-home="p1"]').waitFor({ timeout: 30_000 });
+    try {
+      await page.locator('[data-project-home="p1"]').waitFor({ timeout: 30_000 });
+    } catch (error) {
+      const shown = await page.evaluate(() => document.body.innerText.slice(0, 400)).catch(() => "");
+      throw new Error(`no project page (${error.message.split("\n")[0]}); errors: ${errors.join(" | ")}; answered {}: ${[...emptyAnswered].join(" ")}; shown: ${shown}`);
+    }
     // Settled: reads after the reset, the page's own arrival.
     await page.waitForTimeout(2_000);
     const cdp = await context.newCDPSession(page);
@@ -288,6 +305,7 @@ async function run(buildName, dist, scenario, { probe }) {
       mainThread: Object.fromEntries(["TaskDuration", "ScriptDuration", "LayoutDuration", "RecalcStyleDuration"].map((k) => [k, after.m[k] - before.m[k]])),
       processCpu: before.cpu && after.cpu ? Object.fromEntries(Object.keys(after.cpu).map((k) => [k, after.cpu[k] - (before.cpu[k] || 0)])) : null,
       errors,
+      emptyAnswered: [...emptyAnswered],
     };
     if (probe) {
       const { drawn, commits } = await page.evaluate(() => ({ drawn: window.__drawn, commits: window.__commits }));

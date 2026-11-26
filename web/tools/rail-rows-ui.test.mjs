@@ -101,6 +101,8 @@ async function mount({ appearance = null } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(e.message));
+  const logged = [];
+  vc.on("error", (...args) => logged.push(args.map((a) => String(a?.stack ?? a)).join(" ").slice(0, 600)));
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: "http://127.0.0.1:4452/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: vc,
   });
@@ -115,6 +117,8 @@ async function mount({ appearance = null } = {}) {
     return delay === 5_000 || delay === 60_000 ? 0 : realInterval.call(w, handler, delay, ...args);
   };
   w.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" }));
+  // The conversation of the first Agent is open beside the rail.
+  w.localStorage.setItem("yuzuno.selected.ws-rows", JSON.stringify("a01"));
   if (appearance) w.localStorage.setItem("yuzuno.appearance", JSON.stringify(appearance));
   const probe = rowProbe(w);
   const base = { harness: "codex", cwd: "/w", model: "m", color: "sage", createdAt: "", updatedAt: "",
@@ -144,6 +148,9 @@ async function mount({ appearance = null } = {}) {
   w.fetch = async (url, init = {}) => {
     const { pathname: path } = new URL(String(url), w.location.href);
     core.calls.push({ path, method: init.method || "GET" });
+    // No Codex plan usage here, as from a Core that has none to tell.
+    if (/^\/api\/agents\/[^/]+\/codex\/usage$/.test(path))
+      return { ok: false, status: 404, json: async () => ({ error: "No usage" }), text: async () => '{"error":"No usage"}' };
     let body = {};
     if (path === "/api/workspace")
       body = { workspace: { id: "ws-rows" }, agents: core.agents, projects: core.projects, runtime: { connected: true }, defaultCwd: "/w" };
@@ -157,6 +164,7 @@ async function mount({ appearance = null } = {}) {
     else if (path === "/api/merge-queue") body = { entries: [] };
     else if (path === "/api/ci/live" || path === "/api/waits/live" || path === "/api/jobs/live") body = { agents: {} };
     else if (path === "/api/home") body = { generatedAt: "", order: [], needsYou: [], projects: [] };
+    else if (/^\/api\/projects\/[^/]+\/requests$/.test(path)) body = { requests: [], hasMore: false };
     // Each read its own copy, as from Core: a list read gives every row a new entry.
     return { ok: true, status: 200, json: async () => structuredClone(body), text: async () => JSON.stringify(body) };
   };
@@ -171,14 +179,22 @@ async function mount({ appearance = null } = {}) {
     p.send = (data) => stream.onmessage?.({ data: JSON.stringify(data), lastEventId: "" });
     // The open stream's first word, so nothing reads again on a timer later.
     p.send({ type: "reset", reason: "open" });
-    await until(() => d.querySelector(".agent-row.selected"), "a row selected");
+    await until(() => d.querySelector('.agent-row.selected[data-agent-id="a01"]') && d.querySelector('[data-item-id="m-a01"]'), "a01's conversation open");
     await pause(600);
     probe.take();
   } catch (error) {
     w.close();
     throw error;
   }
-  p.row = (id) => d.querySelector(`.agent-list .agent-row[data-agent-id="${id}"]`);
+  // A row that is not there says what the rail holds instead.
+  p.row = (id) => {
+    const row = d.querySelector(`.agent-list .agent-row[data-agent-id="${id}"]`);
+    if (!row) {
+      const rail = d.querySelector(".agent-list");
+      assert.fail(`no row for ${id}: ${d.querySelectorAll(".agent-row").length} rows (${p.order().slice(0, 6).join(" ")}…); rail: ${rail ? rail.textContent.slice(0, 240) : "none"}; main: ${d.querySelector("main, .main-panel")?.className ?? "none"}; shown: ${d.body.textContent.slice(0, 300)}; logged: ${logged.slice(0, 3).join(" | ")}`);
+    }
+    return row;
+  };
   p.order = () => [...d.querySelectorAll(".agent-list .agent-row")].map((row) => row.dataset.agentId);
   p.selected = () => [...d.querySelectorAll(".agent-list .agent-row.selected")].map((row) => row.dataset.agentId);
   // Core's rail entry for an Agent, changed as `change` says, as agent.progress carries it.
