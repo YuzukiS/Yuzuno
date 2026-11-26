@@ -32,7 +32,9 @@ jobs:
   # Decides whether a PR changes documentation only: README.md,
   # CONTRIBUTING.md or Markdown under docs/, compared between the PR's fixed
   # base and head (.github/scripts/pr_scope.py). Anything else, or any doubt,
-  # keeps the full checks. Push to main never runs it.
+  # keeps the full checks. Push to main never runs it. It also records, in
+  # its summary and log only, which jobs a web/-only PR might not need
+  # (YN-235); nothing reads that, and every job runs as before.
   scope:
     name: Change scope
     if: github.event_name == 'pull_request'

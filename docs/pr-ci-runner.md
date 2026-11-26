@@ -26,6 +26,16 @@ A pull request whose changes are all to `README.md`, `CONTRIBUTING.md` or Markdo
 - A push to `main` always runs the full product checks.
 - GitHub counts a skipped job as passing a required check. If required checks are added, require Change scope and Docs as well.
 
+## Jobs a PR might not need (record only)
+
+For every other pull request, Change scope also writes which jobs the PR might not need, under **Might not be needed (record only)** in its summary and as a `record_only: might_skip=…` line in its log (YN-235, for the R-47 trial). **Nothing reads it: every job runs as before.** Whether any job is ever skipped this way is a separate decision.
+
+- It names Core (build and test), Lint and Claude bridge only when every change is an added, modified or deleted regular file under `web/` that Core's CI does not read. Anything else, a mix with any other path, a doubt or an error records **None** and why.
+- Core's CI reads, under `web/`: every file at `web/`'s top level (`npm ci` reads `package.json` and `package-lock.json` there); every `web/` path a Rust source outside `web/` names, in `include_str!`, `include_bytes!`, `concat!(env!("CARGO_MANIFEST_DIR"), …)`, a joined path or a comment; and every file the result validator's build loads, followed from the `build:result-validator` script through static and dynamic imports, re-exports, `require` and `new URL(…, import.meta.url)`. Type-only imports load nothing and are not followed. A load named by anything but one string literal makes the answer unknown.
+- It looks at both the base and the merge commit, so a file the base reads or the PR makes read counts. As for the decision above, the base's copy of the script answers.
+- Not followed: a path that code builds from pieces (`join("web").join(…)`, a folder and a name), and the Core job's Python and shell steps, which today read no `web/` file but their own temporary fixtures.
+- `test_pr_scope.py` checks each of these forms in small repositories, and in this repository that every `web/` file the Rust macros name and, where `web/node_modules` is installed (as in the Core job), every module rolldown loads for the validator is counted as read.
+
 ## Check locally
 
 - `actionlint .github/workflows/ci.yml` checks the workflow.
