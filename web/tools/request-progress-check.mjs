@@ -155,7 +155,7 @@ const words = {
     next38: "NextYN-227 · 按批准的设计实现: S3 网页模型", next31: "Next等含分步计量的版本发布并安装depends on a project-wide item ↗",
     installed: ["Installed 0.39.0", "3 merged PRs linked to this project are not in this version"],
     r14: "Progress查明了两个原因：轮询和重复读取。", stale: /^Summary written .+; since then #1130 merged, you followed up once: what follows may be out of date$/,
-    evidence: "Evidence: PRs 4 · delivered 1 · conversation 1",
+    evidence: "Evidence: PRs 4 · delivered 1",
     replied: "Dev Lead replied",
   },
   "zh-Hans": {
@@ -166,7 +166,7 @@ const words = {
     next38: "下一步YN-227 · 按批准的设计实现：S3 网页模型", next31: "下一步等含分步计量的版本发布并安装依赖共同事项 ↗",
     installed: ["已装 0.39.0", "当前版本未包含本项目关联的 3 个已合并 PR"],
     r14: "进度查明了两个原因：轮询和重复读取。", stale: /^摘要写于 .+；之后#1130 合入、你追问了 1 次，下面可能已不准$/,
-    evidence: "依据：PR 4 · 交付 1 · 对话 1",
+    evidence: "依据：PR 4 · 交付 1",
     replied: "Dev Lead 回复",
   },
 };

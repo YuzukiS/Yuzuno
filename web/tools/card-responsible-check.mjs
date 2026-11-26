@@ -203,7 +203,7 @@ async function check(run) {
     await page.goto(`http://${HOST}/#/home?w=ws-cards&p=p-dev`);
     await page.locator('[data-project-home="p-dev"]').waitFor({ timeout: 15_000 });
     // R-2's block, opened: its task's card and the Ask on it (YN-212).
-    await page.locator('[data-request-block="2"] .request-block-more').click();
+    await page.locator('[data-request-block="2"] .request-block-more[data-view="cards"]').click();
     await page.waitForFunction(() => document.querySelectorAll(".home-card-responsible").length >= 3, null, { timeout: 15_000 });
     assert.equal(await page.locator(".home-view").first().getAttribute("lang"), run.language);
     // The status card bound to YN-90: who answers for it, its state as the rail says it, its key and actions.
@@ -235,7 +235,7 @@ async function check(run) {
     const done = page.locator(".request-done");
     await page.locator(".request-done > summary").click();
     await page.waitForFunction(() => document.querySelector(".request-done")?.open);
-    await page.locator('[data-request-block="1"] .request-block-more').click();
+    await page.locator('[data-request-block="1"] .request-block-more[data-view="cards"]').click();
     const earlier = page.locator('[data-request-block="1"] .request-task-earlier');
     if (await earlier.count()) await earlier.locator("summary").click();
     const archived = card("release");

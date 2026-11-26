@@ -417,9 +417,9 @@ async function check(run) {
     // 2. The request entered a second time (reloaded): one compact line in its task's row, opened in place to the same card.
     const secondEntry = async (tag) => {
       await block().waitFor({ timeout: 15_000 });
-      await page.waitForFunction(() => document.querySelector('[data-request-block="29"] .request-block-more'), null, { timeout: 15_000 });
+      await page.waitForFunction(() => document.querySelector('[data-request-block="29"] .request-block-more[data-view="cards"]'), null, { timeout: 15_000 });
       assert.equal(await page.locator('.home-section[data-section-key="yn-220/ask"]').count(), 0, `${tag}: not in the first look any more`);
-      const more = block().locator(".request-block-more");
+      const more = block().locator('.request-block-more[data-view="cards"]');
       if ((await more.getAttribute("aria-expanded")) !== "true") await more.click();
       const line = block().locator('[data-answered="yn-220/ask"] .request-task-answered');
       await line.waitFor({ timeout: 10_000 });

@@ -451,7 +451,7 @@ async function check(run) {
 
     // A joined task's line shows the request its card is under.
     await open("working");
-    await page.locator('[data-request-block="14"] .request-block-more').click();
+    await page.locator('[data-request-block="14"] .request-block-more[data-view="cards"]').click();
     await page.locator('[data-request-block="14"] .request-block-joined button').click();
     await page.waitForFunction(() => document.querySelector('[data-request-block="12"][data-open]'), null, { timeout: 5000 });
     await page.waitForTimeout(400);
@@ -465,7 +465,7 @@ async function check(run) {
 
     // W4: who wrote R-7's card, and its earlier version opened on the report page, read only, the current one offered.
     await open("working");
-    await page.locator('[data-request-block="7"] .request-block-more').click();
+    await page.locator('[data-request-block="7"] .request-block-more[data-view="cards"]').click();
     const author = (await page.locator('[data-request-block="7"] [data-section-key="yn-181"] .home-card-author').innerText()).trim();
     assert.equal(author, run.language === "en" ? `Written by ${agents[1].name}` : `${agents[1].name} 写`);
     const versions = page.locator('[data-request-block="7"] .request-task-versions');
@@ -486,7 +486,7 @@ async function check(run) {
 
     // See words: R-7's card's source line shows its words in the conversation, with the focus; nothing is wider there.
     await open("working");
-    await page.locator('[data-request-block="7"] .request-block-more').click();
+    await page.locator('[data-request-block="7"] .request-block-more[data-view="cards"]').click();
     const r7card = page.locator(`[data-request-block="7"] [data-section-key="yn-181"]`);
     await r7card.locator(".card-source-line").click();
     await r7card.locator(".card-source-requests .talk-link").first().click();
@@ -573,15 +573,16 @@ async function check(run) {
     pass("a refused follow-up stays quoted with its words and the error, to be sent again", refused);
     await page.locator(".home-dock .project-talk-send").click();
     await page.waitForFunction(() => !document.querySelector(".home-dock .project-talk-compose[data-quoting]"), null, { timeout: 5000 });
-    await page.waitForFunction(() => document.querySelector('[data-request-block="7"] .request-block-more')?.textContent.includes("4"), null, { timeout: 5000 });
+    await page.waitForFunction(() => document.querySelector('[data-request-block="7"] .request-block-more[data-view="thread"]')?.textContent.includes("4"), null, { timeout: 5000 });
     const sent = await r7now();
     const replies = report.posts.filter((p) => p.run === run.name && p.path.endsWith("/requests/7/replies"));
     assert.ok(sent.group === "needs" && sent.actions.join() === "confirm,follow" && sent.delivered === 3 && !sent.error && sent.draft === ""
       && replies.length === 2 && replies.every((p) => p.text === FOLLOW) && state.replies.length === 1 && state.replies[0].text === FOLLOW
       && !report.posts.some((p) => p.run === run.name && p.path.endsWith("/confirm")),
       `sent to R-7, which still waits: ${JSON.stringify({ sent, replies, kept: state.replies })}`);
-    await r7.locator(".request-block-more").click();
-    await r7.locator(".request-thread > summary").click();
+    // R-45 §3.4: its conversation is its own view, from its foot.
+    await r7.locator('.request-block-foot > .request-block-more[data-view="thread"]').click();
+    await r7.locator(".request-thread").waitFor({ timeout: 5000 });
     await shot("follow-up-sent", r7);
     pass("sent again, the follow-up is on R-7, which keeps what it delivered and still waits for the confirmation", { sent, replies: replies.length });
 
