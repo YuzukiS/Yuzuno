@@ -52,7 +52,9 @@ function makeSpec(n) {
       rows: Array.from({ length: rows }, (_, r) => ({
         id: `r${r}`,
         cells: Object.fromEntries(columns.map((col, c) => [col.key,
-          c === 0 ? `第 ${r + 1} 行 · 结果 ${n}` : c === 7 ? (r * 37 + c * 11 + n) % 997 : `${t}.${r}.${c} sample ${String((r * 131 + c * 17 + n) % 10007).padStart(5, "0")}`])),
+          c === 0 ? `第 ${r + 1} 行 · 结果 ${n}` : c === 7 ? (r * 37 + c * 11 + n) % 997
+            : c === 6 ? `备注：第 ${r + 1} 行的合成说明，仅用于比较 · synthetic note for row ${r + 1} of result ${n} in table ${t}`
+              : `${t}.${r}.${c} sample ${String((r * 131 + c * 17 + n) % 10007).padStart(5, "0")}`])),
       })),
     },
   });
