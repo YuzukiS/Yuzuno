@@ -56,8 +56,11 @@ async fn a_note_answers_the_follow_ups_it_names_and_saying_it_again_is_the_same_
     lab.route("desk", n, "导出", "补一句：先做 JSON。", routes.clone()).await.unwrap();
     answer_alone(&lab, "desk", n, "JSON 和 XML 都加。", json!([2, 1])).await.unwrap();
     assert_eq!(notes(&lab, n).len(), 4, "the same author, words and follow-ups: the same answer, whenever it was written");
-    // The same words to a later follow-up are its answer.
+    let sends = || (lab.count("SELECT COUNT(*) FROM collaboration_messages"), lab.count("SELECT COUNT(*) FROM agent_receipts"));
+    assert_eq!(sends(), (mail, sent), "an answer sends nothing");
+    // The same words to a later follow-up are its answer. (The follow-up itself is a message to who answers for the card.)
     follow(&lab, n, "还有 YAML", "f3").await;
+    let (mail, sent) = sends();
     answer_alone(&lab, "desk", n, "JSON 和 XML 都加。", json!([3])).await.unwrap();
     assert_eq!(notes(&lab, n).last().unwrap(), &(5, "JSON 和 XML 都加。".into(), json!([3])));
     // Another front desk saying the same is its own answer.
@@ -68,11 +71,7 @@ async fn a_note_answers_the_follow_ups_it_names_and_saying_it_again_is_the_same_
     assert_eq!((all.as_array().unwrap().len(), all[5]["by"]["agentId"].clone(), all[5]["replyTo"].clone()), (6, json!("lead"), json!([1, 2])));
     // The notes before replyTo, and those naming none, still name none: none was marked by a later answer.
     assert_eq!((all[0]["replyTo"].clone(), all[3]["replyTo"].clone()), (Value::Null, Value::Null));
-    assert_eq!(
-        (lab.count("SELECT COUNT(*) FROM collaboration_messages"), lab.count("SELECT COUNT(*) FROM agent_receipts")),
-        (mail, sent),
-        "an answer sends nothing"
-    );
+    assert_eq!(sends(), (mail, sent), "an answer sends nothing");
 }
 
 // Every follow-up it names must be the same request's: one of another
