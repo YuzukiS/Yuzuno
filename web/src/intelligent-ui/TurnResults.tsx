@@ -3,13 +3,14 @@ import { api, errorText, HttpError } from "../api";
 import type { NativeTurn, PublishedResultRef } from "../types";
 import { checkSpec, ResultError, type ResultProblem, type ResultSpec } from "./contract";
 import { ResultPlaceholder, ResultUnavailable, ShownResult } from "./AgentReply";
+import type { RawText } from "./result-raw";
 import "./result-states.css";
 
 type Published = { id: string; spec: unknown };
 type View =
   | { kind: "loading" }
-  | { kind: "ready"; spec: ResultSpec; raw: string }
-  | { kind: "invalid"; raw: string; problem: ResultProblem }
+  | { kind: "ready"; spec: ResultSpec; raw: RawText }
+  | { kind: "invalid"; raw: RawText; problem: ResultProblem }
   | { kind: "failed"; missing: boolean; problem: ResultProblem };
 
 // A version never changes once published: each is read once, and the most
@@ -57,7 +58,10 @@ function keptView(agentId: string, id: string): View | null {
 }
 
 function view(result: Published): View {
-  const raw = JSON.stringify(result.spec, null, 2);
+  // Its JSON as it was published, made only when its details are opened or
+  // it is copied (YN-234): a kept read keeps the spec, never a formatted
+  // copy of it, and showing the result needs none.
+  const raw = () => JSON.stringify(result.spec, null, 2);
   try {
     // Drawn only as the current contract reads it, like a reply's block.
     return { kind: "ready", spec: checkSpec(result.spec).spec, raw };

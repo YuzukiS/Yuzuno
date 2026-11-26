@@ -139,16 +139,21 @@ export function pruneResultViewCache(storage?: StorageLike) {
   }
 }
 
+/** `fingerprint` may be a function: it is called only when a view is saved
+ * under `key`, so a result never given a view never needs one (YN-234). */
 export function readViews(
   key: string,
-  fingerprint: string,
+  fingerprint: string | (() => string),
   storage?: StorageLike,
 ): Views {
   try {
     storage ??= localStorage;
     pruneResultViewCache(storage);
     const saved = JSON.parse(storage.getItem(key) || "null");
-    return saved?.fingerprint === fingerprint ? cleanViews(saved.views) : {};
+    if (!saved) return {};
+    return saved.fingerprint === (typeof fingerprint === "string" ? fingerprint : fingerprint())
+      ? cleanViews(saved.views)
+      : {};
   } catch {
     return {};
   }

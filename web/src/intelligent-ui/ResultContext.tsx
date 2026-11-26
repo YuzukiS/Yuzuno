@@ -16,6 +16,7 @@ import {
   type ViewState,
 } from "./view-storage";
 export type { ViewState } from "./view-storage";
+import { rawText, type RawText } from "./result-raw";
 
 export const emptyView: ViewState = { selected: [], filter: "", sort: [] };
 type ResultContextValue = {
@@ -53,7 +54,7 @@ export function ResultProvider({
   children,
 }: {
   spec: ResultSpec;
-  raw?: string;
+  raw?: RawText;
   blocks?: Record<string, string>;
   identity: string;
   resultId?: string;
@@ -62,7 +63,13 @@ export function ResultProvider({
   onDraft?: (text: string) => void;
 }) {
   const key = `${VIEW_PREFIX}${identity}`;
-  const fingerprint = useMemo(() => resultFingerprint(raw), [raw]);
+  // Taken when a saved view is read or a view saved, not to draw the result:
+  // a published result's JSON is then made once for it, and only its
+  // fingerprint is kept (YN-234).
+  const fingerprint = useMemo(() => {
+    let print: string | undefined;
+    return () => (print ??= resultFingerprint(rawText(raw)));
+  }, [raw]);
   const prints = useMemo(
     () =>
       blocks &&
@@ -131,7 +138,7 @@ export function ResultProvider({
         ...current,
         [id]: { ...(current[id] || emptyView), ...patch },
       };
-      if (!prints) saveViews(key, fingerprint, next);
+      if (!prints) saveViews(key, fingerprint(), next);
       else if (prints[id]) saveViews(`${key}#${id}`, prints[id], { [id]: next[id] });
       return next;
     });

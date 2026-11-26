@@ -18,6 +18,7 @@ import { PublishedTaskStatus } from "./TaskStatusProposal";
 import { resultText } from "./result-text";
 import { RESERVE_HEIGHT } from "./result-reserve";
 import { PENDING, type PendingKind } from "./stream";
+import { rawKey, useFoldedRaw, type RawText } from "./result-raw";
 import { useStrings } from "../i18n";
 import { useSurfaceIn } from "../surface";
 import "./intelligent-ui.css";
@@ -179,7 +180,7 @@ export default function InteractiveResult({
   streamed = false,
 }: {
   spec: ResultSpec;
-  raw: string;
+  raw: RawText;
   identity: string;
   resultId?: string;
   onFile?: (path: string, line?: number) => void;
@@ -197,6 +198,8 @@ export default function InteractiveResult({
   const root = useRef<HTMLDivElement>(null);
   const [arrived] = useState(() => !!arrival?.current);
   useSurfaceIn(root, arrived ? 1 : 0, "small", arrived);
+  // A published result's JSON is made when View JSON opens (result-raw.ts).
+  const original = useFoldedRaw(raw);
   return (
     <div
       ref={root}
@@ -228,7 +231,7 @@ export default function InteractiveResult({
           <ChevronRight size={14} />
         </summary>
         <ResultProvider
-          key={identity + (streamed ? "" : raw)}
+          key={identity + (streamed ? "" : rawKey(raw))}
           spec={spec}
           raw={raw}
           identity={identity}
@@ -245,10 +248,10 @@ export default function InteractiveResult({
           </StateProvider>
         </ResultProvider>
         {!live && (
-          <details className="result-original">
+          <details className="result-original" onToggle={original.onToggle}>
             <summary>{t.viewJson}</summary>
             <CopyButton text={raw} label={t.copy} />
-            <pre>{raw}</pre>
+            {original.text !== null && <pre>{original.text}</pre>}
           </details>
         )}
       </details>
