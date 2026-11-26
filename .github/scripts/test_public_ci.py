@@ -647,6 +647,62 @@ class PublicCi(unittest.TestCase):
                 self.assertNotEqual(text, good, 'the fixture edit did not apply')
                 self.assertTrue(any(message in problem for problem in ios_problems(text)), ios_problems(text))
 
+    def test_the_core_macos_build_fails_only_when_cargo_does(self):
+        # The Build step's own script, run as GitHub runs it (bash -e), with a
+        # stand-in cargo: the timing reports are report-only (YN-235), so a
+        # missing one must not stop the build or skip the tests after it, and
+        # a failed cargo must still fail the step.
+        lines = CORE_MACOS.read_text().splitlines()
+        start = lines.index('      - name: Build')
+        run = lines.index('        run: |', start)
+        script = []
+        for line in lines[run + 1:]:
+            if line and not line.startswith('          '):
+                break
+            script.append(line[10:])
+        cargo = textwrap.dedent('''\
+            #!/bin/sh
+            echo "$*" >> "$STUB_LOG"
+            n=$(wc -l < "$STUB_LOG")
+            [ "$n" = "$STUB_FAIL_AT" ] && exit 42
+            case " $STUB_REPORTS " in *" $n "*)
+              mkdir -p target/cargo-timings && echo "report $n" > target/cargo-timings/cargo-timing.html ;;
+            esac
+            exit 0
+            ''')
+        cases = {  # (reports written at calls, cargo fails at call): (exit, calls, copies)
+            ('1 2', ''): (0, 2, {'1': 'report 1', '2': 'report 2'}),
+            ('2', ''): (0, 2, {'2': 'report 2'}),
+            ('1', ''): (0, 2, {'1': 'report 1'}),  # step 1's report is not taken for step 2's
+            ('', ''): (0, 2, {}),
+            ('1 2', '1'): (42, 1, {}),
+            ('1 2', '2'): (42, 2, {'1': 'report 1'}),
+        }
+        for (reports, fail), (code, calls, copies) in cases.items():
+            with self.subTest(reports=reports, fail=fail), tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                (tmp / 'bin').mkdir()
+                (tmp / 'bin/cargo').write_text(cargo)
+                (tmp / 'bin/cargo').chmod(0o755)
+                (tmp / 'work').mkdir()
+                (tmp / 'runner').mkdir()
+                (tmp / 'build.sh').write_text('\n'.join(script) + '\n')
+                env = {**os.environ, 'PATH': f"{tmp / 'bin'}:{os.environ['PATH']}", 'STUB_LOG': str(tmp / 'calls'),
+                       'STUB_REPORTS': reports, 'STUB_FAIL_AT': fail,
+                       'GITHUB_WORKSPACE': str(tmp / 'work'), 'RUNNER_TEMP': str(tmp / 'runner')}
+                done = subprocess.run(['bash', '-e', str(tmp / 'build.sh')], cwd=tmp / 'work', env=env,
+                                      capture_output=True, text=True)
+                self.assertEqual(done.returncode, code, done.stdout + done.stderr)
+                self.assertEqual(len((tmp / 'calls').read_text().splitlines()), calls)
+                found = {name[len('cargo-timing-'):-len('.html')]: (tmp / 'runner' / name).read_text().strip()
+                         for name in os.listdir(tmp / 'runner') if name.startswith('cargo-timing-')}
+                self.assertEqual(found, copies)
+                if code == 0 and len(copies) < 2:
+                    self.assertIn('::warning title=Cargo timings::', done.stdout)
+        # The tests after the build still run only when it succeeded.
+        test = next(step for step in steps_of(jobs(code_lines(CORE_MACOS.read_text()))['core']) if '- name: Test' in step)
+        self.assertNotIn('if:', test)
+
     def test_the_core_macos_workflow_keeps_its_rules(self):
         self.assertEqual(core_macos_problems(CORE_MACOS.read_text()), [])
 

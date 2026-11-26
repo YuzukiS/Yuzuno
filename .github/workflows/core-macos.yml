@@ -129,24 +129,30 @@ jobs:
       # Core's library and its unit tests never compile at once (YN-235).
       # Their compilers reach about 6 and 10 GiB (measured on Linux); built
       # together on this runner's 7 GiB, the build spent most of its time
-      # compressing and swapping memory (vm_stat). Step 1 builds the library, binaries, examples
-      # and integration tests; step 2 finds only the unit tests of the library
-      # and binaries left. Both select test targets, so dev-dependency
-      # features, and so every unit of step 1, are the same in step 2.
+      # compressing and swapping memory (vm_stat). Step 1 builds the library,
+      # binaries, examples and integration tests; step 2 finds only the unit
+      # tests of the library and binaries left. Both select test targets, so
+      # dev-dependency features, and so every unit of step 1, are the same in
+      # step 2.
       # --timings writes a report for each step, which the next step
-      # summarizes. vm_stat and the swap in use, before, between and after,
-      # show in the log whether a step ran short of memory: its page-out,
-      # swap-out and compression counters count from the VM's boot.
+      # summarizes. Moving each away is report-only: a missing one is a
+      # warning, and only cargo itself fails this step (and so skips the
+      # tests). vm_stat and the swap in use, before, between and after, show
+      # in the log whether a step ran short of memory: its page-out, swap-out
+      # and compression counters count from the VM's boot.
       - name: Build
         id: build
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
           { vm_stat; sysctl vm.swapusage; } || true
+          rm -f target/cargo-timings/cargo-timing.html
           cargo build --locked --bins --examples --test '*' --timings
-          cp target/cargo-timings/cargo-timing.html "$RUNNER_TEMP/cargo-timing-1.html"
+          mv target/cargo-timings/cargo-timing.html "$RUNNER_TEMP/cargo-timing-1.html" \
+            || echo "::warning title=Cargo timings::step 1 left no timing report"
           { vm_stat; sysctl vm.swapusage; } || true
           cargo build --locked --all-targets --timings
-          cp target/cargo-timings/cargo-timing.html "$RUNNER_TEMP/cargo-timing-2.html"
+          mv target/cargo-timings/cargo-timing.html "$RUNNER_TEMP/cargo-timing-2.html" \
+            || echo "::warning title=Cargo timings::step 2 left no timing report"
           { vm_stat; sysctl vm.swapusage; } || true
 
       # Report-only: how long each Cargo unit took, per step, in this job's
