@@ -1,6 +1,7 @@
 # Core's build and tests on macOS (YN-108), on the standard GitHub-hosted
 # Apple silicon runner (macos-26), as the CI workflow runs them on Linux:
-# `cargo build --locked --all-targets`, then .github/scripts/core_tests.py.
+# `cargo build --locked --all-targets` (here in two steps; see Build), then
+# .github/scripts/core_tests.py.
 # Tests of Linux mechanisms (cgroup, systemd, /proc, pidfd, leases) are
 # compiled for Linux only and do not run here; see docs/macos-core.md.
 #
@@ -124,25 +125,39 @@ jobs:
       - name: Disk space precheck
         run: .github/scripts/disk-precheck.sh 20 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
 
-      # --timings also writes target/cargo-timings/cargo-timing.html, which
-      # the next step summarizes (YN-235). It changes nothing that is built.
-      # vm_stat and the swap in use, before and after, show in the log
-      # whether the build ran short of the runner's memory: its page-out,
+      # The same targets as `cargo build --all-targets`, in two steps, so
+      # Core's library and its unit tests never compile at once (YN-235).
+      # Their compilers reach about 6 and 10 GiB (measured on Linux); built
+      # together on this runner's 7 GiB, the build spent most of its time
+      # compressing and swapping memory (vm_stat). Step 1 builds the library, binaries, examples
+      # and integration tests; step 2 finds only the unit tests of the library
+      # and binaries left. Both select test targets, so dev-dependency
+      # features, and so every unit of step 1, are the same in step 2.
+      # --timings writes a report for each step, which the next step
+      # summarizes. vm_stat and the swap in use, before, between and after,
+      # show in the log whether a step ran short of memory: its page-out,
       # swap-out and compression counters count from the VM's boot.
       - name: Build
         id: build
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
           { vm_stat; sysctl vm.swapusage; } || true
+          cargo build --locked --bins --examples --test '*' --timings
+          cp target/cargo-timings/cargo-timing.html "$RUNNER_TEMP/cargo-timing-1.html"
+          { vm_stat; sysctl vm.swapusage; } || true
           cargo build --locked --all-targets --timings
+          cp target/cargo-timings/cargo-timing.html "$RUNNER_TEMP/cargo-timing-2.html"
           { vm_stat; sysctl vm.swapusage; } || true
 
-      # Report-only: how long each Cargo unit took, in this job's summary and
-      # as one JSON line of this step's log. The report is not uploaded; a
-      # missing or unreadable one is a warning, never a failure.
+      # Report-only: how long each Cargo unit took, per step, in this job's
+      # summary and as one JSON line each in this step's log. The reports are
+      # not uploaded; a missing or unreadable one is a warning, never a
+      # failure.
       - name: Build timings
         if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
-        run: python3 .github/scripts/cargo_timings.py target/cargo-timings/cargo-timing.html
+        run: |
+          python3 .github/scripts/cargo_timings.py "$RUNNER_TEMP/cargo-timing-1.html" "step 1 of 2: library, binaries, examples, integration tests"
+          python3 .github/scripts/cargo_timings.py "$RUNNER_TEMP/cargo-timing-2.html" "step 2 of 2: what --all-targets has left"
 
       # As in CI: each process runs one test at a time; see the script.
       # - TMPDIR: macOS's own (/var/folders/.../T/) makes the sockets tests

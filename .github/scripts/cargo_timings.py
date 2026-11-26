@@ -21,7 +21,10 @@ which --all-targets builds only for them; the rest are dependencies.
 It never fails the step: a missing or unrecognized report is written as such,
 with a warning on the run.
 
-Usage: cargo_timings.py <cargo-timing.html>
+A build in several cargo invocations has a report for each; the optional
+title names which one in the summary's heading and the JSON line.
+
+Usage: cargo_timings.py <cargo-timing.html> [title]
 """
 import json
 import os
@@ -185,9 +188,13 @@ def label(unit):
     return f"{unit.get('name')} {unit.get('version')}{unit.get('target', '')}"
 
 
-def markdown(result):
+def heading(title):
+    return "### Cargo build timings" + (f": {text(title)}" if title else "")
+
+
+def markdown(result, title=None):
     fields = result["fields"]
-    lines = ["### Cargo build timings", "",
+    lines = [heading(title), "",
              f"**{seconds(result['wall'])}** from the first unit's start to the last one's end. "
              f"Units: {text(fields.get('Dirty units', '?'))} built, {text(fields.get('Fresh units', '?'))} fresh "
              f"(the Rust cache restored them); concurrency at most {text(fields.get('Max concurrency', '?'))}.", ""]
@@ -232,20 +239,23 @@ def write_summary(body):
 
 
 def main(argv):
-    if len(argv) != 2:
+    if len(argv) not in (2, 3):
         print(__doc__.strip().splitlines()[-1], file=sys.stderr)
         return 2
+    title = re.sub(r"[\x00-\x1f\x7f]", " ", argv[2]) if len(argv) == 3 else None
     try:
         with open(argv[1], encoding="utf-8", errors="replace") as f:
             result = summarize(*parse(f.read()))
     # Report-only: whatever goes wrong here is said, and the job goes on.
     except Exception as error:  # noqa: BLE001
         reason = re.sub(r"[\x00-\x1f\x7f]", " ", f"{type(error).__name__}: {error}")
-        print(f"::warning title=Cargo timings::no summary: {reason}")
-        write_summary(f"### Cargo build timings\n\nNo summary: {text(reason)}.\n")
+        print(f"::warning title=Cargo timings::no summary{f' of {title}' if title else ''}: {reason}")
+        write_summary(f"{heading(title)}\n\nNo summary: {text(reason)}.\n")
         return 0
+    if title:
+        result = {"title": title, **result}
     print("cargo-timings-json: " + json.dumps(result, separators=(",", ":")))
-    write_summary(markdown(result))
+    write_summary(markdown(result, title))
     return 0
 
 

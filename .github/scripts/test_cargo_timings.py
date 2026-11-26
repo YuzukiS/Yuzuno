@@ -226,8 +226,26 @@ class Main(unittest.TestCase):
                 self.assertEqual(len(out.splitlines()), 1)
                 self.assertIn("No summary: ", summary)
 
+    def test_a_title_names_the_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path, summary = os.path.join(tmp, "cargo-timing.html"), os.path.join(tmp, "summary")
+            with open(path, "w") as f:
+                f.write(report())
+            with unittest.mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary}), \
+                    unittest.mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                self.assertEqual(cargo_timings.main(["cargo_timings.py", path, "step 2 of 2"]), 0)
+                self.assertEqual(cargo_timings.main(["cargo_timings.py", os.path.join(tmp, "missing.html"), "step 1 of 2"]), 0)
+            with open(summary) as f:
+                text = f.read()
+        self.assertIn("### Cargo build timings: step 2 of 2\n", text)
+        self.assertIn("### Cargo build timings: step 1 of 2\n\nNo summary: ", text)
+        [line] = [l for l in out.getvalue().splitlines() if l.startswith("cargo-timings-json: ")]
+        self.assertEqual(json.loads(line.split(": ", 1)[1])["title"], "step 2 of 2")
+        self.assertIn("::warning title=Cargo timings::no summary of step 1 of 2: ", out.getvalue())
+
     def test_usage(self):
         self.assertEqual(cargo_timings.main(["cargo_timings.py"]), 2)
+        self.assertEqual(cargo_timings.main(["cargo_timings.py", "a", "b", "c"]), 2)
 
 
 if __name__ == "__main__":
