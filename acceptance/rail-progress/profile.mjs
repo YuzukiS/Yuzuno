@@ -261,15 +261,15 @@ async function run(buildName, dist, scenario, { probe }) {
     });
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(`http://${HOST}/`);
+    // The rail beside a Project's page, opened as its Home link opens it
+    // (deep-link.ts): one Project has no heading in the rail to click.
+    await page.goto(`http://${HOST}/#/home?w=ws-rail&p=p1`);
     await page.waitForFunction((n) => document.querySelectorAll(".agent-list .agent-row").length === n, scenario.rows, { timeout: 30_000 });
     await page.evaluate(() => {
       window.__stream.readyState = 1;
       window.__stream.onopen?.({});
       window.__stream.onmessage?.({ data: JSON.stringify({ type: "reset", reason: "open" }), lastEventId: "" });
     });
-    // The rail beside a Project's page.
-    await page.locator('.project-group[data-group="p1"] .project-group-toggle').click();
     await page.locator('[data-project-home="p1"]').waitFor({ timeout: 30_000 });
     // Settled: reads after the reset, the page's own arrival.
     await page.waitForTimeout(2_000);
