@@ -58,9 +58,10 @@ fn an_old_full_history_rolls_into_the_archive_and_every_record_reads_back() {
         db.execute("UPDATE collaboration_messages SET delivery_state='pending' WHERE id='old-mail-5'", []).unwrap();
     }
     let passes = sweep(&s, now);
-    // A pass looks at 100 watches and moves whole ones (five runs each).
-    assert_eq!(passes.len(), 21, "{passes:?}");
-    assert!(passes.iter().all(|p| p.watches <= 100 && p.runs == 5 * p.watches), "{passes:?}");
+    // A pass looks at 100 watches and moves at most 1010 receipts, links and
+    // runs; each watch here has five of each.
+    assert!(passes.iter().all(|p| p.watches <= 100 && p.rows <= 1010), "{passes:?}");
+    assert_eq!(passes.iter().map(|p| p.runs).sum::<usize>(), 9945);
     assert_eq!(moved(&passes), 1989);
     assert_eq!(count(&s, "SELECT COUNT(*) FROM ci_subscriptions"), 11);
     assert_eq!(count(&s, "SELECT COUNT(*) FROM ci_subscriptions_archive"), 1989);
@@ -170,23 +171,88 @@ fn a_shared_run_stays_while_a_live_watch_links_it() {
     // follows its watches.
     s.db.write().unwrap().execute("UPDATE collaboration_messages SET delivery_state='delivered'", []).unwrap();
     s.ci_unsubscribe(Some("b"), sub["id"].as_str().unwrap()).unwrap();
-    assert_eq!(moved(&sweep(&s, now + archive::KEEP_SECONDS)), 1);
+    assert_eq!(moved(&sweep(&s, chrono::Utc::now().timestamp() + archive::KEEP_SECONDS)), 1);
     assert_eq!(count(&s, "SELECT COUNT(*) FROM ci_runs"), 0);
     assert_eq!(count(&s, "SELECT COUNT(*) FROM ci_runs_archive"), 2);
     assert_eq!(all_runs(&s).len(), 2);
 }
 
-/// A pass moves whole watches until it moved 1010 runs, the most one
-/// observation writes; the rest of its page waits for the next pass.
+/// A pass moves at most 1010 receipts, links and runs: a cap, which a
+/// watch with more meets over several passes (YN-228, lead 12580).
 #[test]
-fn a_pass_stops_once_it_moved_1010_runs() {
+fn a_pass_moves_at_most_1010_rows_and_a_larger_watch_over_several() {
     let (_dir, s) = setup();
     let task = task_id(&s, "T-1");
     let now = chrono::Utc::now().timestamp();
     old_history(&s, &task, 20, 2500, now - 30 * DAY);
     let passes = sweep(&s, now);
-    let shape: Vec<(usize, usize)> = passes.iter().map(|p| (p.watches, p.runs)).collect();
-    assert_eq!(shape, vec![(9, 1125), (9, 1125), (2, 250)]);
+    assert!(passes.iter().all(|p| p.rows <= 1010), "{passes:?}");
+    assert!(passes.iter().filter(|p| p.next.is_some()).all(|p| p.rows >= 1009), "{passes:?}");
+    assert_eq!(moved(&passes), 20);
+    assert_eq!(passes.iter().map(|p| p.rows).sum::<usize>(), 3 * 2500);
     assert_eq!(count(&s, "SELECT COUNT(*) FROM ci_runs_archive"), 2500);
     assert_eq!(all_runs(&s).len(), 2500);
+}
+
+/// One watch holding 5000 runs, each mailed: 15000 rows to move. It moves
+/// over passes of at most 1010 rows, reads the same while part of it has
+/// moved, survives a restart, and a new subscription part way through brings
+/// all of it back without mailing any run again (YN-228, lead 12580).
+#[test]
+fn a_large_watch_moves_over_many_passes_and_reads_the_same_part_way() {
+    let (dir, s) = setup();
+    let task = task_id(&s, "T-1");
+    let now = chrono::Utc::now().timestamp();
+    old_history(&s, &task, 1, 5000, now - 30 * DAY);
+    let newest = old_run(0, 4999)["id"].as_str().unwrap().to_owned();
+    let oldest = old_run(0, 0)["id"].as_str().unwrap().to_owned();
+    let pass = |s: &Store| s.ci_archive_pass(0, now).unwrap();
+    let reads_whole = |s: &Store| {
+        let runs = all_runs(s);
+        assert_eq!(runs.len(), 5000);
+        assert_eq!(runs[0]["id"], newest);
+        let current = s.collaboration_call(None, "task_get", json!({"taskId":"T-1","view":"current"})).unwrap();
+        assert_eq!(current["current"]["delivery"]["ciSubscriptions"][0]["latestRun"]["runKey"], newest);
+        assert_eq!(s.ci_run(&oldest).unwrap()["id"], oldest);
+        assert!(!s.ci_previous(Some("a"), &old_request(0)).unwrap().unwrap()["interests"].as_array().unwrap().is_empty());
+    };
+    // Its receipts move first, then its links and runs, oldest run first.
+    let first = pass(&s);
+    assert_eq!((first.watches, first.rows, first.runs, first.next), (0, 1010, 0, Some(0)), "{first:?}");
+    for _ in 0..6 {
+        let p = pass(&s);
+        assert!(p.watches == 0 && p.rows <= 1010 && p.next == Some(0), "{p:?}");
+    }
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM ci_notifications"), 0);
+    let links = count(&s, "SELECT COUNT(*) FROM ci_watch_runs_archive");
+    assert!(links > 0 && links < 5000, "{links}");
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM ci_runs") + count(&s, "SELECT COUNT(*) FROM ci_runs_archive"), 5000);
+    reads_whole(&s);
+    // A restart part way: the next pass resumes at the same watch.
+    drop(s);
+    let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    reads_whole(&s);
+    let resumed = pass(&s);
+    assert!(resumed.rows > 0 && resumed.rows <= 1010, "{resumed:?}");
+    // A new subscription part way brings back all of it: no run is mailed again.
+    let mut again = old_request(0);
+    again.request_id = "again-0".into();
+    let back = s.ci_subscribe(Some("a"), again, repo(), "pull", 1000).unwrap();
+    assert_eq!((&back["id"], &back["active"]), (&json!(old_sub(0)), &json!(true)));
+    for table in ["ci_notifications_archive", "ci_watch_runs_archive", "ci_runs_archive", "ci_watches_archive", "ci_subscriptions_archive"] {
+        assert_eq!(count(&s, &format!("SELECT COUNT(*) FROM {table}")), 0, "{table}");
+    }
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM ci_notifications"), 5000);
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM collaboration_messages WHERE json_type(data,'$.source.ciRunKey')='text'"), 5000);
+    reads_whole(&s);
+    // It ends again; a week on it moves whole, pass by pass, never skipped.
+    s.ci_unsubscribe(Some("a"), &old_sub(0)).unwrap();
+    let passes = sweep(&s, chrono::Utc::now().timestamp() + archive::KEEP_SECONDS);
+    assert!(passes.iter().all(|p| p.rows <= 1010), "{passes:?}");
+    assert_eq!(moved(&passes), 1);
+    assert_eq!(passes.iter().map(|p| p.rows).sum::<usize>(), 15000);
+    for (table, rows) in [("ci_notifications_archive", 5000), ("ci_watch_runs_archive", 5000), ("ci_runs_archive", 5000), ("ci_runs", 0), ("ci_watches", 0)] {
+        assert_eq!(count(&s, &format!("SELECT COUNT(*) FROM {table}")), rows, "{table}");
+    }
+    reads_whole(&s);
 }

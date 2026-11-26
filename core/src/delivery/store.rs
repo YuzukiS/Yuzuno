@@ -782,7 +782,7 @@ fn ci(db: &Connection, r: &Round) -> Result<Value> {
         row.get(0)
     })?;
     let w: Value = serde_json::from_str(&raw)?;
-    let rows = crate::ci_monitor::archive::watch_runs(db, &wid, place)?;
+    let rows = crate::ci_monitor::archive::watch_runs(db, &wid)?;
     // Runs can be retried or started again for one SHA. Use the latest run and
     // attempt per workflow/event, not an old success or a superseded failure.
     let mut latest = std::collections::BTreeMap::<String, Value>::new();
