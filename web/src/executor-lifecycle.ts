@@ -1,4 +1,4 @@
-import { attentionRank, type TurnSeen } from "./attention";
+import { attentionRank, restingEnd, type TurnSeen } from "./attention";
 import { strings } from "./i18n";
 import type { Agent } from "./types";
 
@@ -151,11 +151,14 @@ export const inExecutors = (agent: Agent) =>
 export const isArchived = (agent: Agent) => agent.kind === "executor" && agent.executor?.state === "archived";
 
 /** The executors' attention order (docs/executor-model.md): waiting on you,
- * or failed; delivered, awaiting release; running; archiving; queued or
- * starting. */
+ * or failed (its start, or its Turn as its row says it: its runtime in error,
+ * or its last Turn failed, read or not, YN-232); delivered, awaiting
+ * release; running; archiving; queued or starting. */
 export function executorRank(agent: Agent, seen: TurnSeen): number {
   const state = agent.executor?.state;
   if (state === "failed" || (!agent.closedAt && attentionRank(agent, seen) === "needsYou")) return 0;
+  const turnFailed = agent.status === "error" || restingEnd(agent) === "failed";
+  if ((state === "running" || state === "delivering") && turnFailed) return 0;
   if (state === "delivering") return 1;
   if (state === "archiving") return 3;
   if (state === "queued" || state === "starting") return 4;
