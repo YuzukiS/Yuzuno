@@ -16,45 +16,77 @@ export type Segment = { start: number; end: number; at: number };
  * fade instead of restarting it.
  */
 export function revealSegments(root: HTMLElement, segments: Segment[], now: number) {
-  if (!segments.length) return;
-  const from = Math.min(...segments.map((s) => s.start));
-  const doc = root.ownerDocument;
-  const walker = doc.createTreeWalker(root, 4 /* NodeFilter.SHOW_TEXT */);
+  revealWords([root], 0, segments, now);
+}
+
+/**
+ * `revealSegments` over some nodes only, their text being the root's from
+ * `offset` on: the nodes a reply drew anew, where words drawn before keep the
+ * spans they have (ProseBlocks, YN-234). Returns the spans it made, each with
+ * the time its segment's fade is over.
+ */
+export function revealWords(
+  nodes: readonly Node[],
+  offset: number,
+  segments: Segment[],
+  now: number,
+): { span: HTMLElement; until: number }[] {
+  if (!segments.length || !nodes.length) return [];
+  const from = Math.max(offset, Math.min(...segments.map((s) => s.start)));
+  const doc = nodes[0].ownerDocument!;
   const pending: { node: Text; start: number }[] = [];
-  let offset = 0;
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+  let at = offset;
+  const visit = (node: Node) => {
     const length = node.nodeValue?.length ?? 0;
-    if (offset + length > from) pending.push({ node: node as Text, start: offset });
-    offset += length;
+    if (at + length > from) pending.push({ node: node as Text, start: at });
+    at += length;
+  };
+  for (const top of nodes) {
+    if (top.nodeType === 3 /* Node.TEXT_NODE */) {
+      visit(top);
+      continue;
+    }
+    if (top.nodeType !== 1 /* Node.ELEMENT_NODE */) continue;
+    const walker = doc.createTreeWalker(top, 4 /* NodeFilter.SHOW_TEXT */);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) visit(node);
   }
+  const made: { span: HTMLElement; until: number }[] = [];
   for (const entry of pending) {
     let { node, start } = entry;
-    if (start < from) {
-      node = node.splitText(from - start);
-      start = from;
+    const skip = Math.max(0, from - start);
+    const words = [...(node.nodeValue ?? "").slice(skip).matchAll(/\s+|\S+\s*/g)].map((match) => {
+      const at = start + skip + (match.index ?? 0);
+      return { text: match[0], at, segment: match[0].trim() ? segments.find((s) => at >= s.start && at < s.end) : undefined };
+    });
+    // A node with no word to fade is left as it is (a block's nodes stay its own).
+    if (!words.some((word) => word.segment)) continue;
+    if (skip) {
+      node = node.splitText(skip);
+      start += skip;
     }
-    const text = node.nodeValue ?? "";
     const pieces = doc.createDocumentFragment();
-    for (const match of text.matchAll(/\s+|\S+\s*/g)) {
-      const at = start + (match.index ?? 0);
-      const segment = segments.find((s) => at >= s.start && at < s.end);
-      if (!segment || !match[0].trim()) {
-        pieces.append(match[0]);
+    for (const { text, at, segment } of words) {
+      if (!segment) {
+        pieces.append(text);
         continue;
       }
       const word = doc.createElement("span");
       word.className = "stream-word";
       const step = SPREAD / Math.max(1, segment.end - segment.start);
       word.style.animationDelay = `${Math.round(segment.at + (at - segment.start) * step - now)}ms`;
-      word.textContent = match[0];
+      word.textContent = text;
       pieces.append(word);
+      made.push({ span: word, until: segment.at + SPREAD + FADE });
     }
     node.replaceWith(pieces);
   }
+  return made;
 }
 
-const still = () =>
+/** Whether the reader asked for less motion: nothing fades in then. */
+export const reducedMotion = () =>
   window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+
 
 /**
  * Fade in what streams onto the end of `text`, as a reply arrives. Only an
@@ -68,7 +100,7 @@ export function useStreamReveal(root: RefObject<HTMLElement | null>, text: strin
     const length = element.textContent?.length ?? 0;
     const previous = state.current;
     const now = performance.now();
-    if (!previous || !text.startsWith(previous.text) || still()) {
+    if (!previous || !text.startsWith(previous.text) || reducedMotion()) {
       state.current = { text, length, segments: [] };
       return;
     }

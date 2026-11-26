@@ -1,4 +1,4 @@
-import { Marked } from "marked";
+import { Marked, type Token, type TokensList } from "marked";
 import markedCjkFriendly from "marked-cjk-friendly";
 
 // `*` and `**` follow the CommonMark CJK-friendly amendments
@@ -28,4 +28,29 @@ const markdown = new Marked({ gfm: true }).use({
 /** Markdown as HTML, not yet sanitized. */
 export function markdownHtml(text: string): string {
   return markdown.parse(text, { async: false });
+}
+
+// `markdownHtml` in two steps, as `parse` takes them with no hooks or
+// walkTokens set (marked's Instance.parseMarkdown): the same options, copied
+// each time as `parse` copies them, so neither step changes the instance.
+const options = () => ({ ...markdown.defaults, async: false as const });
+
+/** The tokens `markdownHtml` reads `text` as: its top-level blocks, in order. */
+export function markdownTokens(text: string): TokensList {
+  return markdown.lexer(text, options());
+}
+
+/** Top-level tokens as HTML, not yet sanitized: for all of `markdownTokens(text)`,
+ * exactly `markdownHtml(text)`; for some, their part of it. */
+export function markdownTokensHtml(tokens: Token[]): string {
+  return markdown.parser(tokens, options());
+}
+
+/** Whether any of these tokens, at any depth, is raw HTML (a block or a tag). */
+export function markdownHasHtml(tokens: Token[]): boolean {
+  let found = false;
+  markdown.walkTokens(tokens, (token) => {
+    if (token.type === "html") found = true;
+  });
+  return found;
 }

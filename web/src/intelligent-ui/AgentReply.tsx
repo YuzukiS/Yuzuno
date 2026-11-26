@@ -299,11 +299,14 @@ export function ShownResult({ arrived = false, ...props }: Omit<ResultProps, "ar
 function Segment({
   segment,
   arrived,
+  writing,
   props,
 }: {
   segment: ReplySegment;
   /** A placeholder stood in for the reply's rest while it was read. */
   arrived: boolean;
+  /** The reply is still being written. */
+  writing: boolean;
   props: Omit<ResultProps, "spec" | "raw" | "arrival">;
 }) {
   // A block still being written showed a placeholder, or was drawn as it was
@@ -333,7 +336,7 @@ function Segment({
   }, [segment.kind]);
   switch (segment.kind) {
     case "text":
-      return <Prose text={segment.text} onFile={props.onFile} />;
+      return <Prose text={segment.text} onFile={props.onFile} live={writing} />;
     case "pending":
       return live ? (
         // Only checked elements and placeholders are in it (stream.ts).
@@ -423,11 +426,11 @@ export function AgentReply({
         )}
       </>
     );
-  if (!segments) return <Prose text={shownText} onFile={onFile} />;
+  if (!segments) return <Prose text={shownText} onFile={onFile} live={!complete} />;
   return (
     <>
       {segments.map((segment, index) => (
-        <Segment key={index} segment={segment} arrived={readRest.current} props={{ identity, onFile, onDraft, onInteract }} />
+        <Segment key={index} segment={segment} arrived={readRest.current} writing={!complete} props={{ identity, onFile, onDraft, onInteract }} />
       ))}
     </>
   );
