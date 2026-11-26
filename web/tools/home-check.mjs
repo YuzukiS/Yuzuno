@@ -1302,7 +1302,7 @@ try {
     return { body: write.body, marks };
   });
 
-  await step("4 an option posts its id as choice (with the ask's version and Workspace, T-9) and the ask then becomes its answer card (YN-223, R-29's design): whom it waits for, the question answered, then the option or the words; Defer on an open ask posts {key, until}; free text posts the text", async () => {
+  await step("4 an option posts its id as choice (with the ask's version and Workspace, T-9) and the ask then becomes its answer card (YN-223, R-29's design): whom it waits for, the question answered, then one line of the option or the words (YN-230); Defer on an open ask posts {key, until}; free text posts the text", async () => {
     const release = card("p1", "release");
     await release.getByRole("button", { name: "Ship today", exact: true }).click();
     const option = await until("the option reply", () => writesTo(/\/brief\/reply$/)[0]);
@@ -1313,14 +1313,14 @@ try {
     const answer = (el) => ({
       kind: el.querySelector(".home-kind")?.textContent.trim() ?? null,
       ask: el.querySelector(":scope > .home-answer .home-answer-ask")?.textContent ?? null,
-      choice: el.querySelector(":scope > .home-answer .home-reply-choice")?.textContent ?? null,
+      choice: el.querySelector(":scope > .home-answer .home-answer-picks")?.textContent ?? null,
       words: el.querySelector(":scope > .home-answer .home-reply-words")?.textContent.trim() ?? null,
     });
     await until("the answer card with its reply", async () => /\bis-answer\b/.test(await release.getAttribute("class")) && (await release.evaluate(answer)).choice !== null);
     assert.deepEqual(await release.evaluate(answer),
       { kind: "Waiting for Kumo", ask: "Ship today with the two strings fixed, or wait for the menu change?", choice: "Ship today", words: null });
     assert.equal(await release.getByRole("button", { name: "Defer", exact: true }).count(), 0);
-    assert.equal(await release.locator(".home-answer-details").getAttribute("aria-expanded"), "false");
+    assert.equal(await release.locator(".home-answer-again").getAttribute("aria-expanded"), "false");
     assert.equal(await release.locator(".home-question").isVisible(), false);
     const naming = card("p1", "naming");
     await naming.getByRole("button", { name: "Defer", exact: true }).click();

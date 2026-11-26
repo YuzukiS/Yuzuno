@@ -331,6 +331,8 @@ function AnsweredAsk({ section, common }: { section: Section; common: BlockCommo
             <SectionCard
               section={section}
               answer
+              // Opened from its line, the record of that answer is what the user asked for (YN-230).
+              record
               projectId={common.projectId}
               workspaceId={common.workspaceId}
               agents={common.agents}

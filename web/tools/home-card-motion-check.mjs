@@ -4,7 +4,7 @@
 // - Its edge moves over --motion-card (500 ms); what it showed fades out over --motion-card-out (190 ms) as a copy,
 //   and what changed fades in over --motion-card-in (310 ms) only once that copy is gone (the user's "渐隐到消失之后
 //   再开始渐显" and "一共500ms", yn-203/ask rounds 3 and 4). What did not change does not fade.
-// - The reply (the form, then the answer card), Details opened and closed, Reply again, a new version
+// - The reply (the form, then the answer card), its body opened and closed by Reply again (YN-230), a new version
 //   from Core part way in (it starts again from nothing, never seen with its copy, taking no pointer meanwhile).
 // - The copy takes no pointer, focus or reading, shares no id with the page, and its pictures' references find its
 //   own parts; it keeps inner scrolls; one at most, nested no deeper than one.
@@ -81,7 +81,7 @@ function cardHelpers() {
   const live = (card, selector) => [...card.querySelectorAll(selector)].find((e) => !e.closest(".card-ghost")) ?? null;
   window.__card = (card) => {
     const body = card.querySelector(":scope > .home-card-body");
-    const details = [...card.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details");
+    const details = card.querySelector(":scope > .home-answer .home-answer-again");
     const view = card.closest(".home-view").getBoundingClientRect();
     const r = card.getBoundingClientRect();
     const ghosts = card.querySelectorAll(":scope > .card-ghost");
@@ -245,8 +245,9 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
       await option().click();
       await page.locator(`${sel}.is-answer`).waitFor({ state: "attached", timeout: 8000 });
     };
-    // The answer card's Details (YN-223: the question is on its face; Details opens the Ask's body, as its old toggle did).
-    const toggle = () => page.locator(`${sel} > .home-answer`).getByRole("button", { name: "Details", exact: true });
+    // What opens and closes the answer card's body (YN-230: Reply again, the Ask's body with the reply's controls;
+    // its answer record opens inside its face instead).
+    const toggle = () => page.locator(`${sel} > .home-answer .home-answer-again`);
     const again = () => page.locator(`${sel} > .home-answer`).getByRole("button", { name: "Reply again" });
     // Pressed where it is drawn now, as a pointer does (a locator click waits for it to stand still).
     const pressAt = async (locator) => {
@@ -323,7 +324,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           await answer();
           await idle();
           const rows = await card().evaluate((c) => new Promise((done) => {
-            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details");
+            const button = c.querySelector(":scope > .home-answer .home-answer-again");
             const body = c.querySelector(":scope > .home-card-body");
             const answer = c.querySelector(":scope > .home-answer");
             const out = [];
@@ -340,7 +341,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           const late = rows.filter((r) => r[0] >= OUT_MS + IN_MS + 80);
           const answerMin = Math.min(...rows.map((r) => r[3]));
           y.openAfterOut = { early: early.map((r) => [r[1], r[4]]), late: late.slice(0, 2), answerMin };
-          ok(`${tag}: Details: the body stays unseen and takes no pointer until the old has faded out (${OUT_MS} ms), then fades in`,
+          ok(`${tag}: Reply again: the body stays unseen and takes no pointer until the old has faded out (${OUT_MS} ms), then fades in`,
             early.length > 0 && early.every((r) => r[1] <= 0.02 && r[4] === "none") && late.length > 0 && late[0][1] === 1 && late[0][4] === "auto", y.openAfterOut);
           ok(`${tag}: opening changes only the body: the answer part never fades (min ${answerMin})`, answerMin === 1, y.openAfterOut);
         }
@@ -351,7 +352,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           await toggle().click();
           await idle();
           const rows = await card().evaluate((c) => new Promise((done) => {
-            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details");
+            const button = c.querySelector(":scope > .home-answer .home-answer-again");
             const out = [];
             const t0 = performance.now();
             button.click();
@@ -368,7 +369,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           y.close = { first: rows[0], last: rows.at(-1), moved: Math.max(...tops) - Math.min(...tops) };
           ok(`${tag}: closing details: the body fades out in the copy as the card closes, none left`,
             rows[0].hidden === true && !!rows[0].ghost?.body && rows[0].ghost.opacity >= 0.85 && rows.at(-1).ghost === null, y.close);
-          ok(`${tag}: closing, Details stays under the pointer (moves < 2 px)`, y.close.moved < 2, y.close);
+          ok(`${tag}: closing, Reply again stays under the pointer (moves < 2 px)`, y.close.moved < 2, y.close);
         }
         if (scene === "svg-ids") {
           await fresh();
@@ -387,7 +388,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
             c.querySelector(":scope > .home-card-body").prepend(holder);
           });
           const seen = await card().evaluate((c) => new Promise((done) => {
-            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details");
+            const button = c.querySelector(":scope > .home-answer .home-answer-again");
             button.click();
             requestAnimationFrame(() => {
               const g = c.querySelector(":scope > .card-ghost");
@@ -435,7 +436,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
             box.scrollTop = 50;
           });
           const seen = await card().evaluate((c) => new Promise((done) => {
-            [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details").click();
+            c.querySelector(":scope > .home-answer .home-answer-again").click();
             requestAnimationFrame(() => {
               const g = c.querySelector(":scope > .card-ghost");
               const copy = g?.querySelector(".yn203-scroll-probe");
@@ -517,7 +518,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           }
           const s = await idle();
           y.detailsFast = s;
-          ok(`${tag}: three fast presses on Details end open and consistent`,
+          ok(`${tag}: three fast presses on Reply again end open and consistent`,
             s.expanded === "true" && s.hidden === false && s.opacity === 1 && s.anims.length === 0 && s.ghosts === 0 && s.pointer === "auto", s);
         }
         if (scene === "restart") {
@@ -528,7 +529,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           await idle();
           atlas = { ...atlas, version: atlas.version + 1, body: atlasBody("Owner's update: the release waits for the signed build.") };
           const rows = await card().evaluate((c) => new Promise((done) => {
-            const button = [...c.querySelectorAll(":scope > .home-answer button")].find((b) => b.textContent.trim() === "Details");
+            const button = c.querySelector(":scope > .home-answer .home-answer-again");
             const out = [];
             const t0 = performance.now();
             let asked = false;
@@ -762,7 +763,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
             { again: y.reportReply.again, sent: y.reportReply.sent, delivered, after: y.reportReply.after });
         }
         if (scene === "deck") {
-          // On its project's page, in a cell of the deck: reply, Reply again, Details twice, fast.
+          // On its project's page, in a cell of the deck: reply, Reply again, then it twice more, fast.
           await fresh("p1");
           const cols = await card().evaluate((c) => c.closest("[data-deck-cols]")?.getAttribute("data-deck-cols") ?? c.getAttribute("data-deck-cols"));
           await answer();
@@ -776,7 +777,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           await toggle().evaluate((b) => b.click());
           const toggled = await idle();
           y.deck = { cols, settled, opened, focusIn, toggled };
-          ok(`${tag}: on the project's deck, reply, Reply again and Details twice all settle consistently, no copy left${motion("", ", at once")}`,
+          ok(`${tag}: on the project's deck, reply, Reply again and twice more all settle consistently, no copy left${motion("", ", at once")}`,
             settledShut(settled) && opened.open && opened.form >= 1 && opened.ghosts === 0 && focusIn
               && toggled.expanded === "true" && toggled.hidden === false && toggled.opacity === 1 && toggled.ghosts === 0 && toggled.anims.length === 0, y.deck);
         }
