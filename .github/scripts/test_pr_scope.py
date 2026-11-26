@@ -2,12 +2,21 @@
 like the one actions/checkout prepares for a pull request (first parent the
 base, second the head). Run: python3 -m unittest discover -s .github/scripts
 """
+import io
+import json
 import os
+from pathlib import Path
+import re
+import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
+import unittest.mock
 
 import pr_scope
+
+ROOT = Path(__file__).resolve().parents[2]
 
 # Fixture repositories get no Git background work. Commit and merge otherwise
 # start a detached `git maintenance run --auto` that can outlive them and write
@@ -33,6 +42,55 @@ BASE_FILES = {
     ".github/workflows/ci.yml": "name: CI\n",
     ".agents/skills/yuzuno/SKILL.md": "# Skill\n",
     "runtimes/claude/README.md": "# Bridge\n",
+    # What Core's CI reads under web/ (YN-235), in each form core_reads knows.
+    "web/package.json": json.dumps({"scripts": {"build:result-validator": "node --experimental-strip-types tools/result-validator.mjs",
+                                                "build": "vite build"}}) + "\n",
+    "web/tools/result-validator.mjs": textwrap.dedent("""\
+        import { describe } from "../src/contract/contract.ts";
+        import { rolldown } from "rolldown";
+        const entry = new URL("result-validator-entry.mjs", import.meta.url);
+        const output = new URL("../../runtimes/result-validator/", import.meta.url);
+        const web = new URL("..", import.meta.url);
+        """),
+    "web/tools/result-validator-entry.mjs": textwrap.dedent("""\
+        import { createInterface } from "node:readline";
+        import {
+          check,
+          limits,
+        } from "../src/contract/check.ts";
+        export { face } from "../src/home/face.ts";
+        import "./side-effect.mjs";
+        const later = () => import("../src/contract/later.ts");
+        """),
+    "web/tools/side-effect.mjs": "globalThis.x = 1;\n",
+    "web/src/contract/contract.ts": textwrap.dedent("""\
+        import { z } from "zod";
+        import { key } from "./key";
+        import type { Shape } from "../Shapes.tsx";
+        export type { Other } from "../Other.tsx";
+        // An import (one of a kind) in prose, and import() in a comment.
+        """),
+    "web/src/contract/key.ts": "export const key = 1;\n",
+    "web/src/contract/check.ts": "export const check = 1, limits = 2;\n",
+    "web/src/contract/later.ts": "export {};\n",
+    "web/src/home/face.ts": 'import { helper } from "./helper";\n',
+    "web/src/home/helper/index.ts": "export const helper = 1;\n",
+    "web/src/Shapes.tsx": "export type Shape = 1;\n",
+    "web/src/Other.tsx": "export type Other = 1;\n",
+    "web/src/App.tsx": "export const App = 1;\n",
+    "web/src/app.css": "body {}\n",
+    "web/src/limits.ts": "export const LIMIT = 1;\n",
+    "web/src/assets/icon.png": "png\n",
+    "web/tools/app.test.mjs": "// a web test\n",
+    "web/tools/fixtures/included.json": "{}\n",
+    "web/tools/fixtures/joined.json": "{}\n",
+    "web/tools/fixtures/other.json": "{}\n",
+    "core/src/web_fixtures.rs": textwrap.dedent("""\
+        const VIEWS: &str = include_str!("../../web/tools/fixtures/included.json");
+        fn kept() -> &'static str { concat!(env!("CARGO_MANIFEST_DIR"), "/../web/tools/fixtures/joined.json") }
+        // The same limit as web/src/limits.ts.
+        """),
+    "desktop/src/icon.rs": 'const ICON: &[u8] = include_bytes!("../../web/src/assets/icon.png");\n',
 }
 
 
@@ -74,6 +132,20 @@ class Repo:
 
     def decide(self, base=None, head=None):
         return pr_scope.decide(self.root, base, head)
+
+    def advance_base(self, change):
+        """Commit `change` on main before the pull request branches from it."""
+        self.git("checkout", "-q", "main")
+        change(self)
+        self.commit("main moves on")
+        self.base = self.rev("HEAD")
+
+    def record(self, change):
+        """might_skip for a pull request of `change`, as main() computes it."""
+        base, head = self.pull_request(change)
+        docs_only, reason, entries = self.decide(base, head)
+        assert not docs_only, reason
+        return pr_scope.might_skip(self.root, entries)
 
 
 class Scope(unittest.TestCase):
@@ -174,6 +246,243 @@ class Scope(unittest.TestCase):
         self.assertIn("git rev-parse failed", reason)
 
 
+class Record(unittest.TestCase):
+    """The record-only answer (YN-235): which jobs a pull request might not need."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Repo(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fresh(self):
+        self.tearDown()
+        self.setUp()
+
+    def assertMightSkip(self, change):
+        jobs, why = self.repo.record(change)
+        self.assertEqual(jobs, pr_scope.MIGHT_SKIP, why)
+        return why
+
+    def assertFull(self, change, *mentions):
+        jobs, why = self.repo.record(change)
+        self.assertEqual(jobs, (), why)
+        for mention in mentions:
+            self.assertIn(mention, why)
+        return why
+
+    def test_web_files_core_does_not_read_might_be_skipped(self):
+        def change(r):
+            r.write("web/src/App.tsx", "export const App = 2;\n")
+            r.write("web/src/app.css", "body { margin: 0 }\n")
+            r.write("web/src/New.tsx", "export const New = 1;\n")
+            r.write("web/tools/app.test.mjs", "// changed\n")
+            r.git("rm", "-q", "web/tools/fixtures/other.json")
+            # Only type imports name these, so nothing loads them.
+            r.write("web/src/Shapes.tsx", "export type Shape = 2;\n")
+            r.git("mv", "web/src/Other.tsx", "web/src/Others.tsx")
+        self.assertIn("all 8 changes are to web/ files that Core's CI does not read", self.assertMightSkip(change))
+
+    def test_web_files_a_rust_source_names_are_full(self):
+        cases = {"web/tools/fixtures/included.json": "named in core/src/web_fixtures.rs",  # include_str!
+                 "web/tools/fixtures/joined.json": "named in core/src/web_fixtures.rs",    # concat!(env!(...), ...)
+                 "web/src/limits.ts": "named in core/src/web_fixtures.rs",                 # a comment
+                 "web/src/assets/icon.png": "named in desktop/src/icon.rs"}                # include_bytes! elsewhere
+        for path, why in cases.items():
+            with self.subTest(path=path):
+                self.fresh()
+                self.assertFull(lambda r, p=path: r.write(p, "changed\n"), path, why)
+
+    def test_the_result_validators_inputs_are_full(self):
+        cases = ["web/tools/result-validator.mjs",        # the script build:result-validator runs
+                 "web/tools/result-validator-entry.mjs",  # new URL("name", import.meta.url)
+                 "web/src/contract/contract.ts",          # import ... from
+                 "web/src/contract/key.ts",               # a specifier without its extension
+                 "web/src/contract/check.ts",             # an import over several lines
+                 "web/src/home/face.ts",                  # export ... from
+                 "web/src/home/helper/index.ts",          # a folder's index
+                 "web/tools/side-effect.mjs",             # import "./x"
+                 "web/src/contract/later.ts"]             # import("./x")
+        for path in cases:
+            with self.subTest(path=path):
+                self.fresh()
+                self.assertFull(lambda r, p=path: r.write(p, "changed\n"), path, "result validator")
+
+    def test_files_at_webs_top_level_are_full(self):
+        for path in ["web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/README.md"]:
+            with self.subTest(path=path):
+                self.fresh()
+                self.assertFull(lambda r, p=path: r.write(p, '{"changed": true}\n'), path, "top level")
+
+    def test_mixed_or_unusual_changes_are_full(self):
+        def with_docs(r):
+            r.write("web/src/App.tsx", "export const App = 2;\n")
+            r.write("README.md", "# Readme\nMore.\n")
+        self.assertFull(with_docs, "1 of 2 changes are outside web/", "README.md")
+        self.fresh()
+        def with_core(r):
+            r.write("web/src/App.tsx", "export const App = 2;\n")
+            r.write("core/src/lib.rs", "fn main() { }\n")
+        self.assertFull(with_core, "core/src/lib.rs")
+        self.fresh()
+        self.assertFull(lambda r: os.symlink("App.tsx", os.path.join(r.root, "web/src/Link.tsx")), "not a plain change", "web/src/Link.tsx")
+        self.fresh()
+        self.assertFull(lambda r: os.chmod(os.path.join(r.root, "web/src/App.tsx"), 0o755), "not a plain change")
+
+    def test_what_the_base_or_the_merge_reads_counts(self):
+        # Deleting a file the base's validator loads.
+        self.assertFull(lambda r: r.git("rm", "-q", "web/src/contract/later.ts"), "web/src/contract/later.ts", "result validator")
+        self.fresh()
+        # Adding a file that a specifier without its extension can now name.
+        self.assertFull(lambda r: r.write("web/src/contract/key.tsx", "export const key = 2;\n"), "web/src/contract/key.tsx")
+
+    def test_what_core_reads_cannot_be_established_is_full(self):
+        for label, text in {"a variable": "const m = await import(name);\n",
+                            "a template": "const m = await import(`./${name}.ts`);\n",
+                            "require of a variable": "const m = require(name);\n",
+                            "a resolve hook": "const u = import.meta.resolve('./x.ts');\n",
+                            "an absolute path": 'import { x } from "/abs/x.ts";\n',
+                            "a URL": 'import { x } from "https://example.invalid/x.mjs";\n'}.items():
+            with self.subTest(label):
+                self.fresh()
+                self.repo.advance_base(lambda r, t=text: r.write("web/src/contract/key.ts", "export const key = 1;\n" + t))
+                self.assertFull(lambda r: r.write("web/src/App.tsx", "export const App = 2;\n"), "could not be established")
+        for label, package in {"no script": {"scripts": {"build": "vite build"}},
+                               "a script without a module": {"scripts": {"build:result-validator": "make validator"}},
+                               "a module that is not there": {"scripts": {"build:result-validator": "node tools/missing.mjs"}}}.items():
+            with self.subTest(label):
+                self.fresh()
+                self.repo.advance_base(lambda r, p=package: r.write("web/package.json", json.dumps(p)))
+                self.assertFull(lambda r: r.write("web/src/App.tsx", "export const App = 2;\n"), "could not be established")
+
+    def test_a_list_that_could_not_be_established_records_full_checks(self):
+        self.assertEqual(pr_scope.might_skip(self.repo.root, []), ((), "no change list could be established"))
+
+    def test_the_record_is_in_the_log_and_the_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repo(os.path.join(tmp, "repo"))
+            base, head = repo.pull_request(lambda r: r.write("web/src/App.tsx", "export const App = 2;\n"))
+            summary = os.path.join(tmp, "summary")
+            old = os.environ.get("GITHUB_STEP_SUMMARY")
+            os.environ["GITHUB_STEP_SUMMARY"] = summary
+            try:
+                with unittest.mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                    self.assertEqual(pr_scope.main(["pr_scope.py", base, head, repo.root]), 0)
+            finally:
+                os.environ.pop("GITHUB_STEP_SUMMARY") if old is None else os.environ.__setitem__("GITHUB_STEP_SUMMARY", old)
+            with open(summary) as f:
+                text = f.read()
+        self.assertIn("record_only: might_skip=Core (build and test),Lint (report-only),Claude bridge (unit tests): all 1 changes", out.getvalue())
+        self.assertIn("#### Might not be needed (record only)", text)
+        self.assertIn("**Core (build and test), Lint (report-only), Claude bridge (unit tests).**", text)
+        self.assertIn("decides nothing", text)
+
+    def test_file_names_stay_on_their_line_and_in_their_cell(self):
+        name = "docs/a`|<b>\n::warning::x.md"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Repo(os.path.join(tmp, "repo"))
+            base, head = repo.pull_request(lambda r: r.write(name, "# x\n"))
+            summary = os.path.join(tmp, "summary")
+            old = os.environ.get("GITHUB_STEP_SUMMARY")
+            os.environ["GITHUB_STEP_SUMMARY"] = summary
+            try:
+                with unittest.mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                    pr_scope.main(["pr_scope.py", base, head, repo.root])
+            finally:
+                os.environ.pop("GITHUB_STEP_SUMMARY") if old is None else os.environ.__setitem__("GITHUB_STEP_SUMMARY", old)
+            with open(summary) as f:
+                text = f.read()
+        self.assertFalse([line for line in out.getvalue().splitlines() if line.strip().startswith("::")], out.getvalue())
+        self.assertIn("| A | <code>docs/a&#96;&#124;&lt;b&gt;\\x0a::warning::x.md</code> |", text)
+
+
+class RealRepository(unittest.TestCase):
+    """What core_reads finds in this repository, against what Core and the
+    validator's build really read: the Rust macros parsed here on their own,
+    and, where web/node_modules is installed (CI's Core job), the modules
+    rolldown itself loads."""
+
+    @classmethod
+    def setUpClass(cls):
+        done = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--verify", "-q", "HEAD"], capture_output=True)
+        if done.returncode != 0:
+            raise unittest.SkipTest("not a Git checkout")
+        cls.reads = pr_scope.core_reads(str(ROOT), ("HEAD",))
+        listed = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, check=True).stdout.decode()
+        cls.files = [f for f in listed.split("\0") if f]
+
+    def assertRead(self, paths, how):
+        unread = sorted(p for p in paths if not pr_scope.read_by_core(self.reads, p))
+        self.assertEqual(unread, [], f"Core's CI reads these through {how}, but core_reads does not find them")
+
+    def test_web_files_rust_macros_name_are_read(self):
+        include = re.compile(r'include_(?:str|bytes)!\(\s*"([^"]+)"\s*\)')
+        manifest = re.compile(r'concat!\(\s*env!\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*"([^"]+)"\s*\)'
+                              r'|(?:Path::new|PathBuf::from)\(\s*env!\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*\)\s*\.join\(\s*"([^"]+)"\s*\)')
+        found = {"include": set(), "manifest": set()}
+        for source in (f for f in self.files if f.endswith(".rs") and not f.startswith("web/")):
+            text = (ROOT / source).read_text(errors="replace")
+            here = os.path.dirname(source)
+            package = here
+            while package and not (ROOT / package / "Cargo.toml").exists():
+                package = os.path.dirname(package)
+            for path in include.findall(text):
+                found["include"].add(os.path.normpath(os.path.join(here, path)))
+            for groups in manifest.findall(text):
+                found["manifest"].add(os.path.normpath(os.path.join(package, (groups[0] or groups[1]).lstrip("/"))))
+        for kind, paths in found.items():
+            web = {p for p in paths if p.startswith("web/")}
+            with self.subTest(kind):
+                # The parser still finds the kind it looks for, so an empty set
+                # cannot pass by accident.
+                self.assertTrue(web, f"no {kind} reference into web/ was found")
+                self.assertRead(web, kind)
+
+    def test_the_result_validators_build_is_read(self):
+        self.assertRead(["web/tools/result-validator.mjs", "web/tools/result-validator-entry.mjs",
+                         "web/src/intelligent-ui/contract.ts", "web/src/intelligent-ui/brief-contract.ts",
+                         "web/package.json", "web/package-lock.json"], "the result validator's build")
+
+    def test_every_module_rolldown_loads_for_the_validator_is_read(self):
+        web = ROOT / "web"
+        if not (web / "node_modules/rolldown/package.json").exists() or not shutil.which("node"):
+            self.skipTest("web/node_modules (npm ci) and node are needed; CI's Core job has both")
+        script = textwrap.dedent("""\
+            import { rolldown } from "rolldown";
+            import { isAbsolute } from "node:path";
+            const ids = new Set();
+            for (const input of JSON.parse(process.env.VALIDATOR_INPUTS)) {
+              const build = await rolldown({ input, cwd: process.cwd(), platform: "node", logLevel: "silent",
+                                             external: (id) => !id.startsWith(".") && !isAbsolute(id) });
+              try {
+                const { output } = await build.generate({ format: "esm" });
+                for (const item of output) if (item.type === "chunk") for (const id of Object.keys(item.modules)) ids.add(id);
+              } finally {
+                await build.close();
+              }
+            }
+            process.stdout.write(JSON.stringify([...ids]));
+            """)
+        inputs = ["tools/result-validator.mjs", "tools/result-validator-entry.mjs"]
+        done = subprocess.run(["node", "--input-type=module", "-e", script], cwd=web, capture_output=True, text=True,
+                              env={**os.environ, "VALIDATOR_INPUTS": json.dumps(inputs)}, timeout=120)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        loaded = set()
+        for module in json.loads(done.stdout):
+            path = Path(module.split("?")[0])
+            if path.is_absolute() and "node_modules" not in path.parts:
+                loaded.add(path.resolve().relative_to(ROOT.resolve()).as_posix())
+        self.assertIn("web/src/intelligent-ui/contract.ts", loaded)
+        self.assertRead({p for p in loaded if p.startswith("web/")}, "rolldown's module graph")
+
+    def test_most_web_files_are_not_read(self):
+        # The answer is not trivially "everything": the UI's own files stay out.
+        web = [f for f in self.files if f.startswith("web/src/") and f.endswith(".tsx")]
+        unread = [f for f in web if not pr_scope.read_by_core(self.reads, f)]
+        self.assertGreater(len(unread), len(web) // 2, sorted(self.reads))
+
+
 class FixtureGit(unittest.TestCase):
     def test_fixture_commits_and_merges_start_no_background_maintenance(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -233,7 +542,7 @@ class Main(unittest.TestCase):
             self.assertIn("**Documentation only.**", text)
             self.assertIn("did not run", text)
             self.assertIn("**Full checks.**", text)
-            self.assertIn("| A | `docs/new.md` |", text)
+            self.assertIn("| A | <code>docs/new.md</code> |", text)
 
     def test_usage(self):
         self.assertEqual(pr_scope.main(["pr_scope.py"]), 2)

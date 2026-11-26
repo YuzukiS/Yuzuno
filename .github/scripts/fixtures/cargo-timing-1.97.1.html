@@ -1,0 +1,378 @@
+<!-- Parts of a real report: `cargo build --all-targets --timings -j2` with cargo 1.97.1
+     on a synthetic workspace (core-app: lib, bins, an integration test, an example, a bench,
+     a build script; helper and derive-probe outside it). The summary table and the three
+     data constants are copied verbatim; the page's styles and scripts are left out. -->
+<html><body>
+<table class="my-table summary-table">
+<tr>
+<td>Targets:</td><td>core-app 0.1.0 (lib)<br>core-app 0.1.0 (lib)<br>core-app 0.1.0 ( core-app "bin")<br>core-app 0.1.0 ( core-app "bin")<br>core-app 0.1.0 ( core-helper "bin")<br>core-app 0.1.0 ( core-helper "bin")<br>core-app 0.1.0 ( signals "test")<br>core-app 0.1.0 ( speed "bench")<br>core-app 0.1.0 ( lab "example")</td>
+</tr>
+<tr>
+<td>Profile:</td><td>dev</td>
+</tr>
+<tr>
+<td>Fresh units:</td><td>0</td>
+</tr>
+<tr>
+<td>Dirty units:</td><td>13</td>
+</tr>
+<tr>
+<td>Total units:</td><td>13</td>
+</tr>
+<tr>
+<td>Max concurrency:</td><td>3 (jobs=2 ncpu=32)</td>
+</tr>
+<tr>
+<td>Build start:</td><td>2026-11-26T04:09:11.21483227Z</td>
+</tr>
+<tr>
+<td>Total time:</td><td>0.9s</td>
+</tr>
+<tr>
+<td>rustc:</td><td>rustc 1.97.1 (8bab26f4f 2026-07-14)<br>Host: x86_64-unknown-linux-gnu<br>Target: x86_64-unknown-linux-gnu</td>
+</tr>
+
+</table>
+<script>
+const UNIT_DATA = [
+  {
+    "i": 9,
+    "name": "core-app",
+    "version": "0.1.0",
+    "mode": "todo",
+    "target": " build-script",
+    "features": [],
+    "start": 0.08,
+    "duration": 0.15,
+    "unblocked_units": [
+      10
+    ],
+    "unblocked_rmeta_units": [],
+    "sections": null
+  },
+  {
+    "i": 12,
+    "name": "helper",
+    "version": "0.2.0",
+    "mode": "todo",
+    "target": "",
+    "features": [],
+    "start": 0.08,
+    "duration": 0.02,
+    "unblocked_units": [],
+    "unblocked_rmeta_units": [],
+    "sections": [
+      [
+        "frontend",
+        {
+          "start": 0.0,
+          "end": 0.01
+        }
+      ],
+      [
+        "codegen",
+        {
+          "start": 0.01,
+          "end": 0.02
+        }
+      ]
+    ]
+  },
+  {
+    "i": 11,
+    "name": "derive-probe",
+    "version": "0.3.0",
+    "mode": "todo",
+    "target": "",
+    "features": [],
+    "start": 0.1,
+    "duration": 0.17,
+    "unblocked_units": [
+      1,
+      0
+    ],
+    "unblocked_rmeta_units": [],
+    "sections": null
+  },
+  {
+    "i": 10,
+    "name": "core-app",
+    "version": "0.1.0",
+    "mode": "run-custom-build",
+    "target": " build-script (run)",
+    "features": [],
+    "start": 0.23,
+    "duration": 0.0,
+    "unblocked_units": [],
+    "unblocked_rmeta_units": [],
+    "sections": null
+  },
+  {
+    "i": 0,
+    "name": "core-app",
+    "version": "0.1.0",
+    "mode": "todo",
+    "target": " core_app \"lib\" (test)",
+    "features": [],
+    "start": 0.27,
+    "duration": 0.17,
+    "unblocked_units": [],
+    "unblocked_rmeta_units": [],
+    "sections": null
+  },
+  {
+    "i": 1,
+    "name": "core-app",
+    "version": "0.1.0",
+    "mode": "todo",
+    "target": "",
+    "features": [],
+    "start": 0.27,
+    "duration": 0.02,
+    "unblocked_units": [
+      4,
+      5,
+      7,
+      8,
+      3,
+      6,
+      2
+    ],
+    "unblocked_rmeta_units": [],
+    "sections": [
+      [
+        "frontend",
+        {
+          "start": 0.0,
+          "end": 0.01
+        }
+      ],
+      [
+        "codegen",
+        {
+          "start": 0.01,
+          "end": 0.02
+        }
+      ]
+    ]
+  },
+  {
+    "i": 8,
+    "name": "core-app",
+    "version": "0.1.0",
+    "mode": "todo",
+    "target": " lab \"example\"",
+    "features": [],
+    "start": 0.29,
+    "duration": 0.12,
+    "unblocked_units": [],
+    "unblocked_rmeta_units": [],
+    "sections": null
+  },
+  {
+    "i": 5,
+    "name": "core-app",
+    "version": "0.1.0",
+    "mode": "todo",
+    "target": " core-helper \"bin\"",
+    "features": [],
+    "start": 0.41,
+    "duration": 0.16,
+    "unblocked_units": [],
+    "unblocked_rmeta_units": [],
+    "sections": null
+  },
+  {
+    "i": 3,
+    "name": "core-app",
+    "version": "0.1.0",
+    "mode": "todo",
+    "target": " core-app \"bin\"",
+    "features": [],
+    "start": 0.44,
+    "duration": 0.16,
+    "unblocked_units": [],
+    "unblocked_rmeta_units": [],
+    "sections": null
+  },
+  {
+    "i": 2,
+    "name": "core-app",
+    "version": "0.1.0",
+    "mode": "todo",
+    "target": " core-app \"bin\" (test)",
+    "features": [],
+    "start": 0.57,
+    "duration": 0.17,
+    "unblocked_units": [],
+    "unblocked_rmeta_units": [],
+    "sections": null
+  },
+  {
+    "i": 4,
+    "name": "core-app",
+    "version": "0.1.0",
+    "mode": "todo",
+    "target": " core-helper \"bin\" (test)",
+    "features": [],
+    "start": 0.6,
+    "duration": 0.18,
+    "unblocked_units": [],
+    "unblocked_rmeta_units": [],
+    "sections": null
+  },
+  {
+    "i": 6,
+    "name": "core-app",
+    "version": "0.1.0",
+    "mode": "todo",
+    "target": " signals \"test\" (test)",
+    "features": [],
+    "start": 0.74,
+    "duration": 0.19,
+    "unblocked_units": [],
+    "unblocked_rmeta_units": [],
+    "sections": null
+  },
+  {
+    "i": 7,
+    "name": "core-app",
+    "version": "0.1.0",
+    "mode": "todo",
+    "target": " speed \"bench\" (test)",
+    "features": [],
+    "start": 0.77,
+    "duration": 0.17,
+    "unblocked_units": [],
+    "unblocked_rmeta_units": [],
+    "sections": null
+  }
+];
+const CONCURRENCY_DATA = [
+  {
+    "t": 0.08,
+    "active": 2,
+    "waiting": 0,
+    "inactive": 11
+  },
+  {
+    "t": 0.1,
+    "active": 2,
+    "waiting": 0,
+    "inactive": 10
+  },
+  {
+    "t": 0.22999999999999998,
+    "active": 1,
+    "waiting": 1,
+    "inactive": 9
+  },
+  {
+    "t": 0.23,
+    "active": 1,
+    "waiting": 0,
+    "inactive": 9
+  },
+  {
+    "t": 0.27,
+    "active": 2,
+    "waiting": 0,
+    "inactive": 7
+  },
+  {
+    "t": 0.29,
+    "active": 3,
+    "waiting": 0,
+    "inactive": 6
+  },
+  {
+    "t": 0.29000000000000004,
+    "active": 2,
+    "waiting": 6,
+    "inactive": 0
+  },
+  {
+    "t": 0.41,
+    "active": 2,
+    "waiting": 5,
+    "inactive": 0
+  },
+  {
+    "t": 0.44,
+    "active": 3,
+    "waiting": 4,
+    "inactive": 0
+  },
+  {
+    "t": 0.44000000000000006,
+    "active": 2,
+    "waiting": 4,
+    "inactive": 0
+  },
+  {
+    "t": 0.57,
+    "active": 2,
+    "waiting": 3,
+    "inactive": 0
+  },
+  {
+    "t": 0.6,
+    "active": 2,
+    "waiting": 2,
+    "inactive": 0
+  },
+  {
+    "t": 0.74,
+    "active": 2,
+    "waiting": 1,
+    "inactive": 0
+  },
+  {
+    "t": 0.77,
+    "active": 3,
+    "waiting": 0,
+    "inactive": 0
+  },
+  {
+    "t": 0.78,
+    "active": 2,
+    "waiting": 0,
+    "inactive": 0
+  },
+  {
+    "t": 0.9299999999999999,
+    "active": 1,
+    "waiting": 0,
+    "inactive": 0
+  },
+  {
+    "t": 0.9400000000000001,
+    "active": 0,
+    "waiting": 0,
+    "inactive": 0
+  }
+];
+const CPU_USAGE = [
+  [
+    0.229188148,
+    8.82352941176471
+  ],
+  [
+    0.408994849,
+    12.11072664359861
+  ],
+  [
+    0.570712183,
+    11.61904761904762
+  ],
+  [
+    0.741239367,
+    13.812154696132595
+  ],
+  [
+    0.931618287,
+    16.585365853658544
+  ]
+];
+</script>
+</body></html>

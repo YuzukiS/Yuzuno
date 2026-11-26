@@ -6,7 +6,8 @@
 #
 # Runs for a pull request or a push to main that changes Core, its runtimes,
 # the Cargo files, the test runner or this workflow. Nothing is uploaded; it
-# uses no secret, and its token reads contents only.
+# uses no secret, and its token reads contents only. The build's Cargo
+# timings are summarized in the job's summary (YN-235).
 name: Core macOS
 
 on:
@@ -18,6 +19,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - .github/scripts/core_tests.py
+      - .github/scripts/cargo_timings.py
       - .github/scripts/hosted-guard.sh
       - .github/scripts/disk-precheck.sh
       - .github/workflows/core-macos.yml
@@ -29,6 +31,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - .github/scripts/core_tests.py
+      - .github/scripts/cargo_timings.py
       - .github/scripts/hosted-guard.sh
       - .github/scripts/disk-precheck.sh
       - .github/workflows/core-macos.yml
@@ -121,10 +124,25 @@ jobs:
       - name: Disk space precheck
         run: .github/scripts/disk-precheck.sh 20 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
 
+      # --timings also writes target/cargo-timings/cargo-timing.html, which
+      # the next step summarizes (YN-235). It changes nothing that is built.
+      # vm_stat and the swap in use, before and after, show in the log
+      # whether the build ran short of the runner's memory: its page-out,
+      # swap-out and compression counters count from the VM's boot.
       - name: Build
+        id: build
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-          cargo build --locked --all-targets
+          { vm_stat; sysctl vm.swapusage; } || true
+          cargo build --locked --all-targets --timings
+          { vm_stat; sysctl vm.swapusage; } || true
+
+      # Report-only: how long each Cargo unit took, in this job's summary and
+      # as one JSON line of this step's log. The report is not uploaded; a
+      # missing or unreadable one is a warning, never a failure.
+      - name: Build timings
+        if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
+        run: python3 .github/scripts/cargo_timings.py target/cargo-timings/cargo-timing.html
 
       # As in CI: each process runs one test at a time; see the script.
       # - TMPDIR: macOS's own (/var/folders/.../T/) makes the sockets tests
