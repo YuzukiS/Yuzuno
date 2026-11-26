@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { RequestSummary } from "./MessageContent";
 import { Bell } from "lucide-react";
 import type { AgentActionHandlers } from "./agent-actions";
@@ -132,7 +132,15 @@ function useLongPress(onPress: (press: Press) => void) {
   };
 }
 
-export function AgentRailRow({
+/**
+ * One Agent's row in the rail. Drawn again only when what it is given
+ * changes, by React's own comparison of each prop (YN-234): progress for
+ * another Agent replaces that Agent's entry only, so this row, given the
+ * same entry and the same steady handlers (App.tsx), is left as it is. Its
+ * own stores (Jobs, CI, waits, its PR, the minute, the language) still draw
+ * it whenever they change.
+ */
+export const AgentRailRow = memo(function AgentRailRow({
   agent,
   selected,
   statusLabel,
@@ -161,7 +169,8 @@ export function AgentRailRow({
   asking?: boolean;
   /** It is the open Agent and it is compacting. */
   compacting?: boolean;
-  onSelect: () => void;
+  /** Opens its conversation; given its Agent's ID, so one handler serves every row. */
+  onSelect: (agentId: string) => void;
   /** Where its ring goes (T-43 v10.2): Home's Needs you, at its item; its task. */
   onOpenHome?: (agentId: string) => void;
   onOpenTask?: (taskId: string) => void;
@@ -256,7 +265,7 @@ export function AgentRailRow({
   useIslandShell(row, shell, form, pill?.text ?? null);
   const go = (action: IslandAction) => {
     if (action === "answer") onOpenHome?.(agent.id);
-    else if (action === "turn" || action === "reply") onSelect();
+    else if (action === "turn" || action === "reply") onSelect(agent.id);
     else if (island.task) onOpenTask?.(island.task);
   };
   // Line one: a standing Agent's name; an executor's task, by its short
@@ -314,7 +323,7 @@ export function AgentRailRow({
       <button
         ref={select}
         className="agent-select agent-row-top"
-        onClick={onSelect}
+        onClick={() => onSelect(agent.id)}
         aria-label={t.open(agent.name)}
         aria-description={kind ? `${kind} · ${said}` : said}
         aria-current={selected ? "true" : undefined}
@@ -388,7 +397,7 @@ export function AgentRailRow({
       {body}
     </Tip>
   );
-}
+});
 
 /** How long a Turn's call holds it before its ring says so (YN-51): a call
  * under a second is not felt as a wait (the usual response-time limit), so

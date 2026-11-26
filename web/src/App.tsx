@@ -144,7 +144,7 @@ import { CodexPlanUsage } from "./CodexPlanUsage";
 import { AgentManagement, type AgentAction } from "./AgentManagement";
 import { AgentActionsMenu } from "./AgentActionsMenu";
 import { BatchReconnect } from "./BatchReconnect";
-import type { AgentActionHandlers } from "./agent-actions";
+import { useSteadyActions, type AgentActionHandlers } from "./agent-actions";
 import { useConversationSend } from "./useConversationSend";
 import { ClarificationHost } from "./intelligent-ui/ClarificationHost";
 import { AgentRailRow, summaryOrigin, workingFolder } from "./AgentRailRow";
@@ -2666,6 +2666,21 @@ export function App() {
     rename: previewMode ? undefined : (id) => setRenameFor(id),
     copyLink: linkBase && workspaceId && !previewMode ? copyAgentLink : undefined,
   };
+  // What the rail's rows are given (YN-234): the same handlers on every
+  // render, each calling the latest, so progress for one Agent draws only
+  // its row again; every other row keeps its props and is left as it is.
+  const railActions = useSteadyActions(agentActions);
+  const railLatest = useRef({ openFromList, goHome });
+  railLatest.current = { openFromList, goHome };
+  const railSelect = useCallback((id: string) => railLatest.current.openFromList(id), []);
+  const railOpenHome = useCallback((agentId: string) => {
+    // Its ring (T-43 v10.2): Home, at what it asks in Needs you.
+    railLatest.current.goHome();
+    setHomeJump((last) => ({ projectId: null, agentId, n: (last?.n ?? 0) + 1 }));
+  }, []);
+  const railOpenTask = useCallback((taskId: string) => {
+    window.dispatchEvent(new CustomEvent("yuzuno:open-task-review", { detail: { taskId } }));
+  }, []);
   useEffect(() => {
     if (!settingsFor || settingsFor !== selected) return;
     setSettingsFor(null);
@@ -3947,14 +3962,10 @@ export function App() {
               waitingSince={waited.get(a.id) ?? null}
               asking={asking.has(a.id)}
               compacting={a.id === selected && compacting}
-              onSelect={() => openFromList(a.id)}
-              onOpenHome={(agentId) => {
-                // Its ring (T-43 v10.2): Home, at what it asks in Needs you.
-                goHome();
-                setHomeJump((last) => ({ projectId: null, agentId, n: (last?.n ?? 0) + 1 }));
-              }}
-              onOpenTask={(taskId) => window.dispatchEvent(new CustomEvent("yuzuno:open-task-review", { detail: { taskId } }))}
-              actions={agentActions}
+              onSelect={railSelect}
+              onOpenHome={railOpenHome}
+              onOpenTask={railOpenTask}
+              actions={railActions}
             />
             );
             };
