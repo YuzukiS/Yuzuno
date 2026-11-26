@@ -26,6 +26,7 @@ import {createRoot} from 'react-dom/client';
 import {Turn} from ${JSON.stringify(path.join(root, "src/components.tsx"))};
 const root=createRoot(document.getElementById('root'));
 window.renderTurn=(turn,agent)=>flushSync(()=>root.render(<Turn turn={turn} index={0} agent={agent} onFile={()=>{}} onAnswer={(text)=>window.drafts.push(text)}/>));
+window.renderNothing=()=>flushSync(()=>root.render(null));
 window.drafts=[];`,
   );
   const result = await build({
@@ -86,6 +87,17 @@ function mount(respond) {
   const { window } = dom;
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+  // Each formatted copy of a result's JSON made in the page (YN-234): the
+  // page's own JSON.stringify with an indent of 2, given a spec.
+  const pretty = [];
+  const stringify = window.JSON.stringify;
+  window.JSON.stringify = function (value, replacer, space) {
+    if (space === 2 && value && typeof value === "object" && "root" in value && "elements" in value) pretty.push(value.root);
+    return stringify.call(this, value, replacer, space);
+  };
+  // What the copy buttons wrote.
+  const copied = [];
+  Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: async (text) => void copied.push(text) } });
   window.fetch = async (url, init = {}) => {
     const pathname = new URL(String(url), window.location.href).pathname;
     requests.push({ url: pathname, method: init.method || "GET" });
@@ -96,7 +108,13 @@ function mount(respond) {
   const document = window.document;
   const text = () => document.getElementById("root").textContent;
   const button = (label) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
-  return { window, document, errors, requests, text, button, close: () => window.close() };
+  // Opens or closes a result's folded details as a click on its summary does.
+  const toggle = async (details, open) => {
+    details.open = open;
+    details.dispatchEvent(new window.Event("toggle"));
+    await tick();
+  };
+  return { window, document, errors, requests, text, button, pretty, copied, toggle, close: () => window.close() };
 }
 
 const found = (id, value) => ({ body: { id, agentId: "a", chainId: id, version: 1, turnId: "t", schemaVersion: 1, spec: value, defaults: [] } });
@@ -150,7 +168,16 @@ test("a missing result says so without a retry, and an unreadable one shows its 
   page.window.renderTurn(turn("completed", [shown("gone"), shown("bad")]), agent());
   await until(() => page.document.querySelector("[data-result-state=missing]") && page.document.querySelector("[data-result-state=format]"), "both notes");
   assert.ok(page.document.querySelector("[data-result-state=missing] button") === null, "a missing result offers no retry");
-  assert.match(page.document.querySelector("[data-result-state=format] pre").textContent, /"Html"/);
+  // Its JSON is made when its details open (YN-234), exactly as published.
+  const details = page.document.querySelector("[data-result-state=format] details");
+  assert.equal(details.querySelector("pre"), null, "no JSON in the page while folded");
+  assert.deepEqual(page.pretty, [], "none made to show the note");
+  await page.toggle(details, true);
+  const bad = { root: "result", elements: { result: { type: "Html", props: {} } } };
+  assert.equal(details.querySelector("pre").textContent, JSON.stringify(bad, null, 2));
+  page.button("Copy result JSON").click();
+  await until(() => page.copied.length === 1, "copied");
+  assert.equal(page.copied[0], JSON.stringify(bad, null, 2), "the whole JSON, as before");
   assert.match(page.text(), /Here is the comparison\./);
 });
 
@@ -189,4 +216,66 @@ test("a Turn without published results reads nothing", async (t) => {
   await tick(50);
   assert.ok(page.document.querySelector(".turn-results") === null, ".turn-results is absent");
   assert.equal(page.requests.length, 0);
+});
+
+test("a published result's JSON is made only when it is opened or copied, exactly as before (YN-234)", async (t) => {
+  const value = spec("Two options");
+  const page = mount((url) => url === "/api/agents/a/results/r1" ? found("r1", value) : { status: 404 });
+  t.after(page.close);
+  page.window.renderTurn(turn("completed", [shown("r1")]), agent());
+  const result = await until(() => page.document.querySelector('[data-result-id="r1"] .result-content'), "the result drawn");
+  const original = result.closest(".interactive-result").querySelector(".result-original");
+  // Shown and folded: no formatted copy made, none in the page.
+  assert.ok(!original.open);
+  assert.equal(original.querySelector("pre"), null, "no JSON in the page while folded");
+  assert.deepEqual(page.pretty, [], "none made to show it");
+  // Drawn again (a kept read, as a conversation shown again draws it): still none.
+  page.window.renderTurn(turn("completed", [shown("r1")]), agent());
+  await tick(50);
+  assert.deepEqual(page.pretty, []);
+
+  // View JSON: made once, the text it always was.
+  const whole = JSON.stringify(value, null, 2);
+  await page.toggle(original, true);
+  assert.equal(original.querySelector("pre").textContent, whole);
+  assert.equal(page.pretty.length, 1);
+  page.window.renderTurn(turn("completed", [shown("r1")]), agent());
+  await tick(30);
+  assert.equal(page.pretty.length, 1, "once while it stays open");
+  // Closed again: let go.
+  await page.toggle(original, false);
+  assert.equal(original.querySelector("pre"), null, "gone from the page once folded again");
+
+  // Copy: the whole JSON, made for the copy.
+  const copy = [...original.querySelectorAll("button")].find((b) => b.textContent.trim() === "Copy result JSON");
+  copy.click();
+  await until(() => page.copied.length === 1, "copied");
+  assert.equal(page.copied[0], whole, "exactly JSON.stringify(spec, null, 2)");
+  assert.equal(page.pretty.length, 2);
+  assert.deepEqual(page.requests, [{ url: "/api/agents/a/results/r1", method: "GET" }], "read once for all of it");
+  assert.deepEqual(page.errors, []);
+});
+
+test("a view saved on a published result comes back when it is shown again; a new version gets its own JSON (YN-234)", async (t) => {
+  const page = mount((url) => url.endsWith("/v1") ? found("v1", spec("First")) : found("v2", spec("Second")));
+  t.after(page.close);
+  page.window.renderTurn(turn("completed", [shown("v1")]), agent());
+  const row = await until(() => page.document.querySelector("[data-result-id=v1] tbody input[type=checkbox]"), "a selectable row");
+  row.click();
+  await until(() => page.document.querySelector("[data-result-id=v1] tbody input[type=checkbox]:checked"), "selected");
+  // Saving the view took its fingerprint: one copy made for it, none kept.
+  assert.equal(page.pretty.length, 1);
+  // Away and back (another conversation, then this one): the selection is the same result's still.
+  page.window.renderNothing();
+  page.window.renderTurn(turn("completed", [shown("v1")]), agent());
+  await until(() => page.document.querySelector("[data-result-id=v1] tbody input[type=checkbox]:checked"), "the saved selection");
+  assert.equal(page.pretty.length, 2, "reading the saved view checked its fingerprint once");
+
+  // A new version: its own JSON when opened.
+  page.window.renderTurn(turn("completed", [shown("v2", 2, "v1")]), agent());
+  const next = await until(() => page.document.querySelector("[data-result-id=v2] .result-original"), "second version");
+  await page.toggle(next, true);
+  assert.equal(next.querySelector("pre").textContent, JSON.stringify(spec("Second"), null, 2));
+  assert.ok(page.document.querySelector("[data-result-id=v2] tbody input[type=checkbox]:checked") === null, "with nothing selected");
+  assert.deepEqual(page.errors, []);
 });

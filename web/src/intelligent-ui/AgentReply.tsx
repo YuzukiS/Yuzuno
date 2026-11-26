@@ -8,13 +8,15 @@ import type { ResultSpec } from "./spec";
 import { BlockStream } from "./stream";
 import { resultText } from "./result-text";
 import { reserveFor, type Reserve } from "./result-reserve";
+import { rawKey, useFoldedRaw, type RawText } from "./result-raw";
 import { useStrings } from "../i18n";
 import "./result-states.css";
 
 type ResultProps = {
   resultId?: string;
   spec: ResultSpec;
-  raw: string;
+  /** Its JSON: a reply's block text, or a published result's made when read (result-raw.ts). */
+  raw: RawText;
   identity: string;
   onFile?: (path: string, line?: number) => void;
   onDraft?: (text: string) => void;
@@ -126,10 +128,11 @@ class ResultBoundary extends Component<
   }
 }
 
-function RawResult({ raw, problem }: { raw?: string; problem?: ResultProblem }) {
+function RawResult({ raw, problem }: { raw?: RawText; problem?: ResultProblem }) {
   const t = useStrings(resultText);
+  const shown = useFoldedRaw(raw);
   return (
-    <details className="result-state-details">
+    <details className="result-state-details" onToggle={shown.onToggle}>
       <summary>{raw === undefined ? t.details : problem ? t.detailsJson : t.json}</summary>
       {problem && (
         <dl className="result-problem">
@@ -141,7 +144,7 @@ function RawResult({ raw, problem }: { raw?: string; problem?: ResultProblem }) 
       {raw !== undefined && (
         <>
           <CopyButton text={raw} label={t.copy} />
-          <pre>{raw}</pre>
+          {shown.text !== null && <pre>{shown.text}</pre>}
         </>
       )}
     </details>
@@ -189,7 +192,7 @@ export function ResultUnavailable({
 }: {
   kind: Unavailable;
   /** The result's JSON, when there is one to show. */
-  raw?: string;
+  raw?: RawText;
   problem?: ResultProblem;
   onRetry?: () => void;
   onReload?: () => void;
@@ -246,7 +249,7 @@ export function ShownResult({ arrived = false, ...props }: Omit<ResultProps, "ar
     <ResultBoundary
       // A new text is a new result, except while its block is written and as
       // it closes: that is one result arriving (YN-15).
-      key={props.identity + (props.streamed ? "" : props.raw)}
+      key={props.identity + (props.streamed ? "" : rawKey(props.raw))}
       resetOn={props.live}
       fallback={(error, reset) =>
         error instanceof ResultChunkError ? (
