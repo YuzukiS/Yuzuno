@@ -84,9 +84,10 @@ export type RequestCard = {
   live: boolean;
   /**
    * `progress` and `blocker` (R-38): what its lead or executor wrote on the task, at most 280 characters each (a
-   * longer one ends in "…"), null when unset; absent from an older Core.
+   * longer one ends in "…"), null when unset; absent from an older Core. `progressAt`: when the progress was last
+   * written, as the task's activity keeps it; null without one or when no record says (unknown, never guessed).
    */
-  task: { id: string; status: string; archived: boolean; progress?: string | null; blocker?: string | null };
+  task: { id: string; status: string; archived: boolean; progress?: string | null; progressAt?: string | null; blocker?: string | null };
   responsible: { agentId: string; name: string; kind: "executor" | "lead" | "agent"; state: string } | null;
   /** The task's newest result (YN-208), or null without one; absent from an older Core. */
   result?: { id: string; status: string; reportedAt: string } | null;

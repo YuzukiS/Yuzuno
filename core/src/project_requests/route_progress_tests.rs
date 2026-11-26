@@ -68,14 +68,16 @@ async fn a_requests_card_says_its_tasks_progress_and_whether_each_merged_pr_is_i
     // Before anyone writes it, a task has no progress or blocker, and no PRs.
     let fresh = lab.listed(Some(&release()));
     let card = &fresh["requests"][0]["cards"][0];
-    assert_eq!((card["task"]["progress"].clone(), card["task"]["blocker"].clone(), card["prs"].clone()),
-        (Value::Null, Value::Null, json!({"items":[]})));
+    assert_eq!((card["task"]["progress"].clone(), card["task"]["progressAt"].clone(), card["task"]["blocker"].clone(), card["prs"].clone()),
+        (Value::Null, Value::Null, Value::Null, json!({"items":[]})));
     assert_eq!(fresh["mergedAfterInstalled"], 0, "no merged PR: none after the release");
 
     let long = "契约已合入，".to_owned() + &"进".repeat(300);
     let version = lab.task(&key)["version"].clone();
-    lab.ws.store.collaboration_call(None, "task_update", json!({"requestId":"progress","taskId":key,"expectedVersion":version,
+    let updated = lab.ws.store.collaboration_call(None, "task_update", json!({"requestId":"progress","taskId":key,"expectedVersion":version,
         "patch":{"progress":long,"blocker":"  等 core.40 发布  "}})).unwrap();
+    let written = updated["activity"]["at"].clone();
+    assert!(written.is_string(), "{updated}");
     // #7 is in the release, #8 merged after it, #9 merged before Core kept merge commits, #10 is open,
     // and #11 is of a repository the installed commit is not one of.
     lab.linked_pull(&key, 123, 7, "merged", Some(M7));
@@ -95,6 +97,7 @@ async fn a_requests_card_says_its_tasks_progress_and_whether_each_merged_pr_is_i
     assert_eq!(progress.chars().count(), 280);
     assert!(progress.starts_with("契约已合入，") && progress.ends_with("进…"), "{progress}");
     assert_eq!(task["blocker"], "等 core.40 发布");
+    assert_eq!(task["progressAt"], written, "when its progress was written, as the task's activity keeps it");
     assert_eq!(lab.task(&key)["progress"].as_str().unwrap().chars().count(), 306, "the task keeps it whole");
     assert_eq!(installed_of(&listed, n), vec![json!([7, "merged", true]), json!([8, "merged", false]), json!([9, "merged", null]),
         json!([10, "open", null]), json!([11, "merged", null])]);
@@ -122,6 +125,16 @@ async fn a_requests_card_says_its_tasks_progress_and_whether_each_merged_pr_is_i
     assert_eq!((source["installedRelease"].clone(), source["mergedAfterInstalled"].clone()), (Value::Null, Value::Null));
     assert!(installed_of(&source, n).iter().all(|pr| pr[2].is_null()), "{source}");
     assert_eq!(lab.asked_all(), before, "still nothing asked of GitHub");
+
+    // R-38 §2.5: an update that leaves the progress keeps when it was written; one that clears it leaves none.
+    let version = lab.task(&key)["version"].clone();
+    lab.ws.store.collaboration_call(None, "task_update", json!({"requestId":"blocker","taskId":key,"expectedVersion":version,
+        "patch":{"blocker":""}})).unwrap();
+    assert_eq!(lab.listed(None)["requests"][0]["cards"][0]["task"]["progressAt"], written);
+    let version = lab.task(&key)["version"].clone();
+    lab.ws.store.collaboration_call(None, "task_update", json!({"requestId":"cleared","taskId":key,"expectedVersion":version,
+        "patch":{"progress":""}})).unwrap();
+    assert_eq!(lab.listed(None)["requests"][0]["cards"][0]["task"]["progressAt"], Value::Null);
 }
 
 #[test]

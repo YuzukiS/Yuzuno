@@ -96,6 +96,23 @@ fn task(db: &Connection, id: &str) -> Result<Option<Task>> {
 
 /// When the task ended: its newest write that set it done or cancelled,
 /// else (archived while open) when it was archived.
+/// When the task's progress was last written (R-38 §2.5): the newest of its updates that set `progress`, as its
+/// activity record keeps it. None without a progress, and none when no update set it (unknown, never guessed).
+fn progress_at(db: &Connection, id: &str, task: &Task) -> Result<Option<String>> {
+    if task.progress.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(db
+        .query_row(
+            "SELECT json_extract(data,'$.at') FROM collaboration_task_activity WHERE task_id=?1
+             AND json_extract(data,'$.kind')='updated' AND json_type(data,'$.changes.progress') IS NOT NULL ORDER BY seq DESC LIMIT 1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten())
+}
+
 fn ended_at(db: &Connection, id: &str, task: &Task) -> Result<Option<String>> {
     if matches!(task.status.as_str(), "done" | "cancelled") {
         let at: Option<String> = db
@@ -211,7 +228,7 @@ pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, confir
             "sectionId":section,"key":card.as_ref().map(|c| c.key.clone()),"title":card.as_ref().map(|c| c.title.clone()),
             "live":card.as_ref().is_some_and(|c| c.live),
             "task":{"id":task.key,"status":task.status,"archived":task.archived_at.is_some(),
-                "progress":clipped(&task.progress),"blocker":clipped(&task.blocker)},
+                "progress":clipped(&task.progress),"progressAt":progress_at(db, id, &task)?,"blocker":clipped(&task.blocker)},
             "responsible":crate::project_brief::responsible_json(db, id)?,
             // Done, readable and confirmed are three facts (YN-208): the task's
             // status above, its result and deliverables here, the request's

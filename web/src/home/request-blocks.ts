@@ -595,13 +595,13 @@ function evidenceOf(request: ProjectRequest, rows: readonly TaskRow[]): BlockEvi
 
 /**
  * Whether the progress was written before later facts Core knows (R-38 §2.5): PRs merged, results reported, tasks
- * ended and the user's follow-ups after the newest card it was read from, at most three kinds; `expired` when that
- * card is a status past its validity. None without a bar: a task's own progress carries no time to compare.
+ * ended and the user's follow-ups after it was written, at most three kinds. `written` is when: for a bar, the newest
+ * card it was read from, `expired` when such a card is a status past its validity; for a task's own progress, when
+ * the task's activity says it was written. None when that is not known.
  */
-function staleOf(request: ProjectRequest, rows: readonly TaskRow[], sources: readonly Section[]): BlockStale | null {
-  if (!sources.length) return null;
-  const newest = sources.reduce((a, b) => (time(b.updatedAt) > time(a.updatedAt) ? b : a));
-  const at = time(newest.updatedAt);
+function staleOf(request: ProjectRequest, rows: readonly TaskRow[], written: string | null | undefined, expired: boolean): BlockStale | null {
+  const at = time(written);
+  if (!written || !at) return null;
   const facts: StaleFact[] = [];
   const merged = [...new Set(rows.flatMap((row) => row.prs).filter((pr) => pr.state === "merged" && time(pr.mergedAt) > at).map((pr) => pr.number))];
   if (merged.length) facts.push({ kind: "merged", prs: merged });
@@ -611,8 +611,17 @@ function staleOf(request: ProjectRequest, rows: readonly TaskRow[], sources: rea
   if (followUps) facts.push({ kind: "followUp", count: followUps });
   const kinds = [...new Set(facts.map((fact) => fact.kind))].slice(0, 3);
   const kept = facts.filter((fact) => kinds.includes(fact.kind));
-  const expired = sources.some((section) => !!section.status?.stale);
-  return kept.length || expired ? { at: newest.updatedAt, facts: kept, expired } : null;
+  return kept.length || expired ? { at: written, facts: kept, expired } : null;
+}
+
+/**
+ * The task whose own progress a block shows (R-38 §2.3): of those going on, else of all, the one whose progress was
+ * written last; one with no known time counts as older than any known, ties kept in order.
+ */
+function progressRow(rows: readonly TaskRow[]): TaskRow | undefined {
+  const written = rows.filter((row) => splitLead(row.task.progress)?.head);
+  const pool = written.some(going) ? written.filter(going) : written;
+  return pool.reduce<TaskRow | undefined>((best, row) => (!best || time(row.task.progressAt) > time(best.task.progressAt) ? row : best), undefined);
 }
 
 /** A block's progress parts (R-38 §2): from its own tasks, else (none of its own) those it joined. */
@@ -621,11 +630,8 @@ function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joine
   const bar = barOf(rows);
   const state = stateOf(request, own, joined);
   let now: BlockNow = bar?.now ?? null;
-  if (!now) {
-    const row = rows.find((r) => going(r) && r.task.progress) ?? rows.find((r) => r.task.progress);
-    const head = splitLead(row?.task.progress)?.head;
-    if (row && head) now = { kind: "progress", text: head, task: row.task.id };
-  }
+  const written = bar ? undefined : progressRow(rows);
+  if (!now && written) now = { kind: "progress", text: splitLead(written.task.progress)!.head, task: written.task.id };
   const segments = bar?.now.segments ?? [];
   const newest = bar?.sources.reduce((a, b) => (time(b.updatedAt) > time(a.updatedAt) ? b : a));
   const note = request.notes.at(-1);
@@ -646,7 +652,11 @@ function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joine
         }
       : null,
     evidence: evidenceOf(request, rows),
-    stale: staleOf(request, rows, bar?.sources ?? []),
+    stale: bar
+      ? staleOf(request, rows, newest?.updatedAt, bar.sources.some((section) => !!section.status?.stale))
+      : written
+        ? staleOf(request, rows, written.task.progressAt, false)
+        : null,
   };
 }
 
