@@ -216,22 +216,37 @@ async function run(buildName, dist) {
       return { phase, reads: reads.length, distinctReads: new Set(reads).size, heapUsedMiB: heap.usedSize / 2 ** 20, renderer: await rendererMemory(marker), ...shown };
     };
     const phases = [await measure("opened")];
-    // To the first Turn and back, a screen at a time, each result read as it is shown.
+    // To the first Turn and back, each result read as its Turn is drawn. A
+    // Turn here is some 27,000 px tall and the window draws whole Turns near
+    // the view (ConversationWindow.tsx), so 4,000 px steps skip none.
     const scrollBy = async (direction) => {
-      for (let step = 0; step < 400; step++) {
+      for (let step = 0; step < 1000; step++) {
         const at = await page.evaluate((direction) => {
           const pane = [...document.querySelectorAll("*")].find((el) => el.querySelector?.("[data-window]") && el.scrollHeight > el.clientHeight + 10 && /(auto|scroll)/.test(getComputedStyle(el).overflowY));
           if (!pane) return null;
-          pane.scrollTop += direction * pane.clientHeight * 0.8;
+          pane.scrollTop += direction * 4000;
           return { top: pane.scrollTop, end: pane.scrollHeight - pane.clientHeight };
         }, direction);
         if (!at) throw new Error("no conversation pane");
-        await page.waitForTimeout(250);
+        await page.waitForTimeout(150);
         if (direction < 0 ? at.top <= 0 : at.top >= at.end - 2) break;
       }
     };
     await scrollBy(-1);
-    await page.waitForFunction(() => document.querySelector('.turn-results .interactive-result[data-result-id="r01-1"] .result-content'), null, { timeout: 30_000 });
+    try {
+      await page.waitForFunction(() => document.querySelector('.turn-results .interactive-result[data-result-id="r01-1"] .result-content'), null, { timeout: 30_000 });
+    } catch (error) {
+      const seen = await page.evaluate(() => {
+        const pane = [...document.querySelectorAll("*")].find((el) => el.querySelector?.("[data-window]") && el.scrollHeight > el.clientHeight + 10 && /(auto|scroll)/.test(getComputedStyle(el).overflowY));
+        return {
+          scroll: pane && { top: pane.scrollTop, height: pane.scrollHeight, client: pane.clientHeight },
+          turns: [...document.querySelectorAll("[data-turn-id]")].map((el) => el.dataset.turnId).slice(0, 8),
+          cards: [...document.querySelectorAll(".turn-results > *")].slice(0, 6).map((el) => `${el.className}:${el.dataset.resultId ?? el.dataset.resultState ?? ""}`),
+          first: document.querySelector('.turn-results')?.textContent.slice(0, 200),
+        };
+      });
+      throw new Error(`r01-1 not drawn: ${JSON.stringify(seen)}; reads ${reads.length} (${new Set(reads).size}); errors ${errors.join(" | ")}`);
+    }
     await scrollBy(1);
     await page.waitForTimeout(1_000);
     phases.push(await measure("scrolled"));
