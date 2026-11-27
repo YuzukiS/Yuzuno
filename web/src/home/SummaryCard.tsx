@@ -401,9 +401,7 @@ export const SummaryCard = memo(function SummaryCard({
 
 /**
  * Behind "More actions": Pin and Copy report; on a pinned widget, its size
- * first (Follow Agent, Small, Wide, Large), then Unpin and Copy report. The
- * project's banner offers the same for the card it is the one place of
- * (ProjectNow, R-27).
+ * first (Follow Agent, Small, Wide, Large), then Unpin and Copy report.
  */
 export function MoreActions({
   section,

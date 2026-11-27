@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  askUpFront, authorOf, barCells, blockCounts, blockOfSection, commonTasks, followUpsOf, forYouTodo, isPlaceholder, pageBlocks, projectCardsCount,
+  askUpFront, authorOf, barCells, blockCounts, blockOfSection, commonTasks, followUpsOf, forYouTodo, headChanges, isPlaceholder, pageBlocks,
   projectLine, relatedRequests, splitLead,
 } from "../src/home/request-blocks.ts";
 import { summaryOf } from "../src/home/report/report-model.ts";
@@ -150,7 +150,9 @@ test("R-7's five moments: one block each time, its fact, action and group from C
   assert.deepEqual([asked.title, asked.key, asked.count, asked.task, asked.home], ["desktop-0.7.0：用 v3 脚本重签一次并发布？", "yn-181/sign", 1, "YN-181", null]);
   const shown = page("asked");
   assert.deepEqual(block(shown.blocks, 7).asks.map((s) => s.key), ["yn-181/sign"], "the block holds its task's Ask");
-  assert.equal(askUpFront("yn-181/sign", shown.blocks, shown.project), true, "a jump to it opens nothing");
+  // YN-237 ②: a request's open Ask is in its unfolded block, so a jump to it opens the block; its first look says it.
+  assert.equal(askUpFront("yn-181/sign", shown.blocks, shown.project), false, "a jump to it opens its block");
+  assert.equal(blockOfSection("yn-181/sign", shown.blocks, shown.project), "r7");
   assert.equal(askUpFront("yn-181", shown.blocks, shown.project), false, "a card is no Ask");
   // Answered, it is no longer open: the page keeps it where it was for the visit (ProjectHome), the model says so.
   const replied = page("approved");
@@ -217,7 +219,11 @@ test("an Ask of a task two requests share is in the first one's block once; the 
   assert.deepEqual(r14.asks, [], "not drawn twice");
   assert.deepEqual(r14.askedElsewhere, { home: 12, key: "yn-197/scope", title: "只查 Core 吗？", count: 1 });
   assert.equal(blocks.flatMap((b) => b.asks).filter((s) => s.key === "yn-197/scope").length, 1, "one Ask, one block");
-  assert.equal(askUpFront("yn-197/scope", blocks, project), true);
+  // YN-237 ②: a request's open Ask is in its unfolded block, so a jump to it opens R-12; its first look says it.
+  assert.equal(askUpFront("yn-197/scope", blocks, project), false);
+  assert.equal(blockOfSection("yn-197/scope", blocks, project), "r12");
+  assert.deepEqual(r12.look.ask, { key: "yn-197/scope", title: "只查 Core 吗？", count: 1, home: null });
+  assert.deepEqual(r14.look.ask, { key: "yn-197/scope", title: "只查 Core 吗？", count: 1, home: 12 }, "R-14's points to R-12");
 });
 
 test("two tasks, two deliverables, the newest result first; a card written since outranks the result (R-19)", () => {
@@ -273,7 +279,8 @@ test("the facts of the design's §3.2 table, row by row", () => {
   assert.deepEqual([asked.fact.kind, asked.fact.title, asked.fact.count, asked.action, asked.group], ["ask", "要哪个？", 2, null, "needs"]);
   assert.deepEqual(asked.asks.map((s) => s.key), ["yn-1/ask", "yn-1/more"], "each Ask, in the order they were put");
   assert.equal(blockOfSection("yn-1/more", [asked], null), "r1");
-  assert.equal(askUpFront("yn-1/more", [asked], null), true, "a jump to an Ask lands on it in the first look");
+  assert.equal(askUpFront("yn-1/more", [asked], null), false, "a jump to an Ask opens its block and lands on it (YN-237 ②)");
+  assert.deepEqual(asked.look.ask, { key: "yn-1/ask", title: "要哪个？", count: 2, home: null }, "the first look's Needs you line");
   // A newer version of the first Ask moves neither: they stay in the order they were put.
   const rewritten = { ...open, version: 2, updatedAt: at(1) };
   assert.deepEqual(one(request(1, 10, "doing", [routed(card(8), "YN-1", "doing", x207)]), [card(8), later, rewritten]).asks.map((s) => s.key),
@@ -350,9 +357,10 @@ test("a task's card and Ask kept live and in history count once, the live one fi
   assert.equal(blocks[0].unread, true, "changed since seen");
 });
 
-// R-27 §3.1: the card the project's page leads with. Only a lead's cards of no task; the newest status, stale or not,
-// else the newest report; the first of two written at once; any member's when the project names no leads.
-test("the banner's card: a lead's newest status of no task, stale or not, else its newest report", () => {
+// R-27 §3.1, YN-237 ①: the lead's one line across requests in the Project's head. Only a lead's cards of no task; the
+// newest status, stale or not; never a report, which is a result, a card of its own under Other; the first of two
+// written at once; any member's when the project names no leads.
+test("the head's line: a lead's newest status of no task, stale or not; a report is no line", () => {
   ids = 2000;
   const older = section("week", "status", "This week", 1, 30, lead, { status: status(30) });
   const stale = section("development", "status", "开发状态", 1, 10, lead, { status: status(10, true) });
@@ -361,7 +369,7 @@ test("the banner's card: a lead's newest status of no task, stale or not, else i
   const newer = section("summary", "report", "周报", 1, 0, lead);
   assert.equal(projectLine([older, stale, bound, other, newer], ["lead"])?.key, "development", "a status before a report; stale, still it");
   assert.equal(projectLine([older, bound, other, newer], ["lead"])?.key, "week");
-  assert.equal(projectLine([bound, other, newer], ["lead"])?.key, "summary", "no status of a lead's: its newest report");
+  assert.equal(projectLine([bound, other, newer], ["lead"]), null, "no status of a lead's: no line; its report is a card");
   assert.equal(projectLine([bound, newer], ["lead2"]), null, "nothing a lead wrote");
   assert.equal(projectLine([other, older], null)?.key, "notes", "no leads named: any member's, the newest");
   const twin = section("twin", "status", "同时写的", 1, 30, lead, { status: status(30) });
@@ -417,18 +425,76 @@ test("what the user is asked to do: only the Checklist the author names forYou, 
   assert.equal(forYouTodo(section("x", "status", "No body", 1, 1, lead)), null);
 });
 
-// R-27 §3.6: the group holds the Project's cards, the banner's among them, and its Asks answered before this visit;
-// with only the banner's card, no group: the banner is that card's one place (the lead's call, seq 12072).
-test("the Project cards group's count: its cards and answered Asks, none when only the banner's card is there", () => {
-  ids = 2100;
-  const dev = section("development", "status", "开发状态", 1, 5, lead, { status: status(5) });
-  const notes = section("notes", "report", "Notes", 1, 9, lead);
-  const block = (sections) => ({ kind: "project", key: "project", sections, asks: [], unread: false, last: 0 });
-  assert.equal(projectCardsCount(block([dev, notes]), 0, dev), 2, "both: the banner's card is in the group too");
-  assert.equal(projectCardsCount(block([dev]), 0, dev), 0, "only the banner's: no group");
-  assert.equal(projectCardsCount(block([dev]), 1, dev), 2, "and an answered Ask: a group of both");
-  assert.equal(projectCardsCount(block([dev]), 0, null), 1, "no banner: every card is the group's");
-  assert.equal(projectCardsCount(null, 0, null), 0);
+// YN-237 ②: a request's first look, from Core's facts and its authors' own first sentences: what goes on now (its
+// tasks' newest live status or own progress, as of when), its own open Ask, and its newest result.
+test("YN-237 the first look: now from the newest status or progress, the open Ask, the newest report or answer", () => {
+  const working = block(page("working").blocks, 7);
+  assert.deepEqual([working.look.now.kind, working.look.now.text, working.look.now.at, working.look.now.task],
+    ["status", "正在用 v3 脚本重签：3/5 个文件已签", at(2), "YN-181"], "its card's title, as of its asOf");
+  assert.equal(working.look.ask, null);
+  assert.equal(working.look.result, null, "nothing delivered yet");
+  const asked = block(page("asked").blocks, 7);
+  assert.deepEqual(asked.look.ask, { key: "yn-181/sign", title: "desktop-0.7.0：用 v3 脚本重签一次并发布？", count: 1, home: null });
+  const result = block(page("result").blocks, 7);
+  assert.deepEqual([result.look.result.task, result.look.result.text, result.look.result.at, result.look.result.section?.key, result.look.result.item],
+    ["YN-181", "R-7 · Mac 桌面版 0.7.0 已发布", at(6), "yn-181", null], "the delivered report, opened from its line");
+  assert.equal(result.look.now.kind, "fact", "its task ended: no status or progress says what goes on now");
+  // R-19: YN-207 goes on (its slices status is now); its PR came after YN-205's report, but the report is what is read.
+  const r19 = block(page("working").blocks, 19);
+  assert.deepEqual([r19.look.now.kind, r19.look.now.text], ["status", "两个切片已写出，第一片正在补兼容性修复"]);
+  assert.deepEqual([r19.look.result.task, r19.look.result.section?.key], ["YN-205", "yn-205"]);
+  // A report's line is its lead's first sentence when it has one.
+  ids = 2200;
+  const written = section("yn-50", "report", "R-50 · 设计意见", 1, 3, lead, {
+    card: binding("YN-50", "done", null),
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", size: "wide" } }, children: ["lead"] },
+      lead: { type: "Markdown", props: { text: "**请求是看进度的唯一入口。** 项目顶部只放跨请求的近况。" } },
+    } },
+  });
+  const r50 = request(50, 30, "ended", [routed(written, "YN-50", "done", null, [report("yn-50", 1, written.id), pr(1146)], 3)]);
+  assert.equal(block(pageBlocks([r50], [written]).blocks, 50).look.result.text, "请求是看进度的唯一入口。");
+  // An answer delivered, and no report: its words are the result.
+  const answered = request(51, 30, "ended", [routed(null, "YN-51", "done", null,
+    [{ kind: "answer", title: null, note: null, text: "不用改：已在 core.40 里。" }], 2)]);
+  assert.deepEqual([block(pageBlocks([answered], []).blocks, 51).look.result.text, block(pageBlocks([answered], []).blocks, 51).look.result.item.kind],
+    ["不用改：已在 core.40 里。", "answer"]);
+});
+
+test("YN-237 the now line: a task's own progress when newer than its status, and Core's later facts after it", () => {
+  ids = 2300;
+  const card = section("yn-60", "status", "开工", 2, 50, lead, { status: status(50), card: binding("YN-60", "doing", x227) });
+  const routedCard = { ...routed(card, "YN-60", "doing", x227), task: { id: "YN-60", status: "doing", archived: false,
+    progress: "S1 已合入；S2 开发中。之后再测。", progressAt: at(20), blocker: null },
+    prs: { items: [{ number: 9, title: "#9", url: "https://example.com/pull/9", repository: "o/r", state: "merged", mergedAt: at(5), installed: null }] } };
+  const r60 = request(60, 100, "doing", [routedCard], { replies: [{ n: 1, text: "进度？", textBlocks: null, images: [], files: [], at: at(10), messageId: "f1",
+    deliveredTo: [{ agentId: "lead", delivery: "accepted" }] }] });
+  const look = block(pageBlocks([r60], [card]).blocks, 60).look;
+  assert.deepEqual([look.now.kind, look.now.text, look.now.at], ["progress", "S1 已合入；S2 开发中。", at(20)]);
+  assert.deepEqual(look.later, [{ kind: "merged", prs: [9] }, { kind: "followUp", count: 1 }], "what Core knows came after it");
+});
+
+// YN-237 ①: a report a request's task delivered is that request's, never the Project's own card too; the head lists
+// each request that changed since the user last read it, once, by what it says first.
+test("YN-237 a delivered report leaves the Project's own cards, and the head lists what changed per request", () => {
+  ids = 2400;
+  const overview = section("development", "status", "项目进度", 3, 20, lead, { status: status(20) });
+  // The lead's report of a request's outcome, bound to no task, named as the task's deliverable.
+  const outcome = section("yn-235", "report", "R-47 · 先试行合 PR 规则", 2, 30, lead);
+  const exec = section("yn-236", "status", "YN-236 进展", 1, 40, lead, { status: status(40), card: binding("YN-236", "doing", x227) });
+  const r47 = request(47, 300, "doing", [routed(exec, "YN-236", "doing", x227, [report("yn-235", 2, outcome.id)], 30)]);
+  const { blocks, project } = pageBlocks([r47], [overview, outcome, exec]);
+  assert.deepEqual(project.sections.map((s) => s.key), ["development"], "the report is R-47's, not the Project's");
+  assert.equal(block(blocks, 47).look.result.section?.key, "yn-235");
+  assert.equal(blockOfSection("yn-235", blocks, project), "r47", "a jump to it opens R-47");
+  assert.equal(projectLine(project.sections, ["lead"]).key, "development");
+  // Changed since the user last read: R-47's report, unread; a request with an open Ask says that first.
+  assert.deepEqual(headChanges(blocks), [{ n: 47, kind: "result", text: "R-47 · 先试行合 PR 规则" }]);
+  const question = section("yn-236/pick", "ask", "选一个", 1, 2, lead, { ask: ask("先做哪个？", "open"), card: binding("YN-236", "doing", x227) });
+  assert.deepEqual(headChanges(pageBlocks([r47], [overview, outcome, exec, question]).blocks), [{ n: 47, kind: "ask", text: "先做哪个？" }]);
+  // Read since: nothing changed.
+  const seen = (s) => ({ ...s, seen: { version: s.version, at: at(1) } });
+  assert.deepEqual(headChanges(pageBlocks([r47], [overview, seen(outcome), seen(exec)]).blocks), []);
 });
 
 // R-38: a request's status label, its bar of outcomes, its one next step, and what its evidence counts.
@@ -489,8 +555,9 @@ test("R-38 a request whose design is final and whose implementation goes on: in 
     return block(pageBlocks([req], [marked]).blocks, 38).now.segments[0];
   };
   const mixed = facts([pull(1121, true), pull(1124, null, "draft")]);
-  assert.deepEqual([mixed.state, mixed.facts.map((f) => [f.number, f.kind, f.pr?.state])], ["done", [[1121, "linked", "merged"], [1124, "linked", "draft"]]],
-    "a merged PR and a draft: neither merged nor usable as a whole");
+  // YN-237 ③: the stages follow known evidence: marked done, but a PR it names is a draft, so it is in progress.
+  assert.deepEqual([mixed.state, mixed.facts.map((f) => [f.number, f.kind, f.pr?.state])], ["doing", [[1121, "linked", "merged"], [1124, "linked", "draft"]]],
+    "a merged PR and a draft: not done until the draft merges");
   const missing = facts([pull(1121, true)]);
   assert.deepEqual([missing.state, missing.facts.map((f) => [f.number, f.kind])], ["done", [[1121, "linked"], [1124, "unlinked"]]], "a PR its task does not link");
   const twice = facts([pull(1121, true), pull(1121, true, "merged", "o/other")], [R38_STEPS[0]]);
@@ -499,6 +566,36 @@ test("R-38 a request whose design is final and whose implementation goes on: in 
   const ended = request(38, 300, "ended", [withTask(routed(card, "YN-227", "done", null), {})]);
   const settled = block(pageBlocks([ended], [card]).blocks, 38);
   assert.deepEqual([settled.state, settled.next, settled.group], ["accept", { kind: "accept" }, "needs"]);
+});
+
+// YN-237 ③: the bar's stages follow what Core knows of the PRs a step names, whatever its author marked; with no Plan
+// at all, Core draws one from its tasks and PRs.
+test("YN-237 a step's PRs say its stage; with no Plan, Core draws the bar from its tasks and PRs", () => {
+  ids = 2500;
+  const steps = [{ id: "a", text: "S1", state: "todo", prs: [1201] }, { id: "b", text: "S2", state: "doing", prs: [1202] },
+    { id: "c", text: "S3", state: "done", prs: [1203] }, { id: "d", text: "S4", state: "blocked", prs: [1204] }];
+  const card = planCard("yn-240", "YN-240", steps, 3);
+  const r = request(70, 300, "doing", [withTask(routed(card, "YN-240", "doing", x227), {
+    prs: [pull(1201, true), pull(1202, false), pull(1203, null, "open"), pull(1204, null, "draft")] })]);
+  const now = block(pageBlocks([r], [card]).blocks, 70).now;
+  assert.deepEqual(now.segments.map((s) => s.state), ["available", "merged", "doing", "blocked"],
+    "merged and installed, merged, open (marked done), a draft of a blocked step");
+  assert.equal(block(pageBlocks([r], [card]).blocks, 70).track, null, "a Plan names its outcomes: no second bar");
+  // No Plan: a segment per PR a task links (closed ones left out), one per task linking none, by its own record.
+  const one = section("yn-241", "status", "YN-241", 1, 4, lead, { status: status(4), card: binding("YN-241", "doing", x227) });
+  const two = section("yn-242", "status", "YN-242", 1, 4, lead, { status: status(4), card: binding("YN-242", "doing", x227) });
+  const plain = request(71, 300, "doing", [
+    withTask(routed(one, "YN-241", "doing", x227), { prs: [pull(1301, true), pull(1302, null, "open"), pull(1303, null, "closed")] }),
+    { ...withTask(routed(two, "YN-242", "doing", x227), { blocker: "等 core.41" }) },
+  ]);
+  const b = block(pageBlocks([plain], [one, two]).blocks, 71);
+  assert.equal(b.now, null, "no Plan and no progress of its own: no R-38 line, only Core's bar");
+  assert.deepEqual(b.track.segments.map((s) => [s.task, s.state, s.name]), [
+    ["YN-241", "available", "YN-241 · #1301 [YN-227] #1301"], ["YN-241", "doing", "YN-241 · #1302 [YN-227] #1302"], ["YN-242", "blocked", "YN-242"]]);
+  assert.deepEqual([b.track.done, b.track.total, b.track.available], [1, 3, 1]);
+  // One task and one PR: the line says as much as a bar would.
+  const single = request(72, 300, "doing", [withTask(routed(one, "YN-241", "doing", x227), { prs: [pull(1301, true)] })]);
+  assert.equal(block(pageBlocks([single], [one]).blocks, 72).track, null);
 });
 
 test("R-38 the progress card may be an Ask (R-31); without a Plan, the task's own progress, its first sentence", () => {

@@ -256,6 +256,13 @@ export function ProjectTalk({
     const lowest = Math.min(...newest.map((r) => r.n));
     return [...newest, ...(older?.requests.filter((r) => r.n < lowest) ?? [])];
   }, [page, older]);
+  // The older requests Core keeps beside the first page (YN-237: those going on, or that a live card is bound to):
+  // drawn as blocks, each in its group, but not in the conversation, which pages as it did; read on their own page,
+  // they are that page's.
+  const withKept = useMemo(() => {
+    const listed = new Set(requests.map((r) => r.n));
+    return [...requests, ...(page?.kept ?? []).filter((r) => !listed.has(r.n))];
+  }, [requests, page]);
   const hasMore = older ? older.hasMore : !!page?.hasMore;
   const [readingOlder, setReadingOlder] = useState(false);
   /** Reads the page of requests before those read; `onFailed` runs, if it fails, before reading is said to be over. */
@@ -286,9 +293,9 @@ export function ProjectTalk({
   // Once read: the page waits for them to know which block holds a card it is asked to show. A read that fails
   // leaves it none to show (its error is under the field).
   useEffect(() => {
-    if (page) onRequests?.(requests, true);
+    if (page) onRequests?.(withKept, true);
     else if (loadError) onRequests?.([], false);
-  }, [page, loadError, requests, onRequests]);
+  }, [page, loadError, withKept, onRequests]);
   useEffect(() => {
     if (page) onInstalled?.({ release: page.installedRelease ?? null, mergedAfter: page.mergedAfterInstalled ?? null });
   }, [page, onInstalled]);

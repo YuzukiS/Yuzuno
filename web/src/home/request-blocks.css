@@ -1099,3 +1099,231 @@
 .request-thread-tag[data-tag="link"] {
   border-style: dashed;
 }
+
+/* YN-237 ②: folded, a request is its head and four lines (now, needs you, result, follow-up), each with its one step
+   on the right; unfolded, those lines give way to its body (the sketch's `.req.open .req-sum{display:none}`). The
+   action and the foot keep their places under them. */
+.request-block {
+  grid-template-areas:
+    "head head"
+    "look look"
+    "act act"
+    "body body"
+    "foot foot";
+}
+.request-block .request-block-act {
+  justify-self: end;
+  padding: 0 14px 8px;
+}
+.request-look {
+  grid-area: look;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 14px 10px;
+}
+.request-look-line {
+  display: grid;
+  grid-template-columns: 4.6em minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+}
+.request-look-label {
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.request-look-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  min-width: 0;
+}
+.request-look-said {
+  min-width: 0;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.45;
+  /* One line folded: the whole is a step away. */
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.request-look-text .request-block-fact-text {
+  min-width: 0;
+}
+.request-look-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+/* Past its validity, or a later fact after it: what it says may be out of date, said by its tone, not a card. */
+.request-look-line[data-dim] .request-look-said {
+  color: var(--home-ink-2);
+}
+.request-look-later {
+  color: var(--home-attention-ink);
+}
+/* "Needs you": the attention colour, the one solid mark of a to-do (R-38 §2.7). */
+.request-look-line[data-look="ask"] .request-look-label,
+.request-look-line[data-look="ask"] .request-look-step {
+  color: var(--home-attention-ink);
+  font-weight: 600;
+}
+.request-look-line[data-look="ask"] .request-look-step {
+  padding: 1px 8px;
+  border: 1px solid var(--home-attention);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--home-attention) 14%, transparent);
+}
+.request-look-line[data-look="result"] .request-look-label {
+  color: var(--home-new);
+}
+.request-look-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 1px 2px;
+  border: 0;
+  background: none;
+  color: var(--home-ink-2);
+  font: inherit;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  white-space: nowrap;
+  cursor: pointer;
+}
+.request-look-step:hover {
+  color: var(--ink);
+}
+.request-look-step:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+/* Replied and delivered are two facts (the user's R-50): each its own quiet tag. */
+.request-look-tag {
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--home-soft);
+}
+.request-look-tag[data-state="answered"] {
+  color: var(--home-new);
+}
+.request-look-tag[data-state="waiting"],
+.request-look-tag[data-state="unsent"] {
+  color: var(--home-attention-ink);
+}
+.request-look-tag[data-state="undelivered"] {
+  color: var(--home-ink-2);
+}
+/* Unfolded: the now, the Asks, the result's card and the follow-ups, one under another. The parts that were the folded
+   block's own grid areas (asks, fact, now, follow, delivered) are plain rows here: a name the grid does not have would
+   make an implicit track and lay one part over another. */
+.request-block-body :is(.request-block-view, .request-opened, .request-block-details) > * {
+  grid-area: auto;
+  min-width: 0;
+}
+.request-opened {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.request-opened > .request-block-fact,
+.request-opened > .request-block-asks {
+  padding: 0;
+}
+.request-opened > .request-follow {
+  margin: 0;
+}
+.request-block-view > .request-block-now {
+  padding: 0;
+}
+.request-block-view > .request-details-toggle {
+  width: auto;
+  justify-self: start;
+  padding: 4px 0;
+  border-top: 0;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.request-block-view {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+/* Details (YN-237 ②): one level, each thing one line. */
+.request-block-details {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 4px;
+  border-top: 1px dashed var(--line);
+}
+.request-block-details[hidden] {
+  display: none;
+}
+.request-task-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+  margin: 0;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.request-task-line:focus {
+  outline: none;
+}
+.request-task-id {
+  color: var(--home-ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.request-task-title {
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.request-task-meta {
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.request-task-earlier {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0 0 0 14px;
+  list-style: none;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.request-details-decisions {
+  display: grid;
+  gap: 4px;
+}
+@media (max-width: 640px) {
+  /* A phone: the label above what it says, the step on the same line as the label. */
+  .request-look-line {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "label step"
+      "text text";
+  }
+  .request-look-label {
+    grid-area: label;
+  }
+  .request-look-text {
+    grid-area: text;
+  }
+  .request-look-line > .request-look-step {
+    grid-area: step;
+  }
+  .request-block .request-block-act {
+    justify-self: stretch;
+  }
+}

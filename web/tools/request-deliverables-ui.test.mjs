@@ -166,9 +166,9 @@ function mount({ lang = "en" } = {}) {
   // A request's block; what one of its tasks delivered, under the block's fact; that task's row, in the block opened.
   const cardOf = (n) => document.querySelector(`[data-request-block="${n}"]`);
   const delivered = (n, task) => [...(cardOf(n)?.querySelectorAll(`.request-block-delivered > li[data-task="${task}"] .request-deliverable`) ?? [])];
-  // R-38: what it delivered is the block's evidence, folded under its line: opened, then drawn.
+  // YN-237 ②: what it delivered is under its Details, in the block opened: opened, then drawn.
   const evidence = async (n) => {
-    cardOf(n)?.querySelector('.request-block-more[data-evidence][aria-expanded="false"]')?.click();
+    cardOf(n)?.querySelector('.request-block-foot > .request-block-more[data-view="cards"][aria-expanded="false"]')?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
   };
   const lines = (n, task) => (unfoldBlocks(document), cardOf(n)?.querySelector(`.request-task[data-task="${task}"]`) ?? null);
@@ -243,7 +243,8 @@ test("an ended card with nothing named says why and opens its task; an older Cor
   assert.equal(why("YN-84"), "Its result names nothing to open");
   assert.equal(why("YN-85"), "Ended with no result");
   assert.equal(why("YN-86"), "Its result names nothing to open", "a cleared list");
-  const openTask = [...page.lines(8, "YN-84").querySelectorAll(".request-deliverables-none button")].find((b) => b.textContent === "Open task");
+  // Its task opens from its line under Details (YN-237 ②), beside why it delivered nothing.
+  const openTask = [...page.lines(8, "YN-84").querySelectorAll(".request-task-line button")].find((b) => b.textContent === "Open task");
   openTask.click();
   assert.deepEqual(plain(page.window.tasks), ["YN-84"]);
   const old = page.cardOf(7);

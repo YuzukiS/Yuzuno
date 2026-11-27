@@ -21,7 +21,6 @@ import { askKey, HomeJumps, nextAsk, scrollWithinHome, waitingAsks } from "./Hom
 import { RefreshHome } from "./home-tools";
 import { History30, ProjectFacts, RepoBlock } from "./HomePanel";
 import { ProjectTalk, type InstalledFacts, type TalkArrival, type TalkBusy, type TalkCommand, type TalkOlder } from "./ProjectTalk";
-import { InstalledLine } from "./RequestProgress";
 import { savedView, saveView, type TalkView } from "./project-talk";
 import type { ProjectRequest } from "./project-talk-api";
 import { ProjectTalkLink, type TalkLink } from "./talk-link";
@@ -29,10 +28,11 @@ import { talkText } from "./talk-text";
 import { openTask } from "./CardResponsible";
 import { KeptCardReplies, referableHistory } from "./CardReply";
 import {
-  askUpFront, blockCounts, blockOfSection, openAsk, pageBlocks, projectCardsCount, projectLine, type BlockAction, type BlockGroup, type RequestBlock, commonTasks, relatedRequests,
+  askUpFront, blockCounts, blockOfSection, headChanges, openAsk, pageBlocks, projectLine, type BlockAction, type BlockGroup, type RequestBlock, commonTasks,
+  relatedRequests,
 } from "./request-blocks";
-import { blockText, ProjectAsks, ProjectCards, RequestBlockView, useAsksUpFront, type BlockCommon, type BlockView, type ThreadFocus } from "./RequestBlocks";
-import { ProjectNow } from "./ProjectNow";
+import { blockText, ProjectAsks, RequestBlockView, useAsksUpFront, type BlockCommon, type BlockView, type ThreadFocus } from "./RequestBlocks";
+import { ProjectHead } from "./ProjectHead";
 import type { OpenDeliveredReport } from "./DeliverableLine";
 import { projectUnseen } from "./unseen";
 import type { NeedsYouItem, ProjectPanel, Section } from "./types";
@@ -204,8 +204,8 @@ export function ProjectHome({
   // Requests only (R-27 §3.7): the Project's own Asks are counted on their own, its cards not at all.
   const counts = blockCounts(blocks);
   const projectAsks = projectBlock?.asks ?? [];
-  // With no request on the page, the Project's cards are all of it: their group starts open, as its cards were. A
-  // block the user opened or closed, or a jump opened, stays as it was left.
+  // With no request on the page, the Project's cards are all of it: Other starts open, as its cards were. A block the
+  // user opened or closed, or a jump opened, stays as it was left.
   const alone = talkRequests !== null && blocks.length === 0;
   const [chosen, setChosen] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const isOpen = (key: string) => chosen.get(key) ?? (key === "project" && alone);
@@ -232,10 +232,15 @@ export function ProjectHome({
     choose(key, !isOpen(key));
   };
   const editorIds = panel?.contentEditors?.editorAgentIds ?? null;
-  // Where the project stands (R-27): the card the page leads with, and what the Project cards group holds beside it;
-  // nothing there but that card, no group: the banner is the card's one place, with its own actions (ProjectNow).
-  const line = useMemo(() => (projectBlock ? projectLine(projectBlock.sections, editorIds) : null), [projectBlock, editorIds]);
-  const cardsCount = projectCardsCount(projectBlock, projectAsks.filter((ask) => !upFront(ask)).length, line);
+  // The Project's head (YN-237 ①): the lead's one line across requests, and "Other", the Project's cards of no request
+  // besides it with its Asks answered before this visit; what changed in each request since the user last read it.
+  // Of the leads' own sections only: the team's (a member no longer a lead) are no line across requests.
+  const line = useMemo(() => {
+    const leads = new Set(sections.map((s) => s.key));
+    return projectBlock ? projectLine(projectBlock.sections.filter((s) => leads.has(s.key)), editorIds) : null;
+  }, [projectBlock, editorIds, sections]);
+  const others = [...(projectBlock?.sections ?? []).filter((section) => section.key !== line?.key), ...projectAsks.filter((ask) => !upFront(ask))];
+  const changes = useMemo(() => headChanges(blocks), [blocks]);
   const executors = needsYou.filter((item) => item.kind === "executor");
   const pending = panel?.pending ?? [];
   // What needs the user (§3.4): the blocks in Needs you, the approvals, the executors' matters and the Project's
@@ -312,24 +317,28 @@ export function ProjectHome({
    * in its block's first look (W5): the jump lands on it and opens nothing.
    */
   function showSection(key: string, keepFolded = false) {
-    // The banner's card with no group to hold it is the banner: the caller lands there by its id (R-27 §3.8).
-    if (line?.key === key && cardsCount === 0) return false;
     const block = blockOfSection(key, blocks, projectBlock);
     if (!block) return false;
     if (view !== "requests") setView("requests");
-    // A card of a request's task is in its block's cards view (R-45 §3.4).
-    if (!askUpFront(key, blocks, projectBlock)) {
-      if (block === "project") openBlock(block);
-      else showView(block, "cards");
-    }
+    // A card or an Ask of a request's task is in its unfolded block (R-45 §3.4, YN-237 ②); the Project's cards are
+    // under the head's "Other", opened; the lead's card is its line there.
+    if (block === "project") {
+      if (key !== line?.key) openBlock(block);
+    } else if (!askUpFront(key, blocks, projectBlock)) showView(block, "cards");
     setLanding((was) => ({ key, block, seq: (was?.seq ?? 0) + 1, keepFolded }));
     return true;
   }
-  /** The banner's "Project cards N": the requests shown and the Project cards group opened, at its top (R-27 §3.8). */
-  function showProjectCards() {
+  /** The head's count of a group (YN-237 ①): the requests shown, that group at the top, Done opened. */
+  function showGroup(group: BlockGroup) {
     if (view !== "requests") setView("requests");
-    openBlock("project");
-    setLanding((was) => ({ key: null, block: "project", seq: (was?.seq ?? 0) + 1 }));
+    requestAnimationFrame(() => {
+      const element = root.current?.querySelector<HTMLElement>(`.request-group[data-group="${group}"]`);
+      if (!element) return;
+      if (element instanceof HTMLDetailsElement) element.open = true;
+      scrollWithinHome(element, "start", !reducedMotion());
+      // Tab goes on from the group: its summary (Done), else its first request's title.
+      element.querySelector<HTMLElement>("summary.request-group-title, .request-block-title")?.focus({ preventScroll: true });
+    });
   }
   /** Shows request `n`'s block, opened at its cards, at the top of the page. */
   function showBlock(n: number) {
@@ -537,6 +546,7 @@ export function ProjectHome({
       resendingFollowUps={busy?.followUps.get(block.request.n)}
       onAction={blockAction}
       onShowBlock={showBlock}
+      onDecide={(key) => showSection(key)}
       busy={!!busy && (busy.confirming.has(block.request.n) || busy.resending.has(block.request.n))}
       error={busy?.errors.has(block.request.n) ? tt.confirmFailed(busy.errors.get(block.request.n)!) : undefined}
       common={common}
@@ -607,9 +617,9 @@ export function ProjectHome({
           {!readOnly && <RefreshHome busy={refreshing} onRefresh={onRefresh} />}
         </span>
       </header>
-      {line && <ProjectNow section={line} more={cardsCount} onMore={showProjectCards} common={common}
-        related={relatedRequests(line, blocks)} onShowBlock={showBlock} />}
-      {installed?.release && <InstalledLine release={installed.release} mergedAfter={installed.mergedAfter} />}
+      <ProjectHead line={line} others={others} installed={installed} counts={counts} changes={changes}
+        related={line ? relatedRequests(line, blocks) : []} onShowBlock={showBlock} onGroup={showGroup}
+        othersOpen={isOpen("project")} onOthers={(open) => choose("project", open)} common={common} />
       {/* The page's one bar (R-36): the jumps, then Requests or Conversation beside them, stuck together at the top of
           Home's scroller as R-25's tabs were; its measured height is what a jump keeps clear (HomeJumps.tsx). */}
       <HomeJumps
@@ -696,9 +706,6 @@ export function ProjectHome({
                 {groups.doing.map(blockView)}
               </section>
             ) : null}
-            {projectBlock && (
-              <ProjectCards block={projectBlock} count={cardsCount} open={isOpen("project")} onToggle={(open) => choose("project", open)} common={common} />
-            )}
             {(groups.done.length > 0 || restOfHistory.length > 0) && (
               <details className="request-group request-done" data-group="done">
                 <summary className="request-group-title">
