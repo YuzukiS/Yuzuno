@@ -877,32 +877,75 @@ pub(crate) async fn confirm(ws: &Arc<Workspace>, project: &str, n: i64, input: C
 
 /// `GET /api/projects/{id}/requests?before=&limit=`: the Project's requests,
 /// newest first, `limit` (at most 50, 20 by default) of those numbered
-/// below `before`, against the release this Core runs (`page_for`).
+/// below `before`, against the release this Core runs (`page_for`); the
+/// first page with the older ones it keeps (`kept`).
 pub(crate) fn page(db: &Connection, project: &str, before: Option<i64>, limit: Option<usize>) -> Result<Value> {
     page_for(db, project, before, limit, Installed::current().as_ref())
 }
+
+/// The most requests a page lists (`page_for`), and the most older ones a
+/// first page keeps beside its own (`kept`): a first read views at most
+/// twice as many.
+const PAGE_MAX: usize = 50;
 
 /// `page` against `installed` (R-38 §2.6): `installedRelease`, the release
 /// this Core runs (null for a source build), and `mergedAfterInstalled`, how
 /// many PRs linked to the Project's tasks are merged and kept as not in it
 /// (null without a release, or while any merged one is not known yet). Only
 /// what Core keeps is read: never the network.
+///
+/// `kept` (YN-237): on the first page (no `before`) with more requests
+/// below it, the older ones still going on or bound to a live card
+/// (`kept_below`), newest first; none on another page. They are not the
+/// page's: `hasMore` and the next page's `before` go by `requests` alone,
+/// so a client that reads only `requests` pages as it always did.
 pub(crate) fn page_for(db: &Connection, project: &str, before: Option<i64>, limit: Option<usize>, installed: Option<&Installed>)
     -> Result<Value> {
     crate::projects::ensure_exists(db, project)?;
-    let limit = limit.unwrap_or(20).clamp(1, 50);
+    let limit = limit.unwrap_or(20).clamp(1, PAGE_MAX);
     let mut rows = db
         .prepare_cached(&format!("SELECT {REQUEST} FROM project_requests WHERE project_id=?1 AND n<?2 ORDER BY n DESC LIMIT ?3"))?
         .query_map(params![project, before.unwrap_or(i64::MAX), limit as i64 + 1], request_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let more = rows.len() > limit;
     rows.truncate(limit);
-    let requests = rows.into_iter().map(|request| view(db, project, request, installed)).collect::<Result<Vec<_>>>()?;
+    let kept = match (before, rows.last()) {
+        (None, Some(lowest)) if more => kept_below(db, project, lowest.n)?,
+        _ => vec![],
+    };
+    let shown = |rows: Vec<Request>| rows.into_iter().map(|request| view(db, project, request, installed)).collect::<Result<Vec<_>>>();
+    let (requests, kept) = (shown(rows)?, shown(kept)?);
     let after = match installed {
         Some(installed) => crate::github::installed::merged_after(db, project, installed)?,
         None => None,
     };
-    Ok(json!({"requests":requests,"hasMore":more,"installedRelease":installed.map(Installed::json),"mergedAfterInstalled":after}))
+    Ok(json!({"requests":requests,"hasMore":more,"kept":kept,"installedRelease":installed.map(Installed::json),"mergedAfterInstalled":after}))
+}
+
+/// The requests numbered below `below` that the first page keeps beside its
+/// own (YN-237: a card shows in its request's block whatever page that
+/// request is on, and a request going on is always read), newest first, at
+/// most PAGE_MAX: each routed to a task that has not ended (done, cancelled
+/// or archived) or that a live section is the card of
+/// (`project_brief::live_card_tasks`, an unresolved Ask outliving its task
+/// among them); or routed nowhere yet and never confirmed, waiting for its
+/// front desk. One that only waits for the user to confirm it, its tasks
+/// ended and its cards gone, stays on its own page.
+fn kept_below(db: &Connection, project: &str, below: i64) -> Result<Vec<Request>> {
+    let bound: Vec<String> = crate::project_brief::live_card_tasks(db, project)?.into_iter().collect();
+    Ok(db
+        .prepare_cached(&format!(
+            "SELECT {REQUEST} FROM project_requests q WHERE q.project_id=?1 AND q.n<?2 AND (
+               EXISTS(SELECT 1 FROM project_routes r JOIN collaboration_tasks t ON t.id=r.task_id
+                 WHERE r.request_id=q.id AND r.state='{done}' AND r.kind IN ('{card}','{existing}')
+                 AND ((COALESCE(json_extract(t.data,'$.status'),'') NOT IN ('done','cancelled') AND json_extract(t.data,'$.archivedAt') IS NULL)
+                   OR t.id IN (SELECT value FROM json_each(?3))))
+               OR (q.confirmed_at IS NULL AND NOT EXISTS(SELECT 1 FROM project_routes r WHERE r.request_id=q.id AND r.state='{done}')))
+             ORDER BY q.n DESC LIMIT ?4",
+            done = routes::DONE, card = routes::CARD, existing = routes::EXISTING,
+        ))?
+        .query_map(params![project, below, serde_json::to_string(&bound)?, PAGE_MAX as i64], request_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// The user's routes: on Core's own port and on the phone entry, as the rest

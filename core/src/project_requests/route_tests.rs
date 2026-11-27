@@ -1021,3 +1021,5 @@ mod route_join_tests;
 mod route_progress_tests;
 #[path = "route_reply_tests.rs"]
 mod route_reply_tests;
+#[path = "route_kept_tests.rs"]
+mod route_kept_tests;

@@ -22,7 +22,7 @@ pub(crate) use cards::{lead_left, task_closed};
 /// What the Project's requests read of cards and write as one (YN-86 S3a-2,
 /// project_requests): a card by its key or identity, who answers for a
 /// task's card, its Asks, and the card project_route puts.
-pub(crate) use cards::{asks_of, bound_card, card_by_identity, card_key, key_used, live_card, responsible_agent, responsible_json, task_ended};
+pub(crate) use cards::{asks_of, bound_card, card_by_identity, card_key, key_used, live_card, live_card_tasks, responsible_agent, responsible_json, task_ended};
 /// A report a task's result names as delivered (YN-208): found by its key
 /// when the result is submitted, read by its identity and version since.
 mod delivered;
