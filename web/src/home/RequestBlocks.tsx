@@ -887,6 +887,7 @@ function TaskLine({ row, common, drawn }: { row: TaskRow; common: BlockCommon; d
   const over = row.task.archived || row.task.status === "done" || row.task.status === "cancelled";
   const open = row.asks.filter((a) => a.ask?.state === "open" && !common.upFront(a));
   const card = row.card && !drawn.has(row.card.key) ? row.card : null;
+  const earlier = row.earlier.filter((section) => !drawn.has(section.key));
   const whole = (section: Section) =>
     section.bodyOmitted ? (
       <HistoryBodyState key={section.key} projectId={common.projectId} section={section} title />
@@ -928,11 +929,12 @@ function TaskLine({ row, common, drawn }: { row: TaskRow; common: BlockCommon; d
       {!row.card && over && !row.nothing && <p className="request-task-none">{t.cardGone}</p>}
       {/* Ended with nothing delivered: why (YN-208). */}
       {row.nothing && <p className="request-deliverables-none"><span>{tt[row.nothing === "cancelled" ? "cancelledNone" : row.nothing]}</span></p>}
-      {/* The task's other statuses and reports from before one task had one card (YN-212 §3.3), folded. */}
-      {row.earlier.length > 0 && (
+      {/* The task's other statuses and reports from before one task had one card (YN-212 §3.3), folded; one drawn above
+          Details (its result) is not again, nor counted. */}
+      {earlier.length > 0 && (
         <details className="request-task-earlier">
-          <summary>{t.earlier(row.earlier.length)}</summary>
-          {row.earlier.filter((section) => !drawn.has(section.key)).map(whole)}
+          <summary>{t.earlier(earlier.length)}</summary>
+          {earlier.map(whole)}
         </details>
       )}
     </section>

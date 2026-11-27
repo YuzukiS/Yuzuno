@@ -11,7 +11,7 @@ import { changedSinceSeen, requestDomId, sectionDomId } from "./brief-layout";
 import { settleWhenLanded } from "../settle";
 import { arriveIn } from "../surface";
 import { inSight, markArrived, whenInSight } from "./request-arrival";
-import { unfoldAround } from "./card-fold";
+import { revealAround, unfoldAround } from "./card-fold";
 import { DeckSizes } from "./card-sizes";
 import { relative } from "./format";
 import { homeText } from "./home-text";
@@ -286,7 +286,8 @@ export function ProjectHome({
   }, []);
   /**
    * Scrolls to `target`, opens the card or fold that holds it, and settles once it has landed. `keepFolded`: the
-   * user folded it while this landing waited, and it stays as they left it (YN-227, the lead's comment 12405).
+   * user folded it while this landing waited, and it stays as they left it (YN-227, the lead's comment 12405); the
+   * request's Details it is under open all the same (revealAround), or there is nothing to land on.
    */
   function jumpTo(target: HTMLElement | null, block: ScrollLogicalPosition = "center", keepFolded = false) {
     if (!target) return;
@@ -296,8 +297,22 @@ export function ProjectHome({
       target.focus({ preventScroll: true });
       settleWhenLanded(target, "data-home-highlight", smooth);
     };
-    if (!keepFolded && unfoldAround(target)) requestAnimationFrame(show);
+    if (keepFolded ? revealAround(target) : unfoldAround(target)) requestAnimationFrame(show);
     else show();
+  }
+  /**
+   * Lands on section `key` (R-45 §3.4, YN-237 ②): its card, by its stable id. An answered Ask of a request's task is
+   * a line under its Details whose card is drawn once the line is opened (YN-223): the Details and the line open, and
+   * the landing is on that card once drawn (review 4324938d).
+   */
+  function landOn(key: string, block: ScrollLogicalPosition = "center", keepFolded = false) {
+    const card = document.getElementById(sectionDomId(id, key));
+    if (card) return jumpTo(card, block, keepFolded);
+    const line = [...(root.current?.querySelectorAll<HTMLElement>("[data-answered]") ?? [])].find((el) => el.dataset.answered === key);
+    if (!line) return;
+    revealAround(line);
+    line.querySelector<HTMLButtonElement>(":scope > .request-task-answered[aria-expanded='false']")?.click();
+    requestAnimationFrame(() => jumpTo(document.getElementById(sectionDomId(id, key)), block, keepFolded));
   }
   // A jump into a block (§3.4): the requests shown, the block opened, then the jump once it is drawn.
   const [landing, setLanding] = useState<{ key: string | null; block: string; seq: number; keepFolded?: boolean } | null>(null);
@@ -305,10 +320,8 @@ export function ProjectHome({
   useEffect(() => {
     if (!landing || landed.current === landing.seq) return;
     landed.current = landing.seq;
-    const target = landing.key
-      ? document.getElementById(sectionDomId(id, landing.key))
-      : root.current?.querySelector<HTMLElement>(`[data-block-key="${landing.block}"]`) ?? null;
-    jumpTo(target, landing.key ? "center" : "start", landing.keepFolded);
+    if (landing.key) landOn(landing.key, "center", landing.keepFolded);
+    else jumpTo(root.current?.querySelector<HTMLElement>(`[data-block-key="${landing.block}"]`) ?? null, "start", landing.keepFolded);
     // Run once the block it opened is drawn.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [landing, chosen, view]);
@@ -446,7 +459,7 @@ export function ProjectHome({
     if (!focus.key) return toTop();
     const keepFolded = foldedWhileLanding.current?.n === focus.n && foldedWhileLanding.current.key === focus.key;
     if (showSection(focus.key, keepFolded)) return;
-    jumpTo(document.getElementById(sectionDomId(id, focus.key)), "center", keepFolded);
+    landOn(focus.key, "center", keepFolded);
     // The page is drawn by the time this runs, its read or its first render; a card in a block waits for the requests.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus, talkRequests]);

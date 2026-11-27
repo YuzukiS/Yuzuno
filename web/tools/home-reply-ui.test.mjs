@@ -734,3 +734,57 @@ test("on a Project's page, requests that could not be read never read as Needs y
     assert.deepEqual(page.errors, []);
   }
 });
+
+// R-50 (YN-237 ②, review 4324938d): what a request keeps under Details — an answered Ask of its task, its second
+// task's card, a task's earlier card — is found by its section's key. Open on Home opens that Details (and no other
+// fold of the block) and lands on the section with the focus; another Open on Home into the same request lands too,
+// after the user folded Details again.
+test("on Home, Open on Home lands under a request's Details: an answered Ask, a second task's card, an earlier card", async (t) => {
+  const responsible = { agentId: "a", name: "Mori", kind: "executor", state: "running" };
+  const bound = (task) => ({ task: { id: task, title: task, status: "doing", archived: false }, responsible });
+  const status = (key, id, at, task) => section(key, id, 2, { kind: "status", updatedAt: at, status: { asOf: at, validFor: 86_400, stale: false },
+    card: bound(task) });
+  const now = status("yn-91", 41, "2026-11-01T14:20:00Z", "YN-91");
+  const second = status("yn-93", 42, "2026-11-01T13:50:00Z", "YN-93");
+  const earlier = status("yn-91/lead", 44, "2026-11-01T12:00:00Z", "YN-91");
+  const answered = section("yn-91/copy", 43, 2, { kind: "ask", title: "Copy tone", card: bound("YN-91"),
+    ask: { question: "Casual copy?", state: "replied", repliedAt: "2026-11-01T14:10:00Z", replyText: "Yes", reply: { freeText: true } } });
+  const routedCard = (s, task) => ({ sectionId: s.id, key: s.key, title: s.title, live: true, task: { id: task, status: "doing", archived: false }, responsible });
+  const r9 = { id: "req-9", n: 9, text: "Words of R-9", textBlocks: null, images: [], files: [], title: "Request 9", createdAt: "2026-11-01T11:00:00Z",
+    frontAgentId: "a", messageId: "m9", delivery: "accepted", replies: [], notes: [], routes: [], state: "doing", lines: [],
+    cards: [routedCard(now, "YN-91"), routedCard(second, "YN-93")], progress: { cards: 2, ended: 0 } };
+  const data = homeData([now, second, earlier, answered]);
+  const page = mount({ respond: (url) => ({ body: url === "/api/home" ? data : /\/api\/projects\/p1\/requests(\?|$)/.test(url)
+    ? { requests: [r9], hasMore: false } : url === "/api/machine-load" ? machine : { repositories: [], links: [] } }) });
+  t.after(page.close);
+  const doc = page.document;
+  const at = (key) => doc.getElementById(`home-section-p1-${key}`);
+  const block = () => doc.querySelector('[data-request-block="9"]');
+  const details = () => block().querySelector(".request-block-details");
+  const earlierFold = () => block().querySelector('.request-task[data-task="YN-91"] > .request-task-earlier');
+  const origin = (key, sectionId, kind, fields = {}) => ({ ...identity(key, 2), sectionId, snapshot: snapshot({ sectionKind: kind, title: `About ${key}`, ...fields }) });
+
+  // The answered Ask: Details and its line open, and the landing is on its card, with the focus.
+  page.window.renderHome({ origin: origin("yn-91/copy", 43, "ask", { question: "Casual copy?", text: "Yes" }), back, n: 1 });
+  await focused(page, () => at("yn-91/copy"), "lands on the answered Ask's card");
+  assert.equal(details().hidden, false, "the Details it is under opened");
+  assert.ok(details().contains(at("yn-91/copy")));
+  assert.equal(block().querySelector('[data-answered="yn-91/copy"] > .request-task-answered').getAttribute("aria-expanded"), "true");
+  assert.equal(earlierFold().open, false, "no other fold of the block opens for it");
+
+  // The user folds Details again; a second Open on Home into the same request lands on its second task's card.
+  block().querySelector(".request-details-toggle").click();
+  await tick(40);
+  assert.equal(details().hidden, true, "folded by the user");
+  page.window.renderHome({ origin: origin("yn-93", 42, "status"), back, n: 2 });
+  await focused(page, () => at("yn-93"), "lands on the second task's card");
+  assert.equal(details().hidden, false);
+  assert.ok(details().contains(at("yn-93")));
+  assert.equal(earlierFold().open, false);
+
+  // A third, on the first task's earlier card: the earlier cards' fold opens with it.
+  page.window.renderHome({ origin: origin("yn-91/lead", 44, "status"), back, n: 3 });
+  await focused(page, () => at("yn-91/lead"), "lands on the earlier card");
+  assert.equal(earlierFold().open, true);
+  assert.deepEqual(page.errors, []);
+});

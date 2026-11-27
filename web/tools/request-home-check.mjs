@@ -13,7 +13,12 @@
 //    follow-up #3 with the focus, Decide (Enter, by keyboard on the desktop) unfolds it at the proposal;
 //  - unfolded: the bar by evidence, what "new" opens, the proposal's three options; choosing "new" posts that choice
 //    alone, and Core's next read shows R-71 opened from it, each request one step from the other;
-//  - an older Core (no kept, from, proposals or proposal): the page draws, R-14 then under Other, with no error.
+//  - an older Core (no kept, from, proposals or proposal): the page draws, R-14 then under Other, with no error;
+//  - one step into Details (review 4324938d): from the lead's conversation, Open on Home (Enter on the desktop, touch on
+//    the phone, then the mouse) lands on what R-60 keeps under Details, found by its section's key: an answered Ask,
+//    its second task's card, an earlier card. Home is drawn anew each time (closed while the conversation shows), so
+//    each lands from Details folded; each in view with the focus, Details opened for it and no other fold. Details
+//    stays folded when the block is only unfolded.
 // Screenshots and a JSON report go to YUZUNO_BROWSER_OUTPUT.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/request-home-check.mjs
 import assert from "node:assert/strict";
@@ -83,6 +88,18 @@ function data({ opened = false, older = false } = {}) {
       reply: { options: [{ id: "new", label: "新建请求并关联" }, { id: "merge", label: "并入 R-60" }, { id: "later", label: "先记下" }], freeText: true },
       ...(older ? {} : { proposal: { request: 60, title: PROPOSAL, text: "每次访问只读一遍阶段 Job，按同一负载测前后。" } }) },
   });
+  // Under R-60's Details: an Ask of its task answered before this visit, its second task's card, an earlier card.
+  const scope = [{ id: "core", label: "先做 Core 那批" }, { id: "desk", label: "先做桌面端" }];
+  const answered60 = section("yn-221/scope", "ask", "先做哪一批？", 1500, exec, summary("两批运行改进里先做哪一批？"), {
+    ask: { question: "两批里先做哪一批？", state: "replied", repliedAt: at(1490), replyText: "先做 Core 那批", reply: { options: scope } },
+    card: bind("YN-221", "运行改进"),
+  });
+  const second60 = section("yn-238", "status", "R-31 · Windows 窗口实测", 200, exec, summary("Windows 下窗口实测排在 #1144 之后。"), {
+    status: { asOf: at(200), validFor: 31_536_000, stale: false }, card: bind("YN-238", "窗口实测"),
+  });
+  const earlier60 = section("yn-221/notes", "status", "R-31 · 早先的范围说明", 2000, exec, summary("先选范围，再分两批做。"), {
+    status: { asOf: at(2000), validFor: 31_536_000, stale: false }, card: bind("YN-221", "运行改进"),
+  });
   const report62 = section("yn-235", "report", "R-47 · 先试行合 PR 规则", 120, lead, summary("**主线 macOS Cargo 构建 33′48″ → 12′46″（2 次观测）。** 满两周复盘。"));
   const status14 = section("yn-197", "status", "Core CPU 调查", 300, lead, summary("现场 74% 的 CPU 用于推进 Jobs；修复在 R-60。"), {
     status: { asOf: at(300), validFor: 31_536_000, stale: false }, card: bind("YN-197", "CPU 调查", "doing", { agentId: "l", name: "Dev Lead", kind: "lead", state: "active" }),
@@ -107,7 +124,7 @@ function data({ opened = false, older = false } = {}) {
   const r60 = request(60, 2900, "选择下一批 Core 与桌面端运行改进", [card(status60, "YN-221", {
     result: { id: "res-221", status: "doing", reportedAt: at(600) },
     deliverables: { resultId: "res-221", reportedAt: at(600), items: [reportItem(report60)] },
-    prs: { items: [pull(1108, "merged", true), pull(1112, "merged", true), pull(1144, "open", null)] } })], {
+    prs: { items: [pull(1108, "merged", true), pull(1112, "merged", true), pull(1144, "open", null)] } }), card(second60, "YN-238")], {
     replies: [{ n: 3, text: "统一按编号保留待回复清单，实现吧", textBlocks: null, images: [], files: [], at: at(90), messageId: "m60-3",
       deliveredTo: [{ agentId: "l", name: "Dev Lead", delivery: "accepted" }] }],
     notes: [{ n: 1, note: "好，交给执行者。", by: desk, at: at(2899), replyTo: null }, { n: 2, note: REPLY3, by: desk, at: at(80), replyTo: [3] }],
@@ -123,11 +140,26 @@ function data({ opened = false, older = false } = {}) {
   const r71 = request(71, 1, PROPOSAL, [], { state: "waiting", text: "每次访问只读一遍阶段 Job，按同一负载测前后。", notes: [], from: link(60) });
   const page = [...(opened ? [r71] : []), r62, r60, ...filler].sort((a, b) => b.n - a.n).slice(0, 20);
   return {
-    sections: [development, upkeep, status60, report60, proposal, report62, status14].filter((s) => !older || s.key !== "r60/split" || true),
+    sections: [development, upkeep, status60, report60, proposal, answered60, second60, earlier60, report62, status14],
     requests: { requests: page, hasMore: true, ...(older ? {} : { kept: [r14] }),
       installedRelease: { releaseId: "core-20261126-abcdef0", version: "core.40", gitSha: "a".repeat(40) }, mergedAfterInstalled: 1 },
   };
 }
+/** The lead's conversation: the user's replies from Home to what R-60 keeps under Details, each with Open on Home. */
+const fromHome = (id, key, kind, title, extra) => ({ id, type: "userMessage", clientId: `c-${id}`, _yuzunoInput: "home",
+  _yuzunoHome: { projectId: "p-dev", key, version: 2, workspaceId: "ws-237", snapshot: { format: 1, projectName: "yuzuno-next", sectionKind: kind,
+    title, question: null, options: null, choice: null, text: null, form: null, ...extra } },
+  content: [{ type: "text", text: `Reply from the user on Home: ${title}` }] });
+const said = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });
+const leadTurns = () => [{ id: "t-l1", status: "completed", items: [
+  fromHome("home-ask", "yn-221/scope", "ask", "先做哪一批？", { question: "两批里先做哪一批？",
+    options: [{ id: "core", label: "先做 Core 那批" }, { id: "desk", label: "先做桌面端" }], choice: { id: "core", label: "先做 Core 那批" } }),
+  said("a1", "好，先做 Core 那批。"),
+  fromHome("home-card", "yn-238", "status", "R-31 · Windows 窗口实测", { text: "窗口实测放在 #1144 之后可以。" }),
+  said("a2", "收到。"),
+  fromHome("home-earlier", "yn-221/notes", "status", "R-31 · 早先的范围说明", { text: "这份范围说明还对吗？" }),
+  said("a3", "还对。"),
+] }];
 const home = (sections) => ({
   generatedAt: at(0), order: ["p-dev"], needsYou: [],
   projects: [{
@@ -202,11 +234,14 @@ async function check(run) {
     if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     if (method !== "GET") {
       if (/^\/api\/agents\/\w+\/review$/.test(path)) return route.fulfill({ json: { ok: true } });
+      // Where an Agent's conversation was read, saved by the app as it is shown.
+      if (method === "PUT" && /^\/api\/agents\/\w+\/reading$/.test(path)) return route.fulfill({ json: { accepted: true } });
       report.posts.push({ run: run.name, method, path, unexpected: true });
       return route.fulfill({ status: 500, json: { error: "not answered by this fixture" } });
     }
     const detail = path.match(/^\/api\/agents\/(\w+)$/);
-    if (detail) return route.fulfill({ json: { agent: agents.find((agent) => agent.id === detail[1]), pending: [], messageReceipts: [], artifacts: [], turns: [] } });
+    if (detail) return route.fulfill({ json: { agent: agents.find((agent) => agent.id === detail[1]), pending: [], messageReceipts: [], artifacts: [],
+      turns: detail[1] === "l" ? leadTurns() : [] } });
     if (path === "/api/projects/p-dev/front-desk") return route.fulfill({ json: { version: 1, agentId: "l", effectiveAgentId: "l" } });
     if (path === "/api/projects/p-dev/requests") {
       if (url.searchParams.get("before")) return route.fulfill({ json: { requests: [], hasMore: false } });
@@ -218,6 +253,7 @@ async function check(run) {
       "/api/machine-load": { at: at(0), cpu: { cores: 16, totalPct: 10, jobsPct: 4, agentsPct: null, otherPct: null },
         memory: { totalMiB: 65536, usedMiB: 16000, availableMiB: 49536, jobsMiB: 2048, agentsMiB: null }, gpus: null, jobs: [] },
       "/api/machine-live": { machines: [] }, "/api/collaboration/github_repositories": { repositories: [], links: [] },
+      "/api/catchup": { items: [], generatedAt: at(0), source: "records", coverage: { fromSeq: 0, toSeq: 0 } },
     }[path];
     if (json) return route.fulfill({ json });
     if (path.startsWith("/api/")) return route.fulfill({ json: {} });
@@ -371,6 +407,7 @@ async function check(run) {
       preview: await text(proposal.locator(".request-proposal-preview")),
       options: await proposal.locator(".home-ask-pick input").evaluateAll((all) => all.map((input) => [input.value, input.closest("label").textContent.trim()])),
       bar: await r60.locator(".request-bar-seg").evaluateAll((all) => all.map((s) => s.dataset.state)),
+      detailsHidden: await r60.locator(".request-block-details").evaluate((el) => el.hidden),
       inView: await proposal.evaluate((el) => {
         const view = document.querySelector(".home-view").getBoundingClientRect();
         const r = el.getBoundingClientRect();
@@ -383,6 +420,7 @@ async function check(run) {
     assert.deepEqual(unfolded.options, [["new", "新建请求并关联"], ["merge", "并入 R-60"], ["later", "先记下"]]);
     assert.deepEqual(unfolded.bar, ["done", "available", "doing", "todo"], "S2's PRs are in the release: usable, by evidence");
     assert.equal(unfolded.inView, true);
+    assert.equal(unfolded.detailsHidden, true, "unfolding the block leaves Details folded");
     assert.deepEqual(unfolded.wider, []);
     await shot("r60-unfolded-proposal", r60);
     pass(run, "Decide unfolds R-60 at its proposal: what new opens, three options, the bar by evidence", { bar: unfolded.bar });
@@ -406,6 +444,74 @@ async function check(run) {
     const r60Top = await block(60).evaluate((el) => el.getBoundingClientRect().top);
     await shot("opened-r71");
     pass(run, "choosing new posts it alone; R-71 opened from it, one step back to R-60", { ...linked, r60Top });
+    assert.deepEqual(await wider(), []);
+
+    // One step into Details (review 4324938d): from the lead's conversation, Open on Home on a reply lands on the
+    // section it answered, found by its key, wherever R-60 keeps it under Details.
+    await page.goto(`http://${HOST}/#/agent?w=ws-237&a=l`);
+    const openOnHome = async (item, how) => {
+      const reply = page.locator(`[data-item-id="${item}"]`);
+      await page.locator(`[data-item-id="${item}"], .app.phone-list .agent-row`).first().waitFor({ timeout: 15_000 });
+      if (!(await reply.count())) await tap(page.locator(".app.phone-list .agent-row", { hasText: "Dev Lead" }).first());
+      await reply.waitFor({ timeout: 15_000 });
+      // Home is closed while the conversation shows: R-60 is drawn anew, its Details folded, on Open on Home.
+      assert.equal(await page.locator("[data-request-block]").count(), 0, "Home is not drawn behind the conversation");
+      const button = reply.locator(".home-reply-action.home");
+      await button.scrollIntoViewIfNeeded();
+      if (how === "keyboard") {
+        await button.focus();
+        await page.keyboard.press("Enter");
+      } else await tap(button);
+    };
+    const landedOn = async (key) => {
+      const id = `home-section-p-dev-${key}`;
+      await page.waitForFunction((id) => document.activeElement?.id === id, id, { timeout: 15_000 });
+      await page.waitForTimeout(800);
+      return page.evaluate((id) => {
+        const target = document.getElementById(id);
+        const view = document.querySelector(".home-view").getBoundingClientRect();
+        const r = target.getBoundingClientRect();
+        const details = target.closest(".request-block-details");
+        // In view: at least half of it, or half of the view where it is taller.
+        const seen = Math.min(r.bottom, view.bottom) - Math.max(r.top, view.top);
+        return {
+          focused: document.activeElement === target,
+          visible: target.checkVisibility() && r.width > 0 && r.height > 0,
+          inView: seen >= Math.min(r.height, view.height) / 2,
+          request: target.closest("[data-request-block]")?.dataset.requestBlock ?? null,
+          detailsOpen: details ? !details.hidden : null,
+          earlierOpen: document.querySelector('[data-request-block="60"] .request-task[data-task="YN-221"] > .request-task-earlier')?.open ?? null,
+          // Its earlier cards, counted as the fold holds them: the result drawn above Details is not one of them.
+          earlier: document.querySelector('[data-request-block="60"] .request-task[data-task="YN-221"] > .request-task-earlier > summary')
+            ?.textContent.trim() ?? null,
+        };
+      }, id);
+    };
+    // Back to the lead's conversation by its link: each reply answered the version Home shows, so no arrival note
+    // (with its way back) is drawn; the jump itself is Open on Home, clicked.
+    const toConversation = () => page.goto(`http://${HOST}/#/agent?w=ws-237&a=l`);
+    // An answered Ask: Enter on the desktop (touch on the phone); Details and its line open, no other fold.
+    await openOnHome("home-ask", run.phone ? "touch" : "keyboard");
+    const toAsk = await landedOn("yn-221/scope");
+    assert.deepEqual(toAsk, { focused: true, visible: true, inView: true, request: "60", detailsOpen: true, earlierOpen: false,
+      earlier: w("Earlier card 1", "更早的卡 1") }, JSON.stringify(toAsk));
+    await shot("details-answered-ask");
+    // Back in the conversation, Open on Home on another reply lands on R-60's second task's card (the mouse).
+    await toConversation();
+    await openOnHome("home-card", run.phone ? "touch" : "mouse");
+    const toCard = await landedOn("yn-238");
+    assert.deepEqual(toCard, { focused: true, visible: true, inView: true, request: "60", detailsOpen: true, earlierOpen: false,
+      earlier: w("Earlier card 1", "更早的卡 1") }, JSON.stringify(toCard));
+    await shot("details-second-task");
+    // And an earlier card of its first task: its fold opens with it.
+    await toConversation();
+    await openOnHome("home-earlier", run.phone ? "touch" : "keyboard");
+    const toEarlier = await landedOn("yn-221/notes");
+    assert.deepEqual(toEarlier, { focused: true, visible: true, inView: true, request: "60", detailsOpen: true, earlierOpen: true,
+      earlier: w("Earlier card 1", "更早的卡 1") }, JSON.stringify(toEarlier));
+    await shot("details-earlier-card");
+    result.facts.details = { toAsk, toCard, toEarlier };
+    pass(run, "Open on Home lands under R-60's Details by key: an answered Ask, its second task's card, an earlier card", { landed: 3 });
     assert.deepEqual(await wider(), []);
   } catch (error) {
     await page.screenshot({ path: join(output, `${run.name}-failed.png`), fullPage: true }).catch(() => {});

@@ -74,6 +74,7 @@ export function FoldButton({
  * card was unfolded: the target is drawn on the next frame.
  */
 export function unfoldAround(target: HTMLElement) {
+  const revealed = revealAround(target);
   for (
     let details = target.parentElement?.closest<HTMLDetailsElement>("details:not([open])");
     details;
@@ -91,5 +92,24 @@ export function unfoldAround(target: HTMLElement) {
   // Coming back to Home shows it closed; only such a jump, or the user, opens it.
   const record = target.querySelector<HTMLButtonElement>(":scope > .home-answer .home-answer-toggle[aria-expanded='false']");
   record?.click();
-  return hidden.length > 0 || !!record;
+  return revealed || hidden.length > 0 || !!record;
+}
+
+/**
+ * Shows what keeps `target` off a request's unfolded block (YN-237 ②, review 4324938d): the Details it is under, by
+ * that Details' own toggle, as the user would, and no other; the block's other folds stay as they are. A jump does
+ * this whether or not it keeps the card folded (`keepFolded` is the card's own fold, the user's): hidden, the target
+ * is nowhere to land. Whether it opened one: the target is drawn on the next frame.
+ */
+export function revealAround(target: HTMLElement) {
+  const hidden: HTMLElement[] = [];
+  for (
+    let panel = target.closest<HTMLElement>(".request-block-details[hidden]");
+    panel;
+    panel = panel.parentElement?.closest<HTMLElement>(".request-block-details[hidden]") ?? null
+  )
+    hidden.push(panel);
+  const toggles = [...document.querySelectorAll<HTMLButtonElement>(".request-details-toggle[aria-expanded='false']")];
+  for (const panel of hidden) toggles.find((toggle) => toggle.getAttribute("aria-controls") === panel.id)?.click();
+  return hidden.length > 0;
 }
