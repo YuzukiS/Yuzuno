@@ -607,3 +607,193 @@
     min-height: 44px;
   }
 }
+
+/* YN-237 ①: the Project's head, the one place for what is across requests. Its first line: the release, what waits
+   for the next one, and the groups' counts; then what changed in each request, the lead's one line and "Other". No
+   card around it: it reads as the page's own head, not one more card to open. */
+.project-head {
+  display: grid;
+  gap: 6px;
+  margin: -2px 0 14px;
+  padding: 0 2px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.project-head-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.project-head-release {
+  color: var(--ink);
+  font-weight: 600;
+}
+.project-head-counts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.project-head-counts .home-chip {
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.project-head-changes {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.project-head-change {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  text-align: left;
+  cursor: pointer;
+}
+.project-head-change:hover {
+  background: var(--home-soft);
+}
+.project-head-change:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 1px;
+}
+.project-head-change[data-change="ask"] .project-head-change-text {
+  color: var(--home-attention-ink);
+}
+.project-head-change-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-head-more {
+  padding: 0 6px;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.project-head-lead {
+  display: grid;
+  gap: 4px;
+  padding: 6px 10px;
+  border-left: 3px solid color-mix(in srgb, var(--project-colour) 60%, var(--line));
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--project-colour) 8%, transparent);
+}
+.project-head-lead:focus {
+  outline: none;
+}
+.project-head-lead.is-stale {
+  border-left-color: var(--home-attention);
+}
+.project-head-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin: 0;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.project-head-who {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.project-head-who::after {
+  content: "：";
+}
+.project-head-said {
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.project-head-meta {
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.project-head-todo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin: 0;
+  color: var(--home-attention-ink);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.project-head-todo-item {
+  color: var(--ink);
+}
+.project-head-todo-item::before {
+  content: "· ";
+  color: var(--home-ink-2);
+}
+.project-head-others > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  cursor: pointer;
+  list-style: none;
+}
+.project-head-others > summary::-webkit-details-marker {
+  display: none;
+}
+.project-head-others > summary::before {
+  content: "›";
+  display: inline-block;
+  transition: transform var(--motion-small) var(--ease-standard);
+}
+.project-head-others[open] > summary::before {
+  transform: rotate(90deg);
+}
+.project-head-others > summary:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+.project-head-others > ul {
+  display: grid;
+  gap: 2px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.project-head-other {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  padding: 3px 6px;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.project-head-other:focus {
+  outline: none;
+}
+.project-head-kind {
+  color: var(--home-ink-2);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.project-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+.project-head-reply {
+  margin-top: 4px;
+}

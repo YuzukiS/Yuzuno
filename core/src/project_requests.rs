@@ -101,6 +101,18 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     if !has {
         db.execute_batch("ALTER TABLE project_requests ADD COLUMN confirmed_at TEXT")?;
     }
+    // from_*: the proposal a request was opened from (YN-237 ④), on the
+    // user's "new": the request it was proposed under, the Ask by its
+    // identity on Home, the version the user answered and its key. NULL for
+    // every request the user wrote; written once, by `keep_proposal`. Older
+    // Cores ignore them.
+    for (column, kind) in [("from_request_id", "TEXT"), ("from_section_id", "INTEGER"), ("from_version", "INTEGER"), ("from_key", "TEXT")] {
+        let has: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_requests') WHERE name=?1)", [column], |r| r.get(0))?;
+        if !has {
+            db.execute_batch(&format!("ALTER TABLE project_requests ADD COLUMN {column} {kind}"))?;
+        }
+    }
     // When this Workspace's Core first asked the user to confirm requests
     // (YN-184), kept once: a request settled before it is done as the rule
     // before made it, with no confirmation written in the user's name.
@@ -174,6 +186,17 @@ pub(crate) fn request_head(workspace: &str, project: &str, project_id: &str, n: 
     format!(
         "Request R-{n} from the user to the project {project} (Workspace {workspace}, Project {project_id}). \
          Route or answer it with project_route; the user's words travel as they are:"
+    )
+}
+
+/// What the front desk reads before the words of a request a proposal opened
+/// (YN-237 ④): that the user chose to make it a request, from which Ask under
+/// which request; then the proposal's words, as the user accepted them.
+pub(crate) fn proposal_head(workspace: &str, project: &str, project_id: &str, n: i64, under: i64, key: &str) -> String {
+    format!(
+        "Request R-{n} to the project {project} (Workspace {workspace}, Project {project_id}), opened by Core when the user chose \
+         \"new request\" on the proposal `{key}` made under R-{under}; the two requests are linked both ways. Route or answer it \
+         with project_route; the proposal's words, as the user accepted them:"
     )
 }
 
@@ -466,12 +489,18 @@ struct Place {
 
 /// Read in the caller's transaction, never beside it.
 fn place(db: &Connection, project: &str, words: &Words) -> Result<Place> {
-    let workspace: String = db.query_row("SELECT value FROM workspace_meta WHERE key='workspaceId'", [], |r| r.get(0))?;
-    if words.workspace_id != workspace {
+    let place = place_of(db, project)?;
+    if words.workspace_id != place.workspace {
         return Err(not_submitted(
             "workspace_changed: this message was begun on another Workspace's page. Nothing was sent, and your message is kept.".into(),
         ));
     }
+    Ok(place)
+}
+
+/// The Workspace's ID and the Project's name and archived state, whatever Workspace a message was begun on.
+fn place_of(db: &Connection, project: &str) -> Result<Place> {
+    let workspace: String = db.query_row("SELECT value FROM workspace_meta WHERE key='workspaceId'", [], |r| r.get(0))?;
     let (name, archived) = crate::projects::project_labels(db)?.remove(project).context("project_not_found: no Project has this ID")?;
     Ok(Place { workspace, name, archived })
 }
@@ -597,7 +626,15 @@ pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> 
         Ok((place, request))
     }).await?;
     let origin = json!({"kind":ORIGIN,"projectId":project,"requestId":request.id,"request":request.n,"workspaceId":place.workspace});
-    let head = request_head(&place.workspace, &place.name, project, request.n);
+    // One a proposal opened (YN-237 ④), sent again from Home: its own head.
+    let opened_from = ws.stored({
+        let id = request.id.clone();
+        move |store| from_of(&*store.db.read()?, &id)
+    }).await?;
+    let head = match &opened_from {
+        Some(from) => proposal_head(&place.workspace, &place.name, project, request.n, from.n, &from.key),
+        None => request_head(&place.workspace, &place.name, project, request.n),
+    };
     let sent = send(ws, project, &request.front_agent_id, &request.message_id, &request.files, false, origin, |turn| {
         message(&request.message_id, &head, &request.text, request.text_blocks.as_deref(), &request.images, turn)
     }).await;
@@ -620,16 +657,190 @@ pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> 
     }
 }
 
-/// A request nothing was sent for: never kept. Not one with a follow-up, or
-/// a receipt of its message (`MINE`).
+/// A request nothing was sent for: never kept. Not one with a follow-up, a
+/// receipt of its message (`MINE`), or one a proposal opened (YN-237 ④: the
+/// user's choice made it, and Home offers Send again).
 fn forget_request(db: &Connection, id: &str, agent: &str, client: &str) -> Result<()> {
     db.execute(
         &format!("DELETE FROM project_requests WHERE id=?1
-           AND NOT EXISTS(SELECT 1 FROM project_request_replies WHERE request_id=?1)
+           AND NOT EXISTS(SELECT 1 FROM project_request_replies WHERE request_id=?1) AND from_request_id IS NULL
            AND NOT EXISTS(SELECT 1 FROM agent_receipts WHERE agent_id=?2 AND client_id=?3 AND {MINE})"),
         params![id, agent, client, Option::<i64>::None],
     )?;
     Ok(())
+}
+
+/// Whether `project` has request R-`n` (a proposal names the one it was
+/// made under: project_brief/update.rs `rules`).
+pub(crate) fn has_request(db: &Connection, project: &str, n: i64) -> Result<bool> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM project_requests WHERE project_id=?1 AND n=?2)", params![project, n], |r| r.get(0))?)
+}
+
+/// A lead's proposal the user chose to make a request (YN-237 ④): the
+/// request it was made under (`under`, R-n), the Ask by its identity on Home
+/// (`identity`), the version answered and its key, and what the new request
+/// says (`title`, `text`), as that version of the Ask had them.
+#[derive(Clone, Debug)]
+pub(crate) struct Proposal {
+    pub under: i64,
+    pub identity: i64,
+    pub version: i64,
+    pub key: String,
+    pub title: String,
+    pub text: String,
+}
+
+/// A request a proposal opened, as `keep_proposal` kept it, for `send_proposal`.
+pub(crate) struct Opened {
+    request: Request,
+    under: i64,
+    key: String,
+    workspace: String,
+    name: String,
+}
+
+impl Opened {
+    pub(crate) fn n(&self) -> i64 {
+        self.request.n
+    }
+}
+
+/// The message ID of the request a proposal opens: one per Ask and version
+/// answered, so the same reply again, its retry or another window's finds
+/// the one request (UNIQUE(project_id, message_id)), never a second.
+fn proposal_message(identity: i64, version: i64) -> String {
+    format!("proposal:{identity}:{version}")
+}
+
+/// The words of the request a proposal opens, under its one message ID (`proposal_message`).
+fn proposal_words(proposal: &Proposal) -> Words {
+    Words {
+        workspace_id: String::new(), text: proposal.text.clone(), text_blocks: None,
+        client_message_id: proposal_message(proposal.identity, proposal.version), images: vec![], files: vec![],
+    }
+}
+
+/// Where the request a proposal opens stands (YN-237 ④): kept before, or, to keep now, its front desk and the ID of
+/// the request it was made under. Refused (`not_submitted`): the Project archived, no front desk, or the request it was
+/// made under gone.
+enum Opens {
+    Kept(Request),
+    New { front: String, under: String },
+}
+
+fn opening(db: &Connection, project: &str, place: &Place, proposal: &Proposal, message_id: &str) -> Result<Opens> {
+    let found = db
+        .query_row(&format!("SELECT {REQUEST} FROM project_requests WHERE project_id=?1 AND message_id=?2"),
+            params![project, message_id], request_row)
+        .optional()?;
+    if let Some(found) = found {
+        return Ok(Opens::Kept(found));
+    }
+    refuse_archived(place)?;
+    let front = front_desk_now(db, project)?;
+    let under: String = db
+        .query_row("SELECT id FROM project_requests WHERE project_id=?1 AND n=?2", params![project, proposal.under], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| not_submitted(format!(
+            "proposal_request_unknown: this Project no longer has request R-{}, which the proposal was made under. Nothing was sent.",
+            proposal.under)))?;
+    Ok(Opens::New { front, under })
+}
+
+/// Whether the request a proposal opens can be kept (YN-237 ④), checked on the user's "new" before the reply is sent
+/// (project_brief/home.rs `ask_reply`), keeping nothing: refused as `keep_proposal` would be, and the reply then sends
+/// nothing and is kept, so it never tells the lead of a request Core could not open.
+pub(crate) async fn may_open(ws: &Arc<Workspace>, project: &str, proposal: &Proposal) -> Result<()> {
+    let words = proposal_words(proposal);
+    check(&words)?;
+    let (id, wanted) = (project.to_owned(), proposal.clone());
+    ws.stored(move |store| {
+        let db = store.db.read()?;
+        let place = place_of(&db, &id)?;
+        opening(&db, &id, &place, &wanted, &words.client_message_id).map(drop)
+    }).await
+}
+
+/// Keeps the request a proposal opens (YN-237 ④), once the user's "new" has
+/// reached its lead (project_brief/home.rs `ask_reply`): a reply refused or
+/// failed keeps nothing, so the user may answer again, "merge" or "later"
+/// included, with no request left behind. The Project's next request, its
+/// words the proposal's, its title the proposal's, its front desk the
+/// Project's now, linked to the request it was made under. Kept once
+/// (`proposal_message`): found again, it is returned as it was. Refused as
+/// `may_open` is, or by storage, it keeps nothing: the reply, sent, stays on
+/// Home to send again, which keeps it then.
+pub(crate) async fn keep_proposal(ws: &Arc<Workspace>, project: &str, proposal: &Proposal) -> Result<Opened> {
+    let words = proposal_words(proposal);
+    check(&words)?;
+    let gate = lock(ws, project).await;
+    let _held = gate.lock().await;
+    let (id, wanted) = (project.to_owned(), proposal.clone());
+    let (workspace, name, request) = ws.stored(move |store| {
+        let mut writer = store.db.write()?;
+        let tx = writer.transaction()?;
+        let place = place_of(&tx, &id)?;
+        let (front, under) = match opening(&tx, &id, &place, &wanted, &words.client_message_id)? {
+            Opens::Kept(found) => return Ok((place.workspace, place.name, found)),
+            Opens::New { front, under } => (front, under),
+        };
+        let n: i64 = tx.query_row("SELECT COALESCE(MAX(n),0)+1 FROM project_requests WHERE project_id=?1", [&id], |r| r.get(0))?;
+        let request = Request {
+            id: uuid::Uuid::new_v4().to_string(), n, text: words.text, text_blocks: None, title: Some(wanted.title.clone()),
+            created_at: crate::model::now(), front_agent_id: front, message_id: words.client_message_id, state: "open".into(),
+            images: vec![], files: vec![], confirmed_at: None,
+        };
+        tx.execute(
+            "INSERT INTO project_requests(id,project_id,n,text,title,created_at,front_agent_id,message_id,state,
+               from_request_id,from_section_id,from_version,from_key)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            params![request.id, id, request.n, request.text, request.title, request.created_at, request.front_agent_id, request.message_id,
+                request.state, under, wanted.identity, wanted.version, wanted.key],
+        )?;
+        tx.commit()?;
+        Ok((place.workspace, place.name, request))
+    }).await?;
+    announce(ws, project);
+    Ok(Opened { request, under: proposal.under, key: proposal.key.clone(), workspace, name })
+}
+
+/// The request a proposal opened (YN-237 ④), by the Ask's identity on Home:
+/// its number, the newest should a later version have opened another. None
+/// until one is open.
+pub(crate) fn proposal_opened(db: &Connection, project: &str, identity: i64) -> Result<Option<i64>> {
+    Ok(db
+        .query_row("SELECT n FROM project_requests WHERE project_id=?1 AND from_section_id=?2 ORDER BY n DESC LIMIT 1",
+            params![project, identity], |r| r.get(0))
+        .optional()?)
+}
+
+/// Puts on a proposal's ask (YN-237 ④), as brief_get and Home show it, the
+/// number of the request it opened (`ask.proposal.opened`) once there is one:
+/// how its lead knows that request is open before it resolves the ask, read
+/// from the request itself, never written beside it.
+pub(crate) fn show_opened(db: &Connection, project: &str, identity: i64, section: &mut Value) -> Result<()> {
+    if section["ask"]["proposal"].is_object() {
+        if let Some(n) = proposal_opened(db, project, identity)? {
+            section["ask"]["proposal"]["opened"] = json!(n);
+        }
+    }
+    Ok(())
+}
+
+/// Sends the request a proposal opened to its front desk (YN-237 ④), after
+/// the user's reply: its head, then the proposal's words. Sent again it is
+/// the same message (`send`). Not sent now (the front desk closed, a Turn
+/// refused it), the request stays kept, not confirmed delivered, and Home
+/// offers Send again (`submit` with its words and message ID).
+pub(crate) async fn send_proposal(ws: &Arc<Workspace>, project: &str, opened: Opened) -> Result<MessageReceipt> {
+    let Opened { request, under, key, workspace, name } = opened;
+    let origin = json!({"kind":ORIGIN,"projectId":project,"requestId":request.id,"request":request.n,"workspaceId":workspace});
+    let head = proposal_head(&workspace, &name, project, request.n, under, &key);
+    let sent = send(ws, project, &request.front_agent_id, &request.message_id, &[], false, origin, |turn| {
+        message(&request.message_id, &head, &request.text, None, &[], turn)
+    }).await;
+    announce(ws, project);
+    sent
 }
 
 /// Whether `agent` is an executor still waiting for its slot: it takes no
@@ -825,7 +1036,51 @@ fn view(db: &Connection, project: &str, request: Request, installed: Option<&Ins
         "delivery":delivery(db, &request.id, &request.front_agent_id, &request.message_id, None)?,"replies":replies,
     });
     progress::show(db, project, &request.id, request.n, request.confirmed_at.as_deref(), installed, &mut shown)?;
+    // YN-237 ④: the proposal it was opened from, if one was, and the requests opened from proposals made under it.
+    shown["from"] = from_of(db, &request.id)?.map_or(Value::Null, |from| from.json());
+    shown["proposals"] = json!(opened_under(db, &request.id)?.iter().map(Opening::json).collect::<Vec<_>>());
     Ok(shown)
+}
+
+/// One end of a proposal's link (YN-237 ④): the other request by number,
+/// and the Ask it came from, by its key, identity on Home and the version
+/// the user answered.
+struct Opening {
+    n: i64,
+    key: String,
+    section_id: Option<i64>,
+    version: Option<i64>,
+    at: String,
+}
+
+impl Opening {
+    fn json(&self) -> Value {
+        json!({"n":self.n,"key":self.key,"sectionId":self.section_id,"version":self.version,"at":self.at})
+    }
+}
+
+/// The request `request` was opened from, if a proposal opened it.
+fn from_of(db: &Connection, request: &str) -> Result<Option<Opening>> {
+    Ok(db
+        .query_row(
+            "SELECT f.n,q.from_key,q.from_section_id,q.from_version,q.created_at FROM project_requests q
+             JOIN project_requests f ON f.id=q.from_request_id WHERE q.id=?1",
+            [request],
+            |r| Ok(Opening { n: r.get(0)?, key: r.get::<_, Option<String>>(1)?.unwrap_or_default(), section_id: r.get(2)?, version: r.get(3)?,
+                at: r.get(4)? }),
+        )
+        .optional()?)
+}
+
+/// The requests opened from proposals made under `request`, oldest first.
+fn opened_under(db: &Connection, request: &str) -> Result<Vec<Opening>> {
+    Ok(db
+        .prepare_cached("SELECT n,from_key,from_section_id,from_version,created_at FROM project_requests WHERE from_request_id=?1 ORDER BY n")?
+        .query_map([request], |r| {
+            Ok(Opening { n: r.get(0)?, key: r.get::<_, Option<String>>(1)?.unwrap_or_default(), section_id: r.get(2)?, version: r.get(3)?,
+                at: r.get(4)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// What the user's page sends to confirm a request done (YN-184).
@@ -877,32 +1132,81 @@ pub(crate) async fn confirm(ws: &Arc<Workspace>, project: &str, n: i64, input: C
 
 /// `GET /api/projects/{id}/requests?before=&limit=`: the Project's requests,
 /// newest first, `limit` (at most 50, 20 by default) of those numbered
-/// below `before`, against the release this Core runs (`page_for`).
+/// below `before`, against the release this Core runs (`page_for`); the
+/// first page with the older ones it keeps (`kept`).
 pub(crate) fn page(db: &Connection, project: &str, before: Option<i64>, limit: Option<usize>) -> Result<Value> {
     page_for(db, project, before, limit, Installed::current().as_ref())
 }
+
+/// The most requests a page lists (`page_for`), and the most older ones a
+/// first page keeps beside its own (`kept`): a first read views at most
+/// twice as many.
+const PAGE_MAX: usize = 50;
 
 /// `page` against `installed` (R-38 §2.6): `installedRelease`, the release
 /// this Core runs (null for a source build), and `mergedAfterInstalled`, how
 /// many PRs linked to the Project's tasks are merged and kept as not in it
 /// (null without a release, or while any merged one is not known yet). Only
 /// what Core keeps is read: never the network.
+///
+/// `kept` (YN-237): on the first page (no `before`) with more requests
+/// below it, the older ones still going on or bound to a live card
+/// (`kept_below`), newest first; none on another page. They are not the
+/// page's: `hasMore` and the next page's `before` go by `requests` alone,
+/// so a client that reads only `requests` pages as it always did.
 pub(crate) fn page_for(db: &Connection, project: &str, before: Option<i64>, limit: Option<usize>, installed: Option<&Installed>)
     -> Result<Value> {
     crate::projects::ensure_exists(db, project)?;
-    let limit = limit.unwrap_or(20).clamp(1, 50);
+    let limit = limit.unwrap_or(20).clamp(1, PAGE_MAX);
     let mut rows = db
         .prepare_cached(&format!("SELECT {REQUEST} FROM project_requests WHERE project_id=?1 AND n<?2 ORDER BY n DESC LIMIT ?3"))?
         .query_map(params![project, before.unwrap_or(i64::MAX), limit as i64 + 1], request_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let more = rows.len() > limit;
     rows.truncate(limit);
-    let requests = rows.into_iter().map(|request| view(db, project, request, installed)).collect::<Result<Vec<_>>>()?;
+    let kept = match (before, rows.last()) {
+        (None, Some(lowest)) if more => kept_below(db, project, lowest.n)?,
+        _ => vec![],
+    };
+    let shown = |rows: Vec<Request>| rows.into_iter().map(|request| view(db, project, request, installed)).collect::<Result<Vec<_>>>();
+    let (requests, kept) = (shown(rows)?, shown(kept)?);
     let after = match installed {
         Some(installed) => crate::github::installed::merged_after(db, project, installed)?,
         None => None,
     };
-    Ok(json!({"requests":requests,"hasMore":more,"installedRelease":installed.map(Installed::json),"mergedAfterInstalled":after}))
+    Ok(json!({"requests":requests,"hasMore":more,"kept":kept,"installedRelease":installed.map(Installed::json),"mergedAfterInstalled":after}))
+}
+
+/// The requests numbered below `below` that the first page keeps beside its
+/// own (YN-237: a card shows in its request's block whatever page that
+/// request is on, and a request going on is always read), newest first, at
+/// most PAGE_MAX: each routed to a task that has not ended (done, cancelled
+/// or archived) or that a live section is the card of
+/// (`project_brief::live_card_tasks`, an unresolved Ask outliving its task
+/// among them); or routed nowhere yet and never confirmed, waiting for its
+/// front desk; or named by a lead's proposal still open or answered and not
+/// resolved (YN-237 ④, review 4d93b1ad): the proposal is asked in that
+/// request, done or not, so Home finds it there whatever page it is on. One
+/// that only waits for the user to confirm it, its tasks ended and its cards
+/// gone, stays on its own page.
+fn kept_below(db: &Connection, project: &str, below: i64) -> Result<Vec<Request>> {
+    let bound: Vec<String> = crate::project_brief::live_card_tasks(db, project)?.into_iter().collect();
+    Ok(db
+        .prepare_cached(&format!(
+            "SELECT {REQUEST} FROM project_requests q WHERE q.project_id=?1 AND q.n<?2 AND (
+               EXISTS(SELECT 1 FROM project_routes r JOIN collaboration_tasks t ON t.id=r.task_id
+                 WHERE r.request_id=q.id AND r.state='{done}' AND r.kind IN ('{card}','{existing}')
+                 AND ((COALESCE(json_extract(t.data,'$.status'),'') NOT IN ('done','cancelled') AND json_extract(t.data,'$.archivedAt') IS NULL)
+                   OR t.id IN (SELECT value FROM json_each(?3))))
+               OR (q.confirmed_at IS NULL AND NOT EXISTS(SELECT 1 FROM project_routes r WHERE r.request_id=q.id AND r.state='{done}'))
+               OR q.n IN (SELECT json_extract(s.data,'$.ask.proposal.request') FROM project_brief_sections s
+                 WHERE s.project_id=?1 AND s.live=1 AND s.kind='ask' AND s.ask_state IN ('open','replied')
+                   AND json_extract(s.data,'$.ask.proposal.request') IS NOT NULL))
+             ORDER BY q.n DESC LIMIT ?4",
+            done = routes::DONE, card = routes::CARD, existing = routes::EXISTING,
+        ))?
+        .query_map(params![project, below, serde_json::to_string(&bound)?, PAGE_MAX as i64], request_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// The user's routes: on Core's own port and on the phone entry, as the rest

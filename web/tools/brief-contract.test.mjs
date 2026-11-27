@@ -569,7 +569,7 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.ok(rules.findIndex((line) => /never executes actions/.test(line)) < rules.findIndex((line) => /brief_guide for formats/.test(line)));
   // T-132: when a replied ask is resolved, and what a reply never grants.
   assert.match(rules[4], /A reply marks it replied\. Resolve your asks explicitly.*a preference once taken in, an authorized action only after it is done/);
-  assert.match(rules[4], /A reply executes nothing itself: act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant\./);
+  assert.match(rules[4], /A reply executes nothing itself \(save a proposal's new\): act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant\./);
   assert.match(briefGuide("ask"), /act on what the user has authorized, an explicit reply included, without asking for it again/);
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /repliedAsks \(your asks the user answered, to act on and resolve\)/);
   assert.match(briefGuide("ask"), /brief_get lists it in you\.repliedAsks.*nothing closes it for you/);

@@ -68,6 +68,8 @@ export const talkText = strings(
     followUpOf: (title: string) => `Follow-up to “${title}”`,
     passedTo: (names: string) => `Passed to ${names}`,
     someone: "an Agent",
+    /** Over the words a proposal opened (YN-237 ④): the lead's, which the user chose to make a request. */
+    openedFrom: (n: number) => `The proposal from R-${n}, which you made a request`,
     askLine: (title: string) => `“${title}” needs you to choose`,
     askAnswered: (title: string) => `“${title}” has your answer`,
     goAnswer: "Answer",
@@ -199,6 +201,7 @@ export const talkText = strings(
     followUpOf: (title) => `补充「${title}」`,
     passedTo: (names) => `已转给 ${names}`,
     someone: "一位 Agent",
+    openedFrom: (n) => `R-${n} 的提议，你选了新建`,
     askLine: (title) => `「${title}」需要你选一个`,
     askAnswered: (title) => `「${title}」你已回答`,
     goAnswer: "去回答",

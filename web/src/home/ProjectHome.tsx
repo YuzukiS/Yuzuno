@@ -11,7 +11,7 @@ import { changedSinceSeen, requestDomId, sectionDomId } from "./brief-layout";
 import { settleWhenLanded } from "../settle";
 import { arriveIn } from "../surface";
 import { inSight, markArrived, whenInSight } from "./request-arrival";
-import { unfoldAround } from "./card-fold";
+import { revealAround, unfoldAround } from "./card-fold";
 import { DeckSizes } from "./card-sizes";
 import { relative } from "./format";
 import { homeText } from "./home-text";
@@ -21,7 +21,6 @@ import { askKey, HomeJumps, nextAsk, scrollWithinHome, waitingAsks } from "./Hom
 import { RefreshHome } from "./home-tools";
 import { History30, ProjectFacts, RepoBlock } from "./HomePanel";
 import { ProjectTalk, type InstalledFacts, type TalkArrival, type TalkBusy, type TalkCommand, type TalkOlder } from "./ProjectTalk";
-import { InstalledLine } from "./RequestProgress";
 import { savedView, saveView, type TalkView } from "./project-talk";
 import type { ProjectRequest } from "./project-talk-api";
 import { ProjectTalkLink, type TalkLink } from "./talk-link";
@@ -29,10 +28,11 @@ import { talkText } from "./talk-text";
 import { openTask } from "./CardResponsible";
 import { KeptCardReplies, referableHistory } from "./CardReply";
 import {
-  askUpFront, blockCounts, blockOfSection, openAsk, pageBlocks, projectCardsCount, projectLine, type BlockAction, type BlockGroup, type RequestBlock, commonTasks, relatedRequests,
+  askUpFront, blockCounts, blockOfSection, headChanges, openAsk, pageBlocks, projectLine, type BlockAction, type BlockGroup, type RequestBlock, commonTasks,
+  relatedRequests,
 } from "./request-blocks";
-import { blockText, ProjectAsks, ProjectCards, RequestBlockView, useAsksUpFront, type BlockCommon, type BlockView, type ThreadFocus } from "./RequestBlocks";
-import { ProjectNow } from "./ProjectNow";
+import { blockText, ProjectAsks, RequestBlockView, useAsksUpFront, type BlockCommon, type BlockView, type ThreadFocus } from "./RequestBlocks";
+import { ProjectHead } from "./ProjectHead";
 import type { OpenDeliveredReport } from "./DeliverableLine";
 import { projectUnseen } from "./unseen";
 import type { NeedsYouItem, ProjectPanel, Section } from "./types";
@@ -50,7 +50,8 @@ const TEAM_BESIDE = 1250;
 /**
  * Where each request's block stands in this visit (YN-212 §3.1), as the cards' places were held (card-sizes.ts): its
  * group and its place in it as first shown, so a block the user just answered does not move from under their
- * finger. A request the user confirms goes to Done. One shown later comes in at the top of its group when it is newer
+ * finger. A request the user confirms goes to Done; one done already when first shown, in Needs you for a lead's
+ * proposal (YN-237 ④), stays there once answered, until the next visit. One shown later comes in at the top of its group when it is newer
  * than every request shown so far, in the page's own order; older ones read from the pages before (Read older
  * requests) come after those shown, newest first (PR 1093 R1). The Project's own block is in no group (R-27): its
  * Asks keep their places in Needs you by themselves (useAsksUpFront).
@@ -62,8 +63,8 @@ const TEAM_BESIDE = 1250;
 function useHeldBlocks(projectId: string, blocks: readonly RequestBlock[], ready: boolean) {
   const sizes = useContext(DeckSizes);
   const visit = sizes?.visit ?? 0;
-  const order = useRef({ visit, place: new Map<string, number>(), newest: 0 });
-  if (order.current.visit !== visit) order.current = { visit, place: new Map(), newest: 0 };
+  const order = useRef({ visit, place: new Map<string, number>(), newest: 0, doneFirst: new Set<string>() });
+  if (order.current.visit !== visit) order.current = { visit, place: new Map(), newest: 0, doneFirst: new Set() };
   if (!ready) {
     const now = (group: BlockGroup) => blocks.filter((block) => block.group === group);
     return { needs: now("needs"), doing: now("doing"), done: now("done") };
@@ -72,13 +73,15 @@ function useHeldBlocks(projectId: string, blocks: readonly RequestBlock[], ready
   const held = sizes ? sizes.groups(`${projectId}#requests`, now) : new Map(now);
   const groupOf = (block: RequestBlock): BlockGroup => {
     const first = held.get(block.key) ?? block.group;
-    return block.group === "done" || first === "done" ? block.group : first;
+    if (block.group === "done") return first === "needs" && order.current.doneFirst.has(block.key) ? first : "done";
+    return first === "done" ? block.group : first;
   };
-  const { place } = order.current;
+  const { place, doneFirst } = order.current;
   const fresh = place.size === 0;
   let top = Math.min(0, ...place.values());
   let bottom = Math.max(0, ...place.values());
   const unseen = blocks.filter((block) => !place.has(block.key));
+  for (const block of unseen) if (block.request.state === "done") doneFirst.add(block.key);
   const newer = unseen.filter((block) => !fresh && block.request.n > order.current.newest);
   // The newer ones above all, the newest first: placed from the oldest up.
   for (const block of [...newer].reverse()) place.set(block.key, --top);
@@ -204,8 +207,8 @@ export function ProjectHome({
   // Requests only (R-27 §3.7): the Project's own Asks are counted on their own, its cards not at all.
   const counts = blockCounts(blocks);
   const projectAsks = projectBlock?.asks ?? [];
-  // With no request on the page, the Project's cards are all of it: their group starts open, as its cards were. A
-  // block the user opened or closed, or a jump opened, stays as it was left.
+  // With no request on the page, the Project's cards are all of it: Other starts open, as its cards were. A block the
+  // user opened or closed, or a jump opened, stays as it was left.
   const alone = talkRequests !== null && blocks.length === 0;
   const [chosen, setChosen] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const isOpen = (key: string) => chosen.get(key) ?? (key === "project" && alone);
@@ -232,10 +235,15 @@ export function ProjectHome({
     choose(key, !isOpen(key));
   };
   const editorIds = panel?.contentEditors?.editorAgentIds ?? null;
-  // Where the project stands (R-27): the card the page leads with, and what the Project cards group holds beside it;
-  // nothing there but that card, no group: the banner is the card's one place, with its own actions (ProjectNow).
-  const line = useMemo(() => (projectBlock ? projectLine(projectBlock.sections, editorIds) : null), [projectBlock, editorIds]);
-  const cardsCount = projectCardsCount(projectBlock, projectAsks.filter((ask) => !upFront(ask)).length, line);
+  // The Project's head (YN-237 ①): the lead's one line across requests, and "Other", the Project's cards of no request
+  // besides it with its Asks answered before this visit; what changed in each request since the user last read it.
+  // Of the leads' own sections only: the team's (a member no longer a lead) are no line across requests.
+  const line = useMemo(() => {
+    const leads = new Set(sections.map((s) => s.key));
+    return projectBlock ? projectLine(projectBlock.sections.filter((s) => leads.has(s.key)), editorIds) : null;
+  }, [projectBlock, editorIds, sections]);
+  const others = [...(projectBlock?.sections ?? []).filter((section) => section.key !== line?.key), ...projectAsks.filter((ask) => !upFront(ask))];
+  const changes = useMemo(() => headChanges(blocks), [blocks]);
   const executors = needsYou.filter((item) => item.kind === "executor");
   const pending = panel?.pending ?? [];
   // What needs the user (§3.4): the blocks in Needs you, the approvals, the executors' matters and the Project's
@@ -281,7 +289,8 @@ export function ProjectHome({
   }, []);
   /**
    * Scrolls to `target`, opens the card or fold that holds it, and settles once it has landed. `keepFolded`: the
-   * user folded it while this landing waited, and it stays as they left it (YN-227, the lead's comment 12405).
+   * user folded it while this landing waited, and it stays as they left it (YN-227, the lead's comment 12405); the
+   * request's Details it is under open all the same (revealAround), or there is nothing to land on.
    */
   function jumpTo(target: HTMLElement | null, block: ScrollLogicalPosition = "center", keepFolded = false) {
     if (!target) return;
@@ -291,8 +300,22 @@ export function ProjectHome({
       target.focus({ preventScroll: true });
       settleWhenLanded(target, "data-home-highlight", smooth);
     };
-    if (!keepFolded && unfoldAround(target)) requestAnimationFrame(show);
+    if (keepFolded ? revealAround(target) : unfoldAround(target)) requestAnimationFrame(show);
     else show();
+  }
+  /**
+   * Lands on section `key` (R-45 §3.4, YN-237 ②): its card, by its stable id. An answered Ask of a request's task is
+   * a line under its Details whose card is drawn once the line is opened (YN-223): the Details and the line open, and
+   * the landing is on that card once drawn (review 4324938d).
+   */
+  function landOn(key: string, block: ScrollLogicalPosition = "center", keepFolded = false) {
+    const card = document.getElementById(sectionDomId(id, key));
+    if (card) return jumpTo(card, block, keepFolded);
+    const line = [...(root.current?.querySelectorAll<HTMLElement>("[data-answered]") ?? [])].find((el) => el.dataset.answered === key);
+    if (!line) return;
+    revealAround(line);
+    line.querySelector<HTMLButtonElement>(":scope > .request-task-answered[aria-expanded='false']")?.click();
+    requestAnimationFrame(() => jumpTo(document.getElementById(sectionDomId(id, key)), block, keepFolded));
   }
   // A jump into a block (§3.4): the requests shown, the block opened, then the jump once it is drawn.
   const [landing, setLanding] = useState<{ key: string | null; block: string; seq: number; keepFolded?: boolean } | null>(null);
@@ -300,10 +323,8 @@ export function ProjectHome({
   useEffect(() => {
     if (!landing || landed.current === landing.seq) return;
     landed.current = landing.seq;
-    const target = landing.key
-      ? document.getElementById(sectionDomId(id, landing.key))
-      : root.current?.querySelector<HTMLElement>(`[data-block-key="${landing.block}"]`) ?? null;
-    jumpTo(target, landing.key ? "center" : "start", landing.keepFolded);
+    if (landing.key) landOn(landing.key, "center", landing.keepFolded);
+    else jumpTo(root.current?.querySelector<HTMLElement>(`[data-block-key="${landing.block}"]`) ?? null, "start", landing.keepFolded);
     // Run once the block it opened is drawn.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [landing, chosen, view]);
@@ -312,24 +333,29 @@ export function ProjectHome({
    * in its block's first look (W5): the jump lands on it and opens nothing.
    */
   function showSection(key: string, keepFolded = false) {
-    // The banner's card with no group to hold it is the banner: the caller lands there by its id (R-27 §3.8).
-    if (line?.key === key && cardsCount === 0) return false;
     const block = blockOfSection(key, blocks, projectBlock);
     if (!block) return false;
     if (view !== "requests") setView("requests");
-    // A card of a request's task is in its block's cards view (R-45 §3.4).
-    if (!askUpFront(key, blocks, projectBlock)) {
-      if (block === "project") openBlock(block);
-      else showView(block, "cards");
-    }
+    // A card or an Ask of a request's task is in its unfolded block (R-45 §3.4, YN-237 ②); the Project's cards are
+    // under the head's "Other", opened; the lead's card is its line there, and its open Ask is in Needs you, where the
+    // jump lands opening nothing (review 4d93b1ad).
+    if (block === "project") {
+      if (key !== line?.key && !askUpFront(key, blocks, projectBlock)) openBlock(block);
+    } else if (!askUpFront(key, blocks, projectBlock)) showView(block, "cards");
     setLanding((was) => ({ key, block, seq: (was?.seq ?? 0) + 1, keepFolded }));
     return true;
   }
-  /** The banner's "Project cards N": the requests shown and the Project cards group opened, at its top (R-27 §3.8). */
-  function showProjectCards() {
+  /** The head's count of a group (YN-237 ①): the requests shown, that group at the top, Done opened. */
+  function showGroup(group: BlockGroup) {
     if (view !== "requests") setView("requests");
-    openBlock("project");
-    setLanding((was) => ({ key: null, block: "project", seq: (was?.seq ?? 0) + 1 }));
+    requestAnimationFrame(() => {
+      const element = root.current?.querySelector<HTMLElement>(`.request-group[data-group="${group}"]`);
+      if (!element) return;
+      if (element instanceof HTMLDetailsElement) element.open = true;
+      scrollWithinHome(element, "start", !reducedMotion());
+      // Tab goes on from the group: its summary (Done), else its first request's title.
+      element.querySelector<HTMLElement>("summary.request-group-title, .request-block-title")?.focus({ preventScroll: true });
+    });
   }
   /** Shows request `n`'s block, opened at its cards, at the top of the page. */
   function showBlock(n: number) {
@@ -437,7 +463,7 @@ export function ProjectHome({
     if (!focus.key) return toTop();
     const keepFolded = foldedWhileLanding.current?.n === focus.n && foldedWhileLanding.current.key === focus.key;
     if (showSection(focus.key, keepFolded)) return;
-    jumpTo(document.getElementById(sectionDomId(id, focus.key)), "center", keepFolded);
+    landOn(focus.key, "center", keepFolded);
     // The page is drawn by the time this runs, its read or its first render; a card in a block waits for the requests.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus, talkRequests]);
@@ -537,6 +563,7 @@ export function ProjectHome({
       resendingFollowUps={busy?.followUps.get(block.request.n)}
       onAction={blockAction}
       onShowBlock={showBlock}
+      onDecide={(key) => showSection(key)}
       busy={!!busy && (busy.confirming.has(block.request.n) || busy.resending.has(block.request.n))}
       error={busy?.errors.has(block.request.n) ? tt.confirmFailed(busy.errors.get(block.request.n)!) : undefined}
       common={common}
@@ -607,9 +634,9 @@ export function ProjectHome({
           {!readOnly && <RefreshHome busy={refreshing} onRefresh={onRefresh} />}
         </span>
       </header>
-      {line && <ProjectNow section={line} more={cardsCount} onMore={showProjectCards} common={common}
-        related={relatedRequests(line, blocks)} onShowBlock={showBlock} />}
-      {installed?.release && <InstalledLine release={installed.release} mergedAfter={installed.mergedAfter} />}
+      <ProjectHead line={line} others={others} installed={installed} counts={counts} changes={changes}
+        related={line ? relatedRequests(line, blocks) : []} onShowBlock={showBlock} onGroup={showGroup}
+        othersOpen={isOpen("project")} onOthers={(open) => choose("project", open)} common={common} />
       {/* The page's one bar (R-36): the jumps, then Requests or Conversation beside them, stuck together at the top of
           Home's scroller as R-25's tabs were; its measured height is what a jump keeps clear (HomeJumps.tsx). */}
       <HomeJumps
@@ -696,9 +723,6 @@ export function ProjectHome({
                 {groups.doing.map(blockView)}
               </section>
             ) : null}
-            {projectBlock && (
-              <ProjectCards block={projectBlock} count={cardsCount} open={isOpen("project")} onToggle={(open) => choose("project", open)} common={common} />
-            )}
             {(groups.done.length > 0 || restOfHistory.length > 0) && (
               <details className="request-group request-done" data-group="done">
                 <summary className="request-group-title">

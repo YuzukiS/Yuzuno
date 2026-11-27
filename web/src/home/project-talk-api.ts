@@ -152,7 +152,17 @@ export type ProjectRequest = {
   confirmedAt?: string | null;
   progress: { cards: number; ended: number };
   lines: RequestLine[];
+  /** The proposal it was opened from (YN-237 ④): the request it was made under, and the Ask; null for the user's own. */
+  from?: ProposalLink | null;
+  /** The requests opened from proposals made under it (YN-237 ④), oldest first; none from an older Core. */
+  proposals?: ProposalLink[];
 };
+
+/**
+ * One end of a proposal's link (YN-237 ④): the other request by number, and the Ask the user answered "new" on, by its
+ * key, its identity on Home and the version answered.
+ */
+export type ProposalLink = { n: number; key: string; sectionId: number | null; version: number | null; at: string };
 
 /** The release this Core runs (R-38 §2.6): its manifest's id, version and full commit. */
 export type InstalledRelease = { releaseId: string; version: string; gitSha: string };
@@ -160,6 +170,12 @@ export type InstalledRelease = { releaseId: string; version: string; gitSha: str
 export type RequestPage = {
   requests: ProjectRequest[];
   hasMore: boolean;
+  /**
+   * On the first page, the older requests Core keeps beside it (YN-237): each going on (a task not ended, or never
+   * routed and waiting for the front desk) or routed to a task a live card is of, newest first. Not the page's own:
+   * `hasMore` and the next page go by `requests`. Absent from an older Core.
+   */
+  kept?: ProjectRequest[];
   /** The release this Core runs; null for a source build, absent from an older Core. */
   installedRelease?: InstalledRelease | null;
   /**
@@ -191,6 +207,7 @@ export const readRequests = (projectId: string, before?: number, signal?: AbortS
   api<RequestPage>(`${base(projectId)}/requests${before ? `?before=${before}` : ""}`, { signal }).then((page) => ({
     ...page,
     requests: page.requests.map(shown),
+    kept: (page.kept ?? []).map(shown),
   }));
 
 /**

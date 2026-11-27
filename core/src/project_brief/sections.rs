@@ -578,6 +578,10 @@ pub(super) fn section_json(row: &Row, owner: &Owner, seen: Option<&(i64, String)
         if data["ask"]["gate"].is_object() {
             ask["gate"] = data["ask"]["gate"].clone();
         }
+        // A lead's proposal of a new request (YN-237 ④), only when it is one.
+        if data["ask"]["proposal"].is_object() {
+            ask["proposal"] = data["ask"]["proposal"].clone();
+        }
         section["ask"] = ask;
     }
     if row.kind == "status" {

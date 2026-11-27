@@ -157,3 +157,20 @@ test("the tools and the guide say what a check writes, what advice is and both p
   assert.match(content, /Characters are Unicode code points\./);
   for (const code of Object.keys(BRIEF_ADVICE_CODES)) assert.match(content, new RegExp(`^- ${code}: `, "m"));
 });
+
+// YN-237 ③: a data file no chart reads is advised, by the block that shows it; one a chart reads, or a file that is no
+// data, is not. A hint only: the section is accepted as it is.
+test("data attached that no chart reads is advised; charted data or another file is not", () => {
+  const files = [{ name: "runs.csv", path: "/w/runs.csv" }, { name: "shot.png", path: "/w/shot.png" }, { name: "cpu.json", path: "/w/cpu.json" }];
+  const shown = { type: "Attachments", props: { items: [{ name: "runs.csv" }, { name: "shot.png" }] } };
+  const chart = { type: "BarChart", props: { id: "cpu", title: "CPU", x: { label: "Run" }, y: { label: "CPU", unit: "%" },
+    data: { attachment: "cpu.json", x: "run", series: [{ name: "CPU", column: "cpu" }] } } };
+  const one = advise({ a: markdown("Two runs."), f: shown, c: chart }, { attachments: files });
+  assert.deepEqual(one.filter((x) => x.code === "data_not_charted").map((x) => x.path), ["body.elements.f"], "runs.csv, by its block; cpu.json is charted");
+  assert.match(one.find((x) => x.code === "data_not_charted").reason, /"runs\.csv" is data no chart in this section reads/);
+  // Every data file charted: nothing said.
+  const all = advise({ a: markdown("CPU per run."), c: chart }, { attachments: [files[2]] });
+  assert.deepEqual(all.filter((x) => x.code === "data_not_charted"), []);
+  assert.equal(BRIEF_ADVICE_CODES.data_not_charted.length > 0, true);
+  assert.equal(BRIEF_ADVICE_CODES.ask_grows_after_reply.length > 0, true, "Core's advice on an ask is listed with the rest");
+});

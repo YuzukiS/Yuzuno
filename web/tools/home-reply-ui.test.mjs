@@ -616,12 +616,11 @@ test("on Home, the section answered from the team is shown: in Needs you, unfold
   assert.ok(shown(page).querySelector(".home-card-body").hidden, "folded by the user");
   await tick(200);
   assert.ok(shown(page).querySelector(".home-card-body").hidden, "and still folded: no landing comes after it");
-  // The Project's one other card is the banner alone (R-27): no Project cards group, nothing to open for the Ask.
-  assert.equal(group(page), null);
-  assert.equal(page.document.querySelector(".now-hero")?.dataset.sectionKey, "other");
+  // The Project's one other card, a report, is under Other (YN-237 ①); the Ask is not: nothing of Other holds it.
+  assert.ok(group(page) && !group(page).contains(shown(page)));
   page.window.renderHome({ origin: askReply, back, n: 2 });
   await until(() => shown(page) && !shown(page).querySelector(".home-card-body").hidden, "shown again");
-  assert.equal(group(page), null, "nothing opened for it: the Ask is in Needs you");
+  assert.ok(!group(page).contains(shown(page)), "nothing opened for it: the Ask is in Needs you");
   await tick(40);
   assert.equal(page.document.activeElement, shown(page));
   assert.ok(note(page).closest('[data-section-key="export-paging"]'));
@@ -734,4 +733,116 @@ test("on a Project's page, requests that could not be read never read as Needs y
     assert.equal(page.document.querySelector(".home-brief-empty"), null, "the page never says it has nothing");
     assert.deepEqual(page.errors, []);
   }
+});
+
+// R-50 (YN-237 ②, review 4324938d): what a request keeps under Details — an answered Ask of its task, its second
+// task's card, a task's earlier card — is found by its section's key. Open on Home opens that Details (and no other
+// fold of the block) and lands on the section with the focus; another Open on Home into the same request lands too,
+// after the user folded Details again.
+test("on Home, Open on Home lands under a request's Details: an answered Ask, a second task's card, an earlier card", async (t) => {
+  const responsible = { agentId: "a", name: "Mori", kind: "executor", state: "running" };
+  const bound = (task) => ({ task: { id: task, title: task, status: "doing", archived: false }, responsible });
+  const status = (key, id, at, task) => section(key, id, 2, { kind: "status", updatedAt: at, status: { asOf: at, validFor: 86_400, stale: false },
+    card: bound(task) });
+  const now = status("yn-91", 41, "2026-11-01T14:20:00Z", "YN-91");
+  const second = status("yn-93", 42, "2026-11-01T13:50:00Z", "YN-93");
+  const earlier = status("yn-91/lead", 44, "2026-11-01T12:00:00Z", "YN-91");
+  const answered = section("yn-91/copy", 43, 2, { kind: "ask", title: "Copy tone", card: bound("YN-91"),
+    ask: { question: "Casual copy?", state: "replied", repliedAt: "2026-11-01T14:10:00Z", replyText: "Yes", reply: { freeText: true } } });
+  const routedCard = (s, task) => ({ sectionId: s.id, key: s.key, title: s.title, live: true, task: { id: task, status: "doing", archived: false }, responsible });
+  const r9 = { id: "req-9", n: 9, text: "Words of R-9", textBlocks: null, images: [], files: [], title: "Request 9", createdAt: "2026-11-01T11:00:00Z",
+    frontAgentId: "a", messageId: "m9", delivery: "accepted", replies: [], notes: [], routes: [], state: "doing", lines: [],
+    cards: [routedCard(now, "YN-91"), routedCard(second, "YN-93")], progress: { cards: 2, ended: 0 } };
+  const data = homeData([now, second, earlier, answered]);
+  const page = mount({ respond: (url) => ({ body: url === "/api/home" ? data : /\/api\/projects\/p1\/requests(\?|$)/.test(url)
+    ? { requests: [r9], hasMore: false } : url === "/api/machine-load" ? machine : { repositories: [], links: [] } }) });
+  t.after(page.close);
+  const doc = page.document;
+  const at = (key) => doc.getElementById(`home-section-p1-${key}`);
+  const block = () => doc.querySelector('[data-request-block="9"]');
+  const details = () => block().querySelector(".request-block-details");
+  const earlierFold = () => block().querySelector('.request-task[data-task="YN-91"] > .request-task-earlier');
+  const origin = (key, sectionId, kind, fields = {}) => ({ ...identity(key, 2), sectionId, snapshot: snapshot({ sectionKind: kind, title: `About ${key}`, ...fields }) });
+
+  // The answered Ask: Details and its line open, and the landing is on its card, with the focus.
+  page.window.renderHome({ origin: origin("yn-91/copy", 43, "ask", { question: "Casual copy?", text: "Yes" }), back, n: 1 });
+  await focused(page, () => at("yn-91/copy"), "lands on the answered Ask's card");
+  assert.equal(details().hidden, false, "the Details it is under opened");
+  assert.ok(details().contains(at("yn-91/copy")));
+  assert.equal(block().querySelector('[data-answered="yn-91/copy"] > .request-task-answered').getAttribute("aria-expanded"), "true");
+  assert.equal(earlierFold().open, false, "no other fold of the block opens for it");
+
+  // The user folds Details again; a second Open on Home into the same request lands on its second task's card.
+  block().querySelector(".request-details-toggle").click();
+  await tick(40);
+  assert.equal(details().hidden, true, "folded by the user");
+  page.window.renderHome({ origin: origin("yn-93", 42, "status"), back, n: 2 });
+  await focused(page, () => at("yn-93"), "lands on the second task's card");
+  assert.equal(details().hidden, false);
+  assert.ok(details().contains(at("yn-93")));
+  assert.equal(earlierFold().open, false);
+
+  // A third, on the first task's earlier card: the earlier cards' fold opens with it.
+  page.window.renderHome({ origin: origin("yn-91/lead", 44, "status"), back, n: 3 });
+  await focused(page, () => at("yn-91/lead"), "lands on the earlier card");
+  assert.equal(earlierFold().open, true);
+  assert.deepEqual(page.errors, []);
+});
+
+// Review 4d93b1ad (the lead's comment 12875): a lead's proposal is found in the request it was made under on any later
+// visit, by its key, from Open on Home: bound to no task and answered (an Answered line under Details), its request
+// done (in Done, opened for it), bound to a task (that task's line), or open under a done request (in Needs you, that
+// request still done). Each once on the page, none the Project's. And the Project's own open Ask is landed on in Needs
+// you, Other left closed (review 4d93b1ad, P3): a page with requests keeps Other closed until asked.
+test("on Home, Open on Home lands on a lead's proposal in its request on a later visit: bound to no task, its request done, bound to a task, open", async (t) => {
+  const responsible = { agentId: "a", name: "Mori", kind: "executor", state: "running" };
+  const bound = (task) => ({ task: { id: task, title: task, status: "doing", archived: false }, responsible });
+  const reply = { options: [{ id: "new", label: "新建" }, { id: "merge", label: "并入" }, { id: "later", label: "先记下" }] };
+  const proposal = (key, id, n, state, extra = {}) => section(key, id, 2, { kind: "ask", title: `提议 ${key}`,
+    ask: { question: `${key}?`, state, reply, proposal: { request: n, title: key, text: `${key} 的话` },
+      ...(state === "open" ? {} : { repliedAt: "2026-11-01T14:10:00Z", replyText: "先记下" }) }, ...extra });
+  const card = section("yn-91", 51, 2, { kind: "status", updatedAt: "2026-11-01T14:20:00Z",
+    status: { asOf: "2026-11-01T14:20:00Z", validFor: 86_400, stale: false }, card: bound("YN-91") });
+  const free = proposal("r9/split", 52, 9, "replied");
+  const doneAnswered = proposal("r8/again", 53, 8, "replied");
+  const onTask = proposal("yn-91/later", 54, 9, "replied", { card: bound("YN-91") });
+  const doneOpen = proposal("r7/more", 55, 7, "open");
+  const r = (n, state, cards, extra = {}) => ({ id: `req-${n}`, n, text: `Words of R-${n}`, textBlocks: null, images: [], files: [],
+    title: `Request ${n}`, createdAt: "2026-11-01T11:00:00Z", frontAgentId: "a", messageId: `m${n}`, delivery: "accepted", replies: [],
+    notes: [], routes: [], state, lines: [], cards, progress: { cards: cards.length, ended: 0 }, ...extra });
+  const routedCard = { sectionId: card.id, key: card.key, title: card.title, live: true, task: { id: "YN-91", status: "doing", archived: false }, responsible };
+  const requests = [r(9, "doing", [routedCard]), r(8, "done", [], { confirmedAt: "2026-11-01T12:00:00Z" }),
+    r(7, "done", [], { confirmedAt: "2026-11-01T12:00:00Z" })];
+  const notes = section("notes", 56, 1, { updatedAt: "2026-11-01T13:00:00Z" });
+  const own = ask("pick-one", 57, 2);
+  const data = homeData([card, free, doneAnswered, onTask, doneOpen, notes, own]);
+  const page = mount({ respond: (url) => ({ body: url === "/api/home" ? data : /\/api\/projects\/p1\/requests(\?|$)/.test(url)
+    ? { requests, hasMore: false } : url === "/api/machine-load" ? machine : { repositories: [], links: [] } }) });
+  t.after(page.close);
+  const doc = page.document;
+  const at = (key) => doc.getElementById(`home-section-p1-${key}`);
+  // Once on the page: its Answered line (its card, opened, in it), or its card where no line holds it.
+  const once = (key) => doc.querySelectorAll(`[data-answered="${key}"]`).length
+    + [...doc.querySelectorAll(`[data-section-key="${key}"]`)].filter((el) => !el.closest("[data-answered]")).length;
+  const origin = (key, id) => ({ ...identity(key, 2), sectionId: id, snapshot: snapshot({ sectionKind: "ask", title: `提议 ${key}`, question: `${key}?`, text: "先记下" }) });
+  const cases = [["r9/split", 52, 9], ["r8/again", 53, 8], ["yn-91/later", 54, 9], ["r7/more", 55, 7]];
+  for (const [index, [key, id, n]] of cases.entries()) {
+    page.window.renderHome({ origin: origin(key, id), back, n: index + 1 });
+    await focused(page, () => at(key), `lands on ${key}`);
+    assert.equal(at(key).closest("[data-request-block]")?.dataset.requestBlock, String(n), `${key} in R-${n}`);
+    assert.equal(once(key), 1, `${key} once on the page`);
+    assert.ok(!at(key).closest("[data-project-block]"), `${key} is not the Project's`);
+  }
+  // Open under a done request: that request is in Needs you, still done.
+  const seven = doc.querySelector('[data-request-block="7"]');
+  assert.ok(seven.closest('.request-group[data-group="needs"]'), "R-7 in Needs you");
+  assert.ok(doc.querySelector('[data-request-block="8"]').closest('.request-group[data-group="done"]'), "R-8, its proposal answered, in Done");
+  // The Project's own open Ask: in Needs you, landed on there; Other, holding the Project's report, stays closed.
+  const other = () => doc.querySelector("[data-project-block]");
+  assert.equal(other().open, false, "a page with requests: Other closed");
+  page.window.renderHome({ origin: { ...askReply, ...identity("pick-one", 2), sectionId: 57 }, back, n: cases.length + 1 });
+  await focused(page, () => at("pick-one"), "lands on the Project's Ask");
+  assert.ok(at("pick-one").closest('.request-group[data-group="needs"]'), "in Needs you");
+  assert.equal(other().open, false, "Other left closed");
+  assert.deepEqual(page.errors, []);
 });

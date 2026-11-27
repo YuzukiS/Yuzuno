@@ -16,6 +16,9 @@ type Block = { type: string; props: Record<string, unknown>; children?: string[]
 
 /** Data a reader may need told what it shows. Metrics are labelled values, a summary themselves. */
 const DATA = new Set(["Table", "LineChart", "BarChart", "ScatterChart"]);
+const CHART_TYPES = new Set(["LineChart", "BarChart", "ScatterChart"]);
+/** A file a chart can read (chart_attachment): CSV, TSV, JSON or JSONL. */
+const DATA_FILE = /\.(csv|tsv|json|jsonl)$/i;
 
 /** Characters as the guide counts them: Unicode code points. */
 export const adviceChars = (text: string) => [...text].length;
@@ -94,6 +97,20 @@ export function adviseBriefSection(section: BriefSection): BriefAdvice[] {
   if (refs > A.refs && most)
     advice.push(hint("many_refs", at(most[0], ".props.items"),
       `The section has ${refs} reference entries, each target counted once per block (advice starts above ${A.refs}), the most in "${most[0]}". Those that support its conclusion are easier to find when the rest stay on its Task.`));
+
+  // Data attached that no chart reads (YN-237 ③, a hint, never a rule): where it holds a comparison worth seeing, a
+  // chart of it is read at a glance; where it is only evidence, it may stay on its Task. Named by the block that shows
+  // it, else by its registration.
+  const charted = new Set(blocks.filter(([, block]) => CHART_TYPES.has(block.type))
+    .map(([, block]) => (block.props.data as { attachment?: unknown } | undefined)?.attachment)
+    .filter((name): name is string => typeof name === "string"));
+  (section.attachments ?? []).forEach((file, index) => {
+    if (!DATA_FILE.test(file.name) || charted.has(file.name)) return;
+    const shown = blocks.find(([, block]) => block.type === "Attachments" && Array.isArray(block.props.items)
+      && (block.props.items as { name?: unknown }[]).some((item) => item?.name === file.name));
+    advice.push(hint("data_not_charted", shown ? at(shown[0]) : `attachments.${index}`,
+      `"${file.name}" is data no chart in this section reads. If it holds a comparison worth seeing, a LineChart, BarChart or ScatterChart with data {attachment: "${file.name}"} shows it at a glance, with its unit and conditions beside it; if it is only evidence, it can stay on its Task.`));
+  });
 
   // A summary whose author named no size: Home can only guess its card's (T-18, Lead 2473). Last, so that
   // under the three an answer carries (limits.advice.items) it never takes the place of advice on what the

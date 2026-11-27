@@ -50,6 +50,9 @@ export const BRIEF_LIMITS = {
   tabs: 6,
   titleChars: 120,
   questionChars: 500,
+  // A proposal's words (YN-237 ④): what the new request would ask, as the
+  // user's words of a request are read: why, its effect, what it would do.
+  proposalChars: 2000,
   codeBlockLines: 200,
   mathChars: 4000,
   listItems: 30,
@@ -712,7 +715,19 @@ const askSchema = z.strictObject({
   // An executor's approval of a gate step of its task (T-43 S4): Core checks
   // that the writer is that task's executor and the step is a gate.
   gate: z.strictObject({ taskId: z.string().trim().min(1).max(64), step: z.number().int().min(0).max(11) }).optional(),
+  // A lead's proposal of a new request found while doing request R-n
+  // (YN-237 ④): the user's "new" makes Core open it, linked both ways. Core
+  // checks that the writer is a lead and that R-n is this Project's.
+  proposal: z.strictObject({
+    request: z.number().int().min(1),
+    title: z.string().trim().min(1).max(L.titleChars),
+    text: z.string().trim().min(1).max(L.proposalChars),
+  }).optional(),
 });
+
+/** A proposal's replies (YN-237 ④), by their ids: open it as a new request linked to this one, fold it into this one,
+ * or note it for later. Only "new" makes Core do anything; the other two reach the lead as any reply does. */
+export const PROPOSAL_OPTIONS = ["new", "merge", "later"] as const;
 const statusSchema = z.strictObject({ asOf: time, validFor: z.number().int().min(L.validForMin).max(L.validForMax) });
 const timeSchema = z.strictObject({ due: time.optional(), eta: time.optional(), nextUpdate: time.optional() });
 const attachmentSchema = z.strictObject({
@@ -762,6 +777,7 @@ export const BRIEF_PROBLEM_CODES = {
   too_many_refs: `The section has over ${L.liveRefs} LiveRefs.`,
   ask_required: "kind ask without ask.",
   ask_without_reply: "An ask without options, freeText, form or choice.",
+  invalid_proposal: `A proposal's ask whose options are not new, merge and later, or that also offers a form or a choice.`,
   status_required: "kind status without status.",
   misplaced_field: "ask or status on a section of another kind.",
   root: "The root is not a BriefBody.",
@@ -799,6 +815,8 @@ export const BRIEF_ADVICE_CODES = {
   summary_may_be_missing: "A Table or chart and no non-empty Markdown, Findings or Metrics block.",
   duplicate_ref: "One LiveRefs or Sources block that names the same target twice.",
   many_refs: `Over ${L.advice.refs} LiveRefs and Sources entries in one section, each target counted once per block.`,
+  data_not_charted: "A CSV, TSV, JSON or JSONL attachment no LineChart, BarChart or ScatterChart in the section reads.",
+  ask_grows_after_reply: "An edit or patch that makes an ask's Markdown longer after the user replied to it: what goes on now belongs in its Task's status (the request's Now), the ask keeps the decision.",
 } as const;
 
 /**
@@ -1538,6 +1556,10 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
       add(problem("duplicate_id", "ask.reply.options", "Option ids must be unique.", "ask"));
     if (choice && choice.a.id === choice.b.id)
       add(problem("duplicate_id", "ask.reply.choice", "choice.a and choice.b need different ids.", "ask"));
+    // A proposal (YN-237 ④) is answered by its three options, the user's own words beside them; nothing else.
+    const ids = (options ?? []).map((o) => o.id);
+    if (section.ask.proposal && (form || choice || ids.length !== PROPOSAL_OPTIONS.length || !PROPOSAL_OPTIONS.every((id) => ids.includes(id))))
+      add(problem("invalid_proposal", "ask.reply", `A proposal's reply is options with the ids ${PROPOSAL_OPTIONS.join(", ")} (labels yours, e.g. "Open a new request", "Fold into R-n", "Note it for later"), with freeText if you like; no form or choice.`, "ask"));
   }
   const files = new Map<string, NonNullable<BriefSection["attachments"]>[number]>();
   (section.attachments ?? []).forEach((attachment, index) => {
@@ -2484,12 +2506,13 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     formatComponentGuide("form", clarificationSchema, COMPONENT_DESCRIPTIONS.Clarification, spaced(`At most ${L.formFields} fields, ${L.formOptions} options each.`)),
     `Use options for one choice and a form for several related answers, as in the decision and form examples; a review of a file, as in the review example (when and how: yuzuno_guide topic brief, "Ask for a review").`,
     `Write the ask to be answered alone: Home shows an open ask whole where the user reads its request. Say what is decided now and why; the facts it rests on, each as far as it was really checked (a dry run is not a signed release); what each option leads to and what can't be undone; what you recommend and why. Link the longer background (a report, the latest status, the task) rather than copying it. A simple question stays one sentence (yuzuno_guide topic brief, "Write an Ask to be answered alone").`,
+    `- proposal {request, title, text}: only from a lead, while doing request R-<request> of this Project, for a matter found there that could be its own request: title and text are what the new request would say (why, its effect, what it would do). Its reply is options with the ids ${PROPOSAL_OPTIONS.join(", ")}. new: Core opens it as the next request, sent to the front desk like the user's own, the two requests linked both ways, once however often the reply is sent; merge and later make nothing: the reply reaches you as any reply does, to fold it into R-<request> or keep it noted. Fixes R-<request>'s acceptance needs are no proposal: do them. Core refuses it from a member who is not a lead (proposal_not_lead) or for a request the Project does not have (proposal_request_unknown).`,
     `- gate {taskId, step}: only for an executor at a gate step of its task's template (step counts from 0, as executor_templates_list lists them): the approval it asks for. Core refuses it from any other Agent (gate_not_yours) or for a step that is not a gate (gate_step_unknown). The executor's Overview shows the ask at that step and the user can answer it there too; the step is done once the ask is replied.`,
     `The user's answer reaches you as an ordinary message quoting the section. The ask then shows "replied": it leaves Needs you, and brief_get lists it in you.repliedAsks (key, title, repliedAt, the reply in short, updatedSinceReply). It stays until you resolve it with {op:"resolve", key}; nothing closes it for you.`,
     `The user may also write to you about an ask without answering it (Home's "Wait, what?"): a message that begins "Note from the user on Home" and names the version they saw. A note chooses nothing, answers nothing of a form and approves nothing; the ask stays as it was, open in Needs you or replied. Take it as a question or a remark: revise the ask (edit or put it), or resolve or remove it if it no longer applies, and act on no option as chosen.`,
     `When to resolve: a preference or information you asked for, once you have taken it in; an action the reply authorizes, only after that action is confirmed done and its result is on the existing Task or a Brief section. A green CI or a whole Task being done is not that action. While it runs, or after it fails, keep the ask replied and report progress on the Task or Brief: edit keeps it replied, while put asks it again. Ask again only when the user has something new to decide. A reply executes nothing by itself: act on what the user has authorized, an explicit reply included, without asking for it again, and never infer a retry, merge or wider permission from an answer that does not grant it.`,
     `brief_get's you.openAsks counts your unresolved asks, open or replied.`,
-    `Answers never execute actions: nothing in a Brief merges, deploys or approves; Core approvals stay separate.`,
+    `Answers never execute actions: nothing in a Brief merges, deploys or approves; Core approvals stay separate. The one thing a reply makes Core do is a proposal's new: open that request.`,
   ],
   content: [
     `body is {root, elements}: elements maps ids (a letter, then letters, digits, - or _) to {type, props, children?, visible?} (visible: see interactive). root names the one BriefBody. The elements form one tree: each used once, at most ${L.depth} levels and ${L.components} components, at most ${L.bodyBytes} bytes of compact JSON. Only BriefBody, Group, Columns and Tabs have children. ${SIGNATURE_LEGEND} Components:`,
@@ -2504,7 +2527,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Collection: items of one kind (news, papers, projects, pictures), 2-${L.collectionItems}, each with a title and, as it has them, an image, text (one line), meta (its source or time, e.g. "News · 07:40"), an https href its title opens in a new window, and up to ${L.collectionTags} tags. image names an image attachment of this section (see attachments), which the Collection shows, so it needs no Attachments block; alt says what it shows. A section has at most ${L.attachments} attachments, so at most ${L.attachments} pictures; an item without one shows its text alone. layout: carousel is one page per item side by side, a picture over its text, for a few the reader looks at one by one; grid is tiles to browse and compare; list is rows for many results. Nothing turns pages by itself. As the summary's visual, a wide or large card shows a carousel whole, a grid's first row (two rows on a large card) and a list's first ${COLLECTION_CARD_ROWS.wide} rows (${COLLECTION_CARD_ROWS.large} on a large card), and a small card its first item, each with how many there are. The report page shows every item; a grid or list whose items have tags shows up to ${L.collectionFilters} of them to filter by, and a list a search of titles, text and meta.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example, and a Tabs of titled Groups for parts of one kind the reader picks between (news, papers, policy), as in the tabs example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
     `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?, forYou?, progress?, relay?, size}: lead, visual, conditions, forYou, progress and relay are ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Calc, Diagram, Figure, Steps, Timeline, Table, ResearchDesk, Collection, Attachments with one image file, or a Group of inputs the reader sets on the card, see interactive); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows; forYou a Checklist of what the user is asked to do: when the card is the one the project's page leads with (a lead's newest status, else report, bound to no task), that page lists its open items beside it. Leave forYou out for an Agent's own list. progress a Plan of what the card's task delivers, one step per outcome (one per question for an investigation), each done, doing, todo or blocked, and a step's prs the numbers of the pull requests that deliver it; the page shows it in your order. relay a Plan of the hand-offs you plan after those outcomes, in order (a release, the user's install, a re-check): the task's request lists its steps not done as the planned relay under Details, a step of the user's as words only, never as a to-do. size is the room the card takes among Home's cards: small (one column: the lead and conditions, Metrics of one or two values as big numbers, a Collection's first item; any other figure is left to the page), wide (two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk; a Collection under it) or large (two columns, two rows: an image, a scatter chart, an HTML page). Name it with every summary, for what the summary shows, not for how much you wrote. A summary without one is still accepted (advice summary_size_missing), and Home guesses its card's size from its figure. A card with no visual shows instead the first kept image or single HTML page (.html or .htm) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there. A report whose body holds only its lead (one paragraph), the card's picture and files, and its conditions is the whole report: its card has no Open report. The user may give a card they pinned to their widgets another size there; your card keeps yours. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title. Nothing else folds, but a report's or status's Markdown block over ${L.advice.markdownChars} characters: Home shows its headings and first paragraph, and the rest behind Show all, so its first paragraph should say the point. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
-    `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
+    `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent, and on an ask it edits after the user replied (ask_grows_after_reply); for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
     ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `Card faces: an accepted brief_update, and a validateOnly check that passes, tell in cards how each report or status card it writes shows on Home, read by Home's own rules from the section as Core keeps it: at most ${L.cards} (moreCards counts the rest), and cardsUnavailable says why any are missing, which changes nothing else in the answer. Asks have none. Exact: summary (named, or unnamed: how the body opens), lead {block, text, chars, otherParagraphs}, visual {from: named, file (the first kept image or page the body shows, when no visual is named or the named one is not a picture), opening or none; block, type, file, drawn: what the card's size draws, e.g. a table's rows and columns}, dropped (a summary slot you named that the card does not use, and why), conditions, files, opensReport and notOnCard (the blocks left to the page). wide and phone are references, not the reader's device: Home's project page at the default text size, a 1440 px window and a 390 px touch phone, the card at its own span; their estimate (the lead's lines and where it is cut, what of a table or Metrics fits fully or partly in the frame, heightPx) comes from font metrics and Home's CSS, not a browser. Read them to check that the first look carries your conclusion, and that no limit a number depends on falls past the cut.`,
   ],
@@ -2583,6 +2606,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     ...Object.entries(BRIEF_PROBLEM_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `- ask_only: Your current Project permission allows only your own valid asks, removing your own older sections, optional noChange, and the card of a Task you answer for (see sections). A Project's leads edit Home; the user chooses them. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
     `- gate_not_yours, gate_step_unknown: an ask's gate names a task you are not the executor of, or a step of its template that is not a gate (see ask).`,
+    `- proposal_not_lead, proposal_request_unknown: a proposal from a member who is not a lead, or naming a request this Project does not have (see ask).`,
     `- invalid_task: task names no Task, a Task of another Project or an archived one, or comes from a member who is not a lead (see sections).`,
     `- not_card_responsible: an executor's report or status sub-topic outside the card of the Task it is the current executor of (see sections).`,
     `- not_project_lead, refresh_report_only, refresh_invalid, refresh_needs_user_turn, refresh_too_often, refresh_limit: a refresh from a member who is not a lead, on a section that is not a report, that does not read, made or made faster outside a Turn the user started, more often than the user allows, or one more than the user allows on at once (see refresh).`,
@@ -2625,7 +2649,7 @@ export const BRIEF_HARD_RULES = [
   `1. No Brief update is required each turn: write when something changed, for the user: conclusion first, limits beside it, evidence on its Task. A current state goes in a status, a lasting finding or decision in a short report linked to its Task, a choice for the user in an ask; yuzuno-ui blocks never reach Home. Load tools with tool search if needed.`,
   `2. Pass expectedVersion from brief_get. On version_conflict, re-read, merge and retry with a new requestId.`,
   `3. Leads edit Home; the user chooses leads. If editContent is false and writeOwnAsk is true, write only your own Asks and a card of a Task you answer for. If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
-  `4. An ask needs a question plus reply options, freeText, a form or a choice. A reply marks it replied. Resolve your asks explicitly with resolve once they are handled: a preference once taken in, an authorized action only after it is done and its result is on the Task or Brief. A reply executes nothing itself: act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant.`,
+  `4. An ask needs a question plus reply options, freeText, a form or a choice. A reply marks it replied. Resolve your asks explicitly once handled: a preference once taken in, an authorized action only after it is done and its result is on the Task or Brief. A reply executes nothing itself (save a proposal's new): act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant.`,
   `5. Brief content never executes actions: nothing you write merges, deploys or approves; answers come back to you as messages.`,
   `6. If brief_update is rejected, fix the listed problems and call it again. Read yuzuno_guide brief for what to write and brief_guide for formats, limits and examples.`,
 ].join("\n");

@@ -418,6 +418,20 @@ pub(crate) fn card_by_identity(db: &Connection, project: &str, identity: i64) ->
     sections::by_identity(db, project, identity)?.map(|row| card(db, &row)).transpose()
 }
 
+/// The tasks (internal IDs) the live sections of `project` are the cards of, as Home binds them (`Cards::binding`):
+/// a request routed to one of them keeps its place on the Project's first page whatever its number
+/// (project_requests.rs `kept`, YN-237), so Home draws that card in its request's block.
+pub(crate) fn live_card_tasks(db: &Connection, project: &str) -> Result<std::collections::HashSet<String>> {
+    let cards = Cards::new(db);
+    let mut tasks = std::collections::HashSet::new();
+    for row in sections::live(db, project)? {
+        if let Some(task) = cards.binding(&row)? {
+            tasks.insert(task);
+        }
+    }
+    Ok(tasks)
+}
+
 /// Who answers for the task's card now (`responsible`), as a card shows them.
 pub(crate) fn responsible_json(db: &Connection, task: &str) -> Result<Option<Value>> {
     Ok(responsible(db, task)?.map(|who| who.json()))

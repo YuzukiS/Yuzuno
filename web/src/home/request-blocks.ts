@@ -1,5 +1,6 @@
 import { changedSinceSeen } from "./brief-layout.ts";
 import { runsText, visibleRuns } from "./card-face.ts";
+import { sectionSummary } from "./card-summary.ts";
 import { summaryOf } from "./report/report-model.ts";
 import type { Deliverable, Delivery, ProjectRequest, RequestCard, RequestPull, RequestReply, RouteAgent } from "./project-talk-api";
 import type { Section } from "./types";
@@ -131,6 +132,8 @@ export type RequestBlock = {
   next: BlockNext | null;
   /** What it has and still lacks, by outcome; only with a bar. */
   details: BlockDetails | null;
+  /** With no Plan to name its outcomes, the bar Core draws from its tasks and PRs (YN-237 ③); none otherwise. */
+  track: (BlockNow & { kind: "bar" }) | null;
   /** What its first look's evidence line counts (R-38 §2.2): its tasks' PRs, by whether the release has them. */
   evidence: BlockEvidence;
   /** When its progress was written before later facts Core knows (R-38 §2.5); none otherwise. */
@@ -144,7 +147,38 @@ export type RequestBlock = {
   reply: { text: string; by: RouteAgent; at: string } | null;
   /** The user's follow-ups and what came of each (R-45 §3.1); none without one. */
   follow: BlockFollowUp | null;
+  /** Its first look's lines (YN-237): what goes on now, what needs the user, its newest result. */
+  look: BlockLook;
 };
+
+/**
+ * What goes on in a request now (YN-237 ②, the design's "现在"), one line with when it was so: the newest of its own
+ * tasks' live statuses (`status`: its lead's first sentence, else its title, as of its asOf; `stale` past its
+ * validity; its page opens from the line) and their own progress (`progress`: its first sentence, by when it was written); with neither, the block's
+ * fact (`fact`), as Core states it.
+ */
+export type LookNow =
+  | { kind: "status"; text: string; at: string; stale: boolean; section: Section; task: string }
+  | { kind: "progress"; text: string; at: string | null; task: string }
+  | { kind: "fact" };
+
+/**
+ * A request's newest result (YN-237 ②, "结果"): of what its own tasks delivered and the reports they wrote, the newest;
+ * its line is a report's first sentence (else its title), an answer's words, or what was delivered. `section`: the
+ * report as Home has it, whose page the line opens; `item`: the deliverable, opened as its line opens it, when Home
+ * has no such section.
+ */
+export type LookResult = { task: string; text: string; title: string; at: string; section: Section | null; item: Deliverable | null };
+
+/** An open Ask the user decides on (YN-237 ②, "需要你"): the oldest of its own tasks', how many, and (`home`) the
+ * request it is shown under when it is a task it joined. */
+export type LookAsk = { key: string; title: string; count: number; home: number | null };
+
+/**
+ * A request's first look (YN-237 ②): each line one step from the whole of it. `later`: what Core knows that came after
+ * the now line (PRs merged, results, tasks ended, the user's follow-ups), said after it, at most three kinds.
+ */
+export type BlockLook = { now: LookNow; later: StaleFact[]; ask: LookAsk | null; result: LookResult | null };
 
 /**
  * A request's status label (R-38 §2.3), the first of these that holds: done (the user confirmed it); its words'
@@ -600,10 +634,18 @@ function factsOf(step: PlanStep, linked: readonly RequestPull[]): PullFact[] {
   });
 }
 
-/** A done step's state: merged only when each PR it names is one linked PR, merged; available when each is installed too. */
-function doneState(facts: readonly PullFact[]): Segment["state"] {
-  if (!facts.length || !facts.every((fact) => fact.kind === "linked" && fact.pr.state === "merged")) return "done";
-  return facts.every((fact) => fact.kind === "linked" && fact.pr.installed === true) ? "available" : "merged";
+/**
+ * A step's state from what Core knows of the PRs it names (YN-237 ③: the stages follow known evidence; the Plan names
+ * the outcomes). When each PR it names is one PR its task links and none was closed unmerged, those PRs say it,
+ * whatever its author marked: available, each merged and in the release (by commit); merged, each merged; in
+ * progress, one still open or a draft (a step marked done whose PR has not merged is not done yet). Otherwise, or
+ * naming none, as its author marked it (R-38, the lead's rule on YN-227, comment 12387, where evidence is lacking).
+ */
+function stepState(marked: PlanStep["state"], facts: readonly PullFact[]): Segment["state"] {
+  const prs = facts.flatMap((fact) => (fact.kind === "linked" ? [fact.pr] : []));
+  if (!facts.length || prs.length !== facts.length || prs.some((pr) => pr.state === "closed" || pr.state === "unknown")) return marked;
+  if (prs.every((pr) => pr.state === "merged")) return prs.every((pr) => pr.installed === true) ? "available" : "merged";
+  return marked === "blocked" ? "blocked" : "doing";
 }
 
 const TEAM_STATES = new Set(["queued", "starting", "running", "delivering"]);
@@ -623,7 +665,7 @@ function barOf(rows: readonly TaskRow[]): { now: BlockNow & { kind: "bar" }; sou
     return card.steps.map((step) => {
       const { name, detail } = split(step.text);
       const facts = factsOf(step, row.prs);
-      const state: Segment["state"] = step.state === "done" ? doneState(facts) : step.state;
+      const state = stepState(step.state, facts);
       const ask = asking && step.state !== "done";
       if (ask) asking = false;
       return { id: `${row.task.id}:${step.id}`, task: row.task.id, name: several ? `${shortOf(row)} · ${name}` : name, detail, state,
@@ -636,6 +678,49 @@ function barOf(rows: readonly TaskRow[]): { now: BlockNow & { kind: "bar" }; sou
       segments },
     sources: planned.map(({ card }) => card.section),
   };
+}
+
+/** A PR's segment state, by what Core knows of it (YN-237 ③): in the release, merged, open or a draft. */
+function pullState(pr: RequestPull): Segment["state"] | null {
+  if (pr.state === "merged") return pr.installed === true ? "available" : "merged";
+  if (pr.state === "open") return "doing";
+  if (pr.state === "draft") return "todo";
+  return null;
+}
+
+/** A task's segment state by its own record, when it links no PR: done, waiting on a condition, going on, not begun. */
+function taskState(row: TaskRow): Segment["state"] | null {
+  if (row.task.status === "cancelled") return null;
+  if (row.task.status === "done") return "done";
+  if (row.task.blocker || row.task.status === "blocked") return "blocked";
+  return row.task.status === "todo" ? "todo" : "doing";
+}
+
+/**
+ * The bar Core draws for a request none of whose tasks names a Plan (YN-237 ③, "进度条由 Core 按任务、PR、发布和安装记录画
+ * 出"): one segment per PR a task links (its title, by what Core knows of it, closed ones left out), and one per task
+ * linking none (its short name, by its own record); none with fewer than two, where a bar says no more than its line.
+ */
+function trackOf(rows: readonly TaskRow[]): (BlockNow & { kind: "bar" }) | null {
+  if (rows.some((row) => progressCard(row))) return null;
+  const several = rows.length > 1;
+  const segments: Segment[] = rows.flatMap((row): Segment[] => {
+    const prs = row.prs.flatMap((pr) => {
+      const state = pullState(pr);
+      return state ? [{ pr, state }] : [];
+    });
+    if (prs.length)
+      return prs.map(({ pr, state }) => ({ id: `${row.task.id}:#${pr.number}`, task: row.task.id,
+        name: `${several ? `${shortOf(row)} · ` : ""}#${pr.number}${pr.title ? ` ${pr.title}` : ""}`, detail: null, state,
+        facts: [{ number: pr.number, kind: "linked" as const, pr }], asking: false }));
+    const state = taskState(row);
+    return state ? [{ id: row.task.id, task: row.task.id, name: row.card?.card?.task.shortName || row.title, detail: null, state, facts: [],
+      asking: row.asks.some(openAsk) }] : [];
+  });
+  if (segments.length < 2) return null;
+  const count = (...states: Segment["state"][]) => segments.filter((s) => states.includes(s.state)).length;
+  return { kind: "bar", done: count("available", "merged", "done"), total: segments.length, available: count("available"), merged: count("merged"),
+    segments };
 }
 
 /** One cell of a drawn bar: a segment, or (more than `BAR_CELLS` of them) a run of adjacent ones of one state. */
@@ -784,6 +869,88 @@ function requestProgress(request: ProjectRequest, own: readonly TaskRow[], joine
   };
 }
 
+/** Markdown as one line of plain text: its first sentence (splitLead), else all of it. */
+const lineOf = (markdown: string | null | undefined) => splitLead(markdown)?.head ?? null;
+
+/** A report's line: its conclusion's first sentence, else its title. */
+const reportLine = (section: Section) => lineOf(sectionSummary(section)) || section.title;
+
+/** The section a delivered report is, as Home has it: by its identity and version, else by its key and version. */
+function deliveredSection(item: Deliverable & { kind: "report" }, sections: readonly Section[]): Section | null {
+  return sections.find((s) => s.id === item.sectionId && s.version === item.version)
+    ?? sections.find((s) => s.key === item.key && s.version === item.version)
+    ?? sections.find((s) => s.id === item.sectionId && !s.history)
+    ?? null;
+}
+
+/**
+ * A request's newest result (`LookResult`): what its own tasks' newest results delivered, and the reports they wrote
+ * that no result named. A report or an answer is what the user reads (the design's result box), so the newest of those;
+ * with none, the newest PR or release delivered. Within one result, its report first, then its answer, then what it
+ * named first.
+ */
+function resultOf(own: readonly TaskRow[], request: ProjectRequest, sections: readonly Section[]): LookResult | null {
+  const found: { result: LookResult; at: number; read: boolean }[] = [];
+  const named = new Set<string>();
+  const ids = new Set(own.map((row) => row.task.id));
+  for (const card of request.cards) {
+    if (!ids.has(card.task.id) || !card.deliverables?.items.length) continue;
+    const reportedAt = card.deliverables.reportedAt;
+    const items = card.deliverables.items;
+    const item = items.find((d) => d.kind === "report") ?? items.find((d) => d.kind === "answer") ?? items[0];
+    for (const d of items) if (d.kind === "report") named.add(`${d.sectionId}:${d.version}`);
+    const section = item.kind === "report" ? deliveredSection(item, sections) : null;
+    const text = section ? reportLine(section) : item.kind === "answer" ? item.text : item.title || "";
+    found.push({ result: { task: card.task.id, text, title: section?.title ?? item.title ?? card.task.id, at: reportedAt, section,
+      item: section ? null : item }, at: time(reportedAt), read: item.kind === "report" || item.kind === "answer" });
+  }
+  for (const row of own) {
+    for (const report of [row.card, ...row.earlier].filter((s): s is Section => s?.kind === "report")) {
+      if (named.has(`${report.id}:${report.version}`)) continue;
+      found.push({ result: { task: row.task.id, text: reportLine(report), title: report.title, at: report.updatedAt, section: report, item: null },
+        at: time(report.updatedAt), read: true });
+    }
+  }
+  const pool = found.some((one) => one.read) ? found.filter((one) => one.read) : found;
+  return pool.reduce<(typeof found)[number] | null>((best, one) => (!best || one.at > best.at ? one : best), null)?.result ?? null;
+}
+
+/** What goes on now (`LookNow`): the newest of its own tasks' live statuses and own progress, those going on first. */
+function nowOf(own: readonly TaskRow[]): LookNow {
+  const rows = own.some(going) ? own.filter(going) : own;
+  let best: { now: LookNow; at: number } | null = null;
+  for (const row of rows) {
+    const status = [row.card, ...row.earlier].find((s) => s?.kind === "status" && !s.history);
+    if (status) {
+      const at = status.status?.asOf ?? status.updatedAt;
+      const text = lineOf(sectionSummary(status)) || status.title;
+      if (!best || time(at) > best.at)
+        best = { now: { kind: "status", text, at, stale: !!status.status?.stale, section: status, task: row.task.id }, at: time(at) };
+    }
+    const progress = splitLead(row.task.progress)?.head;
+    if (progress) {
+      const at = row.task.progressAt ?? null;
+      // A progress with no known time counts as older than any known one (progressRow).
+      if (!best || time(at) > best.at) best = { now: { kind: "progress", text: progress, at, task: row.task.id }, at: time(at) };
+    }
+  }
+  return best?.now ?? { kind: "fact" };
+}
+
+/** A request's first look (YN-237 ②): `BlockLook`, from its own tasks, else (none of its own) those it joined. */
+function lookOf(request: ProjectRequest, own: readonly TaskRow[], joined: readonly TaskRow[], sections: readonly Section[]): BlockLook {
+  const rows = own.length ? own : joined;
+  const now = nowOf(rows);
+  const at = now.kind === "fact" ? null : now.at;
+  const later = at ? staleOf(request, rows, at, false)?.facts ?? [] : [];
+  const mine = openAsks(own);
+  const open = mine.length ? mine : openAsks(joined);
+  const ask = open.length
+    ? { key: open[0].ask.key, title: open[0].ask.ask?.question || open[0].ask.title, count: open.length, home: mine.length ? null : open[0].row.home }
+    : null;
+  return { now, later, ask, result: resultOf(rows, request, sections) };
+}
+
 /** Within Needs you: an Ask first, then words not delivered, then what waits for a confirmation. */
 const RANK: Record<BlockFact["kind"], number> = {
   ask: 0, unconfirmed: 1, result: 2, answered: 2, ended: 3, replied: 4, card: 4, working: 4, waiting: 4,
@@ -798,6 +965,7 @@ const ORDER: Record<BlockGroup, number> = { needs: 0, doing: 1, done: 2 };
  */
 export function pageBlocks(requests: readonly ProjectRequest[], sections: readonly Section[]): { blocks: RequestBlock[]; project: ProjectBlock | null } {
   const rows = rowsOf(requests, sections);
+  const all = unique(sections);
   const blocks: RequestBlock[] = [];
   for (const request of requests) {
     const mine = [...new Set(request.cards.map((c) => c.task.id))].map((id) => rows.get(id)!);
@@ -829,6 +997,8 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
       joined,
       unread: own.some(changedSinceSeen),
       ...progress,
+      look: lookOf(request, tasks, joined, all),
+      track: trackOf(tasks.length ? tasks : joined),
       last: Math.max(
         time(request.createdAt),
         ...own.map((s) => time(s.updatedAt)),
@@ -838,13 +1008,40 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
       ),
     });
   }
+  const taken = new Set(rows.keys());
+  // A lead's proposal (YN-237 ④) is asked in the request it was made under, whatever task it is bound to (if any): one
+  // bound to none is that request's, not the Project's, open, answered or resolved (review 4d93b1ad): its asks, where
+  // the block draws it up front while it is the user's to decide, else as an Answered line under Details, once. Open,
+  // the request is in Needs you whatever its own state; one the user confirmed done stays done (its state, its
+  // confirmation), only listed in Needs you until they decide. Its request not on the page, it stays the Project's.
+  const proposed = new Map<string, number>();
+  for (const s of all) {
+    const n = s.kind === "ask" ? s.ask?.proposal?.request : undefined;
+    const block = n === undefined ? undefined : blocks.find((b) => b.request.n === n);
+    if (!block || taken.has(taskOf(s) ?? "")) continue;
+    proposed.set(s.key, n!);
+    block.asks = [...block.asks, s].sort(asked);
+    if (!openAsk(s)) continue;
+    block.look = { ...block.look, ask: block.look.ask && block.look.ask.home === null
+      ? { ...block.look.ask, count: block.look.ask.count + 1 }
+      : { key: s.key, title: s.ask?.question || s.title, count: 1, home: null } };
+    block.group = "needs";
+    block.next = { kind: "ask" };
+    if (block.request.state === "done") continue;
+    block.state = "decide";
+    if (block.action === "follow") block.action = null;
+  }
   blocks.sort((a, b) =>
     ORDER[a.group] - ORDER[b.group] ||
     (a.group === "needs" ? RANK[a.fact.kind] - RANK[b.fact.kind] : 0) ||
     b.last - a.last ||
     b.request.n - a.request.n);
-  const taken = new Set(rows.keys());
-  const rest = unique(sections).filter((s) => !s.history && !isPlaceholder(s) && !taken.has(taskOf(s) ?? ""));
+  // A report a request's task delivered is that request's (YN-237 ①): its result line opens it, so the Project's own
+  // block never shows it again, whatever task it is bound to.
+  const delivered = new Set(requests.flatMap((r) => r.cards.flatMap((c) => c.deliverables?.items ?? []))
+    .flatMap((d) => (d.kind === "report" ? [`i:${d.sectionId}`, `k:${d.key}`] : [])));
+  const deliveredHere = (s: Section) => s.kind === "report" && (s.id !== undefined ? delivered.has(`i:${s.id}`) : delivered.has(`k:${s.key}`));
+  const rest = all.filter((s) => !s.history && !isPlaceholder(s) && !taken.has(taskOf(s) ?? "") && !deliveredHere(s) && !proposed.has(s.key));
   const asks = rest.filter((s) => s.kind === "ask").sort(asked);
   const project: ProjectBlock | null = rest.length
     ? {
@@ -860,6 +1057,27 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
 }
 
 /**
+ * What changed in a request since the user last read it, as the Project's head lists it (YN-237 ①): each request once,
+ * by what it says first: an Ask of its own for the user ("ask"), else its newest result when that changed ("result"),
+ * else what goes on now ("now"; its title where nothing says that).
+ */
+export type HeadChange = { n: number; kind: "ask" | "result" | "now"; text: string };
+
+/** Most requests the head lists as changed (YN-237 ①); past it, it says how many more. */
+export const HEAD_CHANGES = 5;
+
+/** The head's changed requests (`HeadChange`), in the page's order (Needs you first), done requests left out. */
+export function headChanges(blocks: readonly RequestBlock[]): HeadChange[] {
+  return blocks.filter((block) => block.unread && block.group !== "done").map((block): HeadChange => {
+    const { n } = block.request;
+    const { ask, result, now } = block.look;
+    if (ask && ask.home === null) return { n, kind: "ask", text: ask.title };
+    if (result?.section && changedSinceSeen(result.section)) return { n, kind: "result", text: result.text };
+    return { n, kind: "now", text: now.kind !== "fact" ? now.text : block.request.title?.trim() || `R-${n}` };
+  });
+}
+
+/**
  * How many requests each group has: the group heads, "Requests N" and "n need you". The Project's own block is no
  * request (R-27 §3.7): the page counts its Asks on their own.
  */
@@ -869,10 +1087,10 @@ export function blockCounts(blocks: readonly RequestBlock[]) {
   return counts;
 }
 
-/** Whether `key` is an open Ask shown up front (W5): in its block's first look, or in Needs you for the Project's. A
- * jump to it opens no block. */
-export function askUpFront(key: string, blocks: readonly RequestBlock[], project: ProjectBlock | null) {
-  return [...blocks.flatMap((block) => block.asks), ...(project?.asks ?? [])].some((ask) => ask.key === key && openAsk(ask));
+/** Whether `key` is an open Ask shown up front: the Project's own, in Needs you, which a jump lands on opening nothing.
+ * A request's open Ask is in its unfolded block (YN-237 ②): a jump to it opens the block. */
+export function askUpFront(key: string, _blocks: readonly RequestBlock[], project: ProjectBlock | null) {
+  return (project?.asks ?? []).some((ask) => ask.key === key && openAsk(ask));
 }
 
 /** The block a section is shown in (a card link, a jump to an Ask): its task's home request's, else the Project's. */
@@ -881,21 +1099,25 @@ export function blockOfSection(key: string, blocks: readonly RequestBlock[], pro
     for (const row of block.tasks) {
       if ([row.card, row.placeholder, ...row.earlier, ...row.asks].some((s) => s?.key === key)) return block.key;
     }
+    // A report its tasks delivered is its result (YN-237 ①), shown unfolded; a lead's proposal is asked in it (YN-237 ④).
+    if (block.look.result?.section?.key === key || block.asks.some((s) => s.key === key)) return block.key;
   }
   if (project && [...project.sections, ...project.asks].some((s) => s.key === key)) return project.key;
   return null;
 }
 
 /**
- * The card the project's page leads with (R-27 §3.1): of the Project's own cards, those bound to no task and written
- * by a lead (any, when the project names none, as its glance reads them), the newest status, stale or not, else the
- * newest report; null with neither. The first of two written at the same time.
+ * The lead's one line across requests in the Project's head (R-27 §3.1, YN-237 ①): of the Project's own cards, those
+ * bound to no task and written by a lead (any, when the project names none, as its glance reads them) still open, the
+ * newest status, stale or not; null with none. A status is a state in one line (the design's "Status 是一行「现在」"); a lead's
+ * report is a result, a card of its own under Other. The first of two written at the same time.
  */
 export function projectLine(cards: readonly Section[], editors: readonly string[] | null): Section | null {
-  const ours = cards.filter((section) => !section.card && !section.history && (!editors || editors.includes(section.owner.agentId)));
-  const newest = (kind: Section["kind"]) =>
-    ours.filter((section) => section.kind === kind).reduce<Section | null>((best, section) => (best && time(section.updatedAt) <= time(best.updatedAt) ? best : section), null);
-  return newest("status") ?? newest("report");
+  // A lead's current word: by an open Agent (one closed keeps no line up to date; its card stays a card).
+  const ours = cards.filter((section) => !section.card && !section.history && section.owner.state !== "closed" && section.owner.state !== "deleted"
+    && (!editors || editors.includes(section.owner.agentId)));
+  return ours.filter((section) => section.kind === "status")
+    .reduce<Section | null>((best, section) => (best && time(section.updatedAt) <= time(best.updatedAt) ? best : section), null);
 }
 
 /**
@@ -932,18 +1154,6 @@ export function forYouTodo(section: Section): ForYou | null {
     .map((item, index) => ({ id: typeof item.id === "string" ? item.id : String(index), text: item.text as string }));
   if (!open.length) return null;
   return { title: typeof props?.title === "string" && props.title.trim() ? props.title : null, open: open.length, items: open };
-}
-
-/**
- * What the Project cards group holds (R-27 §3.6): the Project's cards, the banner's among them, and its Asks answered
- * before this visit (`answered`); 0 when it would hold nothing but the banner's card, which is then the banner alone,
- * with that card's own Reply, Seen and Pin (§6; the lead's call on YN-218, seq 12072).
- */
-export function projectCardsCount(block: ProjectBlock | null, answered: number, lead: Section | null) {
-  if (!block) return 0;
-  const count = block.sections.length + answered;
-  const others = count - (lead && block.sections.some((section) => section.key === lead.key) ? 1 : 0);
-  return others > 0 ? count : 0;
 }
 
 /**

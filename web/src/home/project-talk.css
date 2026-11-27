@@ -400,3 +400,10 @@ p.request-deliverable:hover {
 .project-talk-hint[data-missing] {
   color: var(--home-attention-ink, var(--home-ink-2));
 }
+/* Over the words a proposal opened (YN-237 ④): whose words they are. */
+.project-talk-from {
+  margin: 0 0 2px;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  text-align: right;
+}

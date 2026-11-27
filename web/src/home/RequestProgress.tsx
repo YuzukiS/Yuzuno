@@ -5,7 +5,7 @@ import { useTimeDisplay } from "../time-preferences";
 import { Tip, TipText } from "../Tip";
 import { CardAgents } from "./card-responsible";
 import { absolute, duration, relative } from "./format";
-import type { InstalledRelease, RequestPull, RouteAgent } from "./project-talk-api";
+import type { RequestPull, RouteAgent } from "./project-talk-api";
 import { talkText } from "./talk-text";
 import type { BlockCommon } from "./RequestBlocks";
 import {
@@ -434,23 +434,6 @@ function ReplyLine({ reply }: { reply: NonNullable<RequestBlock["reply"]> }) {
         <time className="request-reply-at" dateTime={reply.at}>{relative(reply.at, language)}</time>
       </Tip>
     </p>
-  );
-}
-
-/**
- * Core's line about the release (R-38 §2.6): the release this Core runs, by its version, and how many merged PRs
- * linked to the Project's tasks Core found by commit not to be in it (merged later, or on another line); said only
- * when Core knows every one, and never as a count of what merged on main (the lead's comment 12412).
- */
-export function InstalledLine({ release, mergedAfter }: { release: InstalledRelease; mergedAfter: number | null }) {
-  const t = progressText(useLanguage());
-  return (
-    <Tip content={<TipText title={`${release.releaseId} · ${release.gitSha.slice(0, 12)}`} />} describe={false}>
-      <p className="project-installed">
-        <span>{t.installedRelease(release.version || release.releaseId)}</span>
-        {mergedAfter ? <span>{t.mergedAfter(mergedAfter)}</span> : null}
-      </p>
-    </Tip>
   );
 }
 

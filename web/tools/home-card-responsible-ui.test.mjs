@@ -266,7 +266,7 @@ test("a card whose task is done is in its request's block in Done: a report not 
   assert.equal(block(1).closest(".request-group").dataset.group, "needs", "its Ask waits for the user");
   const done = p.document.querySelector(".request-done");
   for (const key of ["late", "design"]) assert.ok(block(2).contains(p.card(key)) && done.contains(p.card(key)), `${key} is in Done, under R-2`);
-  assert.ok(p.card("plain").closest("[data-project-block]"), "a card of no request: the Project's cards");
+  assert.ok(p.card("plain").closest("[data-project-block]"), "a card of no request: the Project's cards, under Other (YN-237 ①)");
   assert.equal(p.card("plain").closest(".request-group").dataset.group, "project", "a group of their own, no request's");
   // The 30-day list keeps what no block shows: not the archived card again.
   done.open = true;
