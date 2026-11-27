@@ -1202,14 +1202,13 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         (Some(id), Some(row)) => Some(choice(row, id).context("choice_not_found: the ask offers no such option")?),
         _ => None,
     };
-    // A proposal's "new" (YN-237 ④): the request it opens is kept before the reply goes, once however often the reply is
-    // sent, so the reply never says it was opened when it could not be; refused (the Project archived, no front desk),
-    // the reply sends nothing and is kept. "merge" and "later" open nothing: they reach the lead as any reply does.
+    // A proposal's "new" (YN-237 ④) opens its request once the reply has reached the lead, once however often it is
+    // sent: a reply refused or failed opens nothing, and the user may answer again. Whether it can be opened is checked
+    // before a reply is first sent: refused (the Project archived, no front desk), the reply sends nothing and is kept,
+    // so it never tells the lead of a request Core could not open. "merge" and "later" open nothing: they reach the
+    // lead as any reply does.
     let proposal = shown.as_ref().filter(|_| !noting).and_then(proposal_of);
-    let opened = match (&proposal, &chosen) {
-        (Some(proposal), Some((id, _))) if id == "new" => Some(crate::project_requests::keep_proposal(ws, &project, proposal).await?),
-        _ => None,
-    };
+    let opens = proposal.as_ref().filter(|_| chosen.as_ref().is_some_and(|(id, _)| id == "new"));
     let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
     let previous = ws.stored(move |store| store.receipt(&agent, &client)).await?;
     // Whether this send made the message (YN-223), rather than finding it sent before: a retry's mark is placed by
@@ -1240,6 +1239,9 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         } else {
             ensure!(!input.text.trim().is_empty() || chosen.is_some(), "Write a reply or choose an option");
         }
+        if let Some(proposal) = opens {
+            crate::project_requests::may_open(ws, &project, proposal).await?;
+        }
         let form = input.form.as_ref().map(|form| form_answers(row, form, &input.text)).transpose()?;
         // The user's own words as the reply showed them: beside a form's
         // answers, its note.
@@ -1260,7 +1262,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             } else {
                 let answer = compose_answer(&workspace, &name, &project, row, chosen.as_ref(), &input.text, note);
                 match &proposal {
-                    Some(proposal) => format!("{answer}{}", proposal_said(proposal, chosen.as_ref(), opened.as_ref().map(|o| o.n()))),
+                    Some(proposal) => format!("{answer}{}", proposal_said(proposal, chosen.as_ref())),
                     None => answer,
                 }
             },
@@ -1327,12 +1329,17 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             announce(ws, Some(&project));
         }
     }
-    // The request the proposal opened goes to its front desk once the reply is sent: not sent now, it stays kept, not
-    // confirmed delivered, with Send again on Home.
-    if let Some(opened) = opened.filter(|_| delivered(&receipt)) {
-        let n = opened.n();
-        if let Err(error) = crate::project_requests::send_proposal(ws, &project, opened).await {
-            eprintln!("Home kept R-{n} of Project {project}, opened from a proposal, without sending it: {error:#}");
+    // The reply delivered, the request the proposal opens is kept, then sent to its front desk: not sent now, it stays
+    // kept, not confirmed delivered, with Send again on Home.
+    if let Some(proposal) = opens.filter(|_| delivered(&receipt)) {
+        match crate::project_requests::keep_proposal(ws, &project, proposal).await {
+            Ok(opened) => {
+                let n = opened.n();
+                if let Err(error) = crate::project_requests::send_proposal(ws, &project, opened).await {
+                    eprintln!("Home kept R-{n} of Project {project}, opened from a proposal, without sending it: {error:#}");
+                }
+            }
+            Err(error) => eprintln!("Home could not open the request the proposal `{key}` of Project {project} asks for: {error:#}"),
         }
     }
     Ok(receipt)
@@ -1352,17 +1359,19 @@ fn proposal_of(row: &sections::Row) -> Option<crate::project_requests::Proposal>
     })
 }
 
-/// What a reply to a proposal (YN-237 ④) tells its lead, after the user's answer: what Core did of it, by the option
-/// chosen. Core opens a request only on "new"; the other answers leave it to the lead.
-fn proposal_said(proposal: &crate::project_requests::Proposal, chosen: Option<&(String, String)>, opened: Option<i64>) -> String {
+/// What a reply to a proposal (YN-237 ④) tells its lead, after the user's answer: what Core does of it, by the option
+/// chosen. Core opens a request only on "new", as the reply reaches the lead (`ask_reply`), so its number is not known
+/// yet; the other answers leave it to the lead.
+fn proposal_said(proposal: &crate::project_requests::Proposal, chosen: Option<&(String, String)>) -> String {
     let under = proposal.under;
-    match (chosen.map(|(id, _)| id.as_str()), opened) {
-        (Some("new"), Some(n)) => format!(
-            "\n\nThis answers your proposal of a new request: Core opened it as R-{n}, linked to R-{under} both ways, and sends it to the \
-             front desk as the user's own request. Resolve this ask; the new work is R-{n}'s."),
-        (Some("merge"), _) => format!(
+    match chosen.map(|(id, _)| id.as_str()) {
+        Some("new") => format!(
+            "\n\nThis answers your proposal of a new request: as this reply reaches you, Core opens it as the Project's next request, \
+             linked to R-{under} both ways, and sends it to the front desk as the user's own request. Resolve this ask; the new work is \
+             that request's."),
+        Some("merge") => format!(
             "\n\nThis answers your proposal of a new request: the user chose to fold it into R-{under}; Core opened nothing. Do it within R-{under}."),
-        (Some("later"), _) => "\n\nThis answers your proposal of a new request: the user chose to note it for later; Core opened nothing. Keep it \
+        Some("later") => "\n\nThis answers your proposal of a new request: the user chose to note it for later; Core opened nothing. Keep it \
              noted, and resolve this ask once you have.".to_owned(),
         _ => "\n\nThis answers your proposal of a new request in words only, choosing none of its options; Core opened nothing.".to_owned(),
     }

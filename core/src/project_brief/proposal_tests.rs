@@ -1,8 +1,9 @@
 //! YN-237 ④: a lead's proposal of a new request, asked under the request it
 //! was found in. Only a lead proposes, and only under a request of its
-//! Project. The user's "new" makes Core open the request, once however often
-//! the reply is sent, linked both ways and sent to the front desk; "merge"
-//! and "later" open nothing and reach the lead as any reply does, saying so.
+//! Project. The user's "new" makes Core open the request once the reply has
+//! reached the lead, once however often it is sent, linked both ways and sent
+//! to the front desk: a reply refused or failed opens nothing. "merge" and
+//! "later" open nothing and reach the lead as any reply does, saying so.
 use super::*;
 use crate::project_requests::{page, submit, Words};
 
@@ -67,17 +68,17 @@ async fn a_leads_proposal_opens_a_request_only_on_new_once_linked_both_ways() {
     assert_eq!(on_home["ask"]["proposal"]["title"], "阶段 Job 只读一遍", "Home shows what it proposes");
     assert_eq!(requests(&ws, &project).len(), 1, "asking opens nothing");
 
-    // The user's "new": R-2 kept before the reply goes, linked both ways; the lead's reply says so. The reply not
-    // delivered (the lab's Agent takes no message mid-Turn), the ask stays open and R-2 is not sent yet.
+    // The user's "new", not delivered (the lab's Agent takes no message mid-Turn): the ask stays open and nothing is
+    // opened yet. The lead's reply says what Core does as it arrives.
     let receipt = home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap();
     assert_eq!(receipt.status, "rejected", "{receipt:?}");
     assert_eq!(section(&brief(&ws, "a"), "yn-1/split")["ask"]["state"], "open");
     let identity = identity(&ws, &project, "yn-1/split");
     assert!(ws.store.receipt("a", &format!("proposal:{identity}:1")).unwrap().is_none(), "R-2 is not sent before the reply");
-    assert_eq!(request(&ws, &project, 2)["delivery"], Value::Null, "kept, not confirmed delivered: Home offers Send again");
+    assert_eq!(requests(&ws, &project).len(), 1, "a reply not delivered opens nothing");
     let to_lead = said(&ws, "a", "r1");
-    assert!(to_lead.contains("Core opened it as R-2, linked to R-1 both ways"), "{to_lead}");
-    // Delivered, its retry marks the ask replied and sends R-2 to the front desk.
+    assert!(to_lead.contains("Core opens it as the Project's next request, linked to R-1 both ways"), "{to_lead}");
+    // Delivered, its retry opens R-2, linked both ways, marks the ask replied and sends R-2 to the front desk.
     accepted(&ws, "a", "r1");
     home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap();
     let opened = request(&ws, &project, 2);
@@ -128,4 +129,33 @@ async fn a_new_core_cannot_open_sends_nothing() {
     assert!(ws.store.receipt("a", "r1").unwrap().is_none(), "the reply was not sent");
     assert_eq!(requests(&ws, &project).len(), 1);
     assert_eq!(section(&brief(&ws, "a"), "yn-1/split")["ask"]["state"], "open");
+}
+
+// A "new" whose reply is refused or fails opens nothing (review f0c688e4): the user may answer again, and "merge" then
+// leaves no request behind, as the lead is told.
+#[tokio::test]
+async fn a_new_not_delivered_opens_nothing_and_the_user_may_choose_again() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let workspace = ws.store.workspace_id().unwrap();
+    submit(&ws, &project, Words { workspace_id: workspace, text: "选下一批运行改进".into(), text_blocks: None, client_message_id: "m1".into(),
+        images: vec![], files: vec![] }).await.unwrap();
+    accept(&ws, "a", input("p1", version(&ws, &project), vec![proposal("yn-1/split", 1, "阶段 Job 只读一遍")])).await;
+    // A reply under a client ID already used for another message fails.
+    let error = home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "m1")).await.unwrap_err();
+    assert!(error.to_string().contains("already used for another message"), "{error}");
+    assert_eq!(requests(&ws, &project).len(), 1, "a failed reply opens nothing");
+    // Refused (the Agent mid-Turn), the reply opens nothing either.
+    let receipt = home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap();
+    assert_eq!(receipt.status, "rejected", "{receipt:?}");
+    assert_eq!(requests(&ws, &project).len(), 1, "a refused reply opens nothing");
+    assert_eq!(request(&ws, &project, 1)["proposals"], json!([]));
+    // The user then folds it into R-1: delivered, nothing opened, and the lead is told so truly.
+    home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "merge", "r2")).await.unwrap();
+    accepted(&ws, "a", "r2");
+    home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "merge", "r2")).await.unwrap();
+    assert_eq!(section(&brief(&ws, "a"), "yn-1/split")["ask"]["state"], "replied");
+    assert!(said(&ws, "a", "r2").contains("the user chose to fold it into R-1; Core opened nothing"));
+    assert_eq!(requests(&ws, &project).len(), 1, "nothing opened");
+    assert_eq!(request(&ws, &project, 1)["proposals"], json!([]));
 }

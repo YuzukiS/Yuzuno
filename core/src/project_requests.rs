@@ -489,12 +489,18 @@ struct Place {
 
 /// Read in the caller's transaction, never beside it.
 fn place(db: &Connection, project: &str, words: &Words) -> Result<Place> {
-    let workspace: String = db.query_row("SELECT value FROM workspace_meta WHERE key='workspaceId'", [], |r| r.get(0))?;
-    if words.workspace_id != workspace {
+    let place = place_of(db, project)?;
+    if words.workspace_id != place.workspace {
         return Err(not_submitted(
             "workspace_changed: this message was begun on another Workspace's page. Nothing was sent, and your message is kept.".into(),
         ));
     }
+    Ok(place)
+}
+
+/// The Workspace's ID and the Project's name and archived state, whatever Workspace a message was begun on.
+fn place_of(db: &Connection, project: &str) -> Result<Place> {
+    let workspace: String = db.query_row("SELECT value FROM workspace_meta WHERE key='workspaceId'", [], |r| r.get(0))?;
     let (name, archived) = crate::projects::project_labels(db)?.remove(project).context("project_not_found: no Project has this ID")?;
     Ok(Place { workspace, name, archived })
 }
@@ -706,19 +712,65 @@ fn proposal_message(identity: i64, version: i64) -> String {
     format!("proposal:{identity}:{version}")
 }
 
-/// Keeps the request a proposal opens (YN-237 ④), on the user's "new"
-/// (project_brief/home.rs `ask_reply`), before the user's reply is sent: the
-/// Project's next request, its words the proposal's, its title the
-/// proposal's, its front desk the Project's now, linked to the request it was
-/// made under. Kept once (`proposal_message`): found again, it is returned as
-/// it was. Refused before anything is kept, and the reply then sends
-/// nothing: the Project archived, no front desk, or the request it was made
-/// under gone.
-pub(crate) async fn keep_proposal(ws: &Arc<Workspace>, project: &str, proposal: &Proposal) -> Result<Opened> {
-    let words = Words {
+/// The words of the request a proposal opens, under its one message ID (`proposal_message`).
+fn proposal_words(proposal: &Proposal) -> Words {
+    Words {
         workspace_id: String::new(), text: proposal.text.clone(), text_blocks: None,
         client_message_id: proposal_message(proposal.identity, proposal.version), images: vec![], files: vec![],
-    };
+    }
+}
+
+/// Where the request a proposal opens stands (YN-237 ④): kept before, or, to keep now, its front desk and the ID of
+/// the request it was made under. Refused (`not_submitted`): the Project archived, no front desk, or the request it was
+/// made under gone.
+enum Opens {
+    Kept(Request),
+    New { front: String, under: String },
+}
+
+fn opening(db: &Connection, project: &str, place: &Place, proposal: &Proposal, message_id: &str) -> Result<Opens> {
+    let found = db
+        .query_row(&format!("SELECT {REQUEST} FROM project_requests WHERE project_id=?1 AND message_id=?2"),
+            params![project, message_id], request_row)
+        .optional()?;
+    if let Some(found) = found {
+        return Ok(Opens::Kept(found));
+    }
+    refuse_archived(place)?;
+    let front = front_desk_now(db, project)?;
+    let under: String = db
+        .query_row("SELECT id FROM project_requests WHERE project_id=?1 AND n=?2", params![project, proposal.under], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| not_submitted(format!(
+            "proposal_request_unknown: this Project no longer has request R-{}, which the proposal was made under. Nothing was sent.",
+            proposal.under)))?;
+    Ok(Opens::New { front, under })
+}
+
+/// Whether the request a proposal opens can be kept (YN-237 ④), checked on the user's "new" before the reply is sent
+/// (project_brief/home.rs `ask_reply`), keeping nothing: refused as `keep_proposal` would be, and the reply then sends
+/// nothing and is kept, so it never tells the lead of a request Core could not open.
+pub(crate) async fn may_open(ws: &Arc<Workspace>, project: &str, proposal: &Proposal) -> Result<()> {
+    let words = proposal_words(proposal);
+    check(&words)?;
+    let (id, wanted) = (project.to_owned(), proposal.clone());
+    ws.stored(move |store| {
+        let db = store.db.read()?;
+        let place = place_of(&db, &id)?;
+        opening(&db, &id, &place, &wanted, &words.client_message_id).map(drop)
+    }).await
+}
+
+/// Keeps the request a proposal opens (YN-237 ④), once the user's "new" has
+/// reached its lead (project_brief/home.rs `ask_reply`): a reply refused or
+/// failed keeps nothing, so the user may answer again, "merge" or "later"
+/// included, with no request left behind. The Project's next request, its
+/// words the proposal's, its title the proposal's, its front desk the
+/// Project's now, linked to the request it was made under. Kept once
+/// (`proposal_message`): found again, it is returned as it was. Refused as
+/// `may_open` is, keeping nothing.
+pub(crate) async fn keep_proposal(ws: &Arc<Workspace>, project: &str, proposal: &Proposal) -> Result<Opened> {
+    let words = proposal_words(proposal);
     check(&words)?;
     let gate = lock(ws, project).await;
     let _held = gate.lock().await;
@@ -726,24 +778,11 @@ pub(crate) async fn keep_proposal(ws: &Arc<Workspace>, project: &str, proposal: 
     let (workspace, name, request) = ws.stored(move |store| {
         let mut writer = store.db.write()?;
         let tx = writer.transaction()?;
-        let workspace: String = tx.query_row("SELECT value FROM workspace_meta WHERE key='workspaceId'", [], |r| r.get(0))?;
-        let (name, archived) = crate::projects::project_labels(&tx)?.remove(&id).context("project_not_found: no Project has this ID")?;
-        let found = tx
-            .query_row(&format!("SELECT {REQUEST} FROM project_requests WHERE project_id=?1 AND message_id=?2"),
-                params![id, words.client_message_id], request_row)
-            .optional()?;
-        if let Some(found) = found {
-            return Ok((workspace, name, found));
-        }
-        let place = Place { workspace: workspace.clone(), name: name.clone(), archived };
-        refuse_archived(&place)?;
-        let front = front_desk_now(&tx, &id)?;
-        let under: String = tx
-            .query_row("SELECT id FROM project_requests WHERE project_id=?1 AND n=?2", params![id, wanted.under], |r| r.get(0))
-            .optional()?
-            .ok_or_else(|| not_submitted(format!(
-                "proposal_request_unknown: this Project no longer has request R-{}, which the proposal was made under. Nothing was sent.",
-                wanted.under)))?;
+        let place = place_of(&tx, &id)?;
+        let (front, under) = match opening(&tx, &id, &place, &wanted, &words.client_message_id)? {
+            Opens::Kept(found) => return Ok((place.workspace, place.name, found)),
+            Opens::New { front, under } => (front, under),
+        };
         let n: i64 = tx.query_row("SELECT COALESCE(MAX(n),0)+1 FROM project_requests WHERE project_id=?1", [&id], |r| r.get(0))?;
         let request = Request {
             id: uuid::Uuid::new_v4().to_string(), n, text: words.text, text_blocks: None, title: Some(wanted.title.clone()),
@@ -758,7 +797,7 @@ pub(crate) async fn keep_proposal(ws: &Arc<Workspace>, project: &str, proposal: 
                 request.state, under, wanted.identity, wanted.version, wanted.key],
         )?;
         tx.commit()?;
-        Ok((workspace, name, request))
+        Ok((place.workspace, place.name, request))
     }).await?;
     announce(ws, project);
     Ok(Opened { request, under: proposal.under, key: proposal.key.clone(), workspace, name })
