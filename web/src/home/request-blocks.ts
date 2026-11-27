@@ -1009,6 +1009,25 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
     });
   }
   const taken = new Set(rows.keys());
+  // A lead's proposal (YN-237 ④) is asked in the request it was made under, whatever task it is bound to (if any): one
+  // bound to none is that request's, not the Project's. Open, it is the user's to decide there.
+  const proposed = new Map<string, number>();
+  for (const s of all) {
+    const n = s.kind === "ask" ? s.ask?.proposal?.request : undefined;
+    const block = n === undefined ? undefined : blocks.find((b) => b.request.n === n);
+    if (!block || taken.has(taskOf(s) ?? "")) continue;
+    proposed.set(s.key, n!);
+    if (s.history) continue;
+    block.asks = [...block.asks, s].sort(asked);
+    if (!openAsk(s) || block.group === "done") continue;
+    block.look = { ...block.look, ask: block.look.ask && block.look.ask.home === null
+      ? { ...block.look.ask, count: block.look.ask.count + 1 }
+      : { key: s.key, title: s.ask?.question || s.title, count: 1, home: null } };
+    block.group = "needs";
+    block.state = "decide";
+    block.next = { kind: "ask" };
+    if (block.action === "follow") block.action = null;
+  }
   blocks.sort((a, b) =>
     ORDER[a.group] - ORDER[b.group] ||
     (a.group === "needs" ? RANK[a.fact.kind] - RANK[b.fact.kind] : 0) ||
@@ -1019,7 +1038,7 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
   const delivered = new Set(requests.flatMap((r) => r.cards.flatMap((c) => c.deliverables?.items ?? []))
     .flatMap((d) => (d.kind === "report" ? [`i:${d.sectionId}`, `k:${d.key}`] : [])));
   const deliveredHere = (s: Section) => s.kind === "report" && (s.id !== undefined ? delivered.has(`i:${s.id}`) : delivered.has(`k:${s.key}`));
-  const rest = all.filter((s) => !s.history && !isPlaceholder(s) && !taken.has(taskOf(s) ?? "") && !deliveredHere(s));
+  const rest = all.filter((s) => !s.history && !isPlaceholder(s) && !taken.has(taskOf(s) ?? "") && !deliveredHere(s) && !proposed.has(s.key));
   const asks = rest.filter((s) => s.kind === "ask").sort(asked);
   const project: ProjectBlock | null = rest.length
     ? {

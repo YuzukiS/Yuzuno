@@ -969,3 +969,47 @@ test("R-45 a follow-up not confirmed delivered: said so in its line with Send ag
   assert.equal(lineOf(page, 44, "follow").querySelector(".request-look-meta button"), null);
   assert.deepEqual(page.errors, []);
 });
+
+// YN-237 ④: a lead's proposal is asked in the request it was made under, bound to no task: Needs you there, with what
+// "new" would open shown above the Ask; once opened, both requests say so, each one step from the other.
+test("a proposal is asked under its request with what new opens; once opened, both requests link to each other", async () => {
+  const page = mount({ opened: ["r31"] });
+  const card = section("yn-221", "status", "R-31 runtime", 4, { status: { asOf: ago(4), validFor: 3600, stale: false }, card: bind("YN-221") });
+  const proposal = section("r31/split", "ask", "Split it off?", 2, {
+    ask: { question: "Make it a request of its own?", state: "open", proposal: { request: 31, title: "Read a stage Job once", text: "Read it once a pass." },
+      reply: { options: [{ id: "new", label: "New request, linked" }, { id: "merge", label: "Fold into R-31" }, { id: "later", label: "Note it" }], freeText: true } },
+  });
+  const r31 = request(31, 300, "doing", [routed(card, "YN-221")]);
+  page.window.renderPage({ requests: [r31], sections: [card, proposal] });
+  await tick();
+  const b = page.block(31);
+  assert.equal(b.dataset.group, "needs", "the user's to decide");
+  assert.equal(page.text(b.querySelector(".request-state")), "Your decision");
+  assert.equal(page.document.querySelector(".project-ask"), null, "not the Project's own Ask");
+  const shown = b.querySelector('.request-proposal[data-proposal="r31/split"]');
+  assert.equal(page.text(shown.querySelector(".request-proposal-preview")), "On “new”, Core opens this request:Read a stage Job onceRead it once a pass.");
+  assert.ok(shown.querySelector('[data-section-key="r31/split"]'), "its Ask, answerable there");
+  assert.deepEqual([...shown.querySelectorAll(".home-ask-pick input")].map((input) => [input.value, page.text(input.closest("label"))]),
+    [["new", "New request, linked"], ["merge", "Fold into R-31"], ["later", "Note it"]]);
+  // Answered "new": R-51 opened from it; each request one step from the other.
+  const replied = { ...proposal, version: 3, ask: { ...proposal.ask, state: "replied", repliedAt: ago(0), replyText: "New request, linked" } };
+  const link = (n) => ({ n, key: "r31/split", sectionId: proposal.id, version: 2, at: ago(0) });
+  const r51 = request(51, 0, "waiting", [], { title: "Read a stage Job once", text: "Read it once a pass.", from: link(31) });
+  page.window.renderPage({ requests: [r51, { ...r31, proposals: [link(51)] }], sections: [card, replied] });
+  await tick();
+  const opened = page.block(31).querySelector(".request-proposal-opened button");
+  assert.equal(page.text(opened), "R-51, opened from a proposal here");
+  opened.click();
+  assert.deepEqual(page.calls().at(-1), { show: 51 });
+  assert.equal(page.text(lineOf(page, 51, "related")), "RelatedOpened from a proposal in R-31");
+  lineOf(page, 51, "related").querySelector("button").click();
+  assert.deepEqual(page.calls().at(-1), { show: 31 });
+  // Its words are the lead's proposal, which the user made a request: never said to be the user's.
+  page.block(51).querySelector('.request-block-foot > .request-block-more[data-view="thread"]').click();
+  await tick();
+  assert.equal(page.text(page.block(51).querySelector('.request-thread > li[data-thread-item="mine"] > b')), "The proposal from R-31, which you made a request");
+  const zh = mount({ lang: "zh" });
+  zh.window.renderPage({ requests: [r51], sections: [] });
+  assert.equal(zh.text(lineOf(zh, 51, "related")), "相关从 R-31 的提议拆出");
+  assert.deepEqual([...page.errors, ...zh.errors], []);
+});

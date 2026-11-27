@@ -36,6 +36,10 @@ export const lookText = strings(
     talk: "Conversation",
     talkLabel: (m: number) => `Show follow-up #${m} in the conversation`,
     undelivered: "Work still going on, not delivered",
+    related: "Related",
+    openedFrom: (n: number) => `Opened from a proposal in R-${n}`,
+    openedHere: (n: number) => `R-${n}, opened from a proposal here`,
+    showRequest: (n: number) => `Show R-${n}`,
   },
   {
     now: "现在",
@@ -57,6 +61,10 @@ export const lookText = strings(
     talk: "对话",
     talkLabel: (m) => `在对话中查看追问 #${m}`,
     undelivered: "工作仍在进行，未交付",
+    related: "相关",
+    openedFrom: (n) => `从 R-${n} 的提议拆出`,
+    openedHere: (n) => `R-${n} 从这里的提议拆出`,
+    showRequest: (n) => `查看 R-${n}`,
   },
 );
 
@@ -120,11 +128,13 @@ function Step({ label, aria, onClick, data }: { label: string; aria: string; onC
  * Ask, opening the block; `onElsewhere` shows the block of the request a joined task's Ask is under; `onThread` opens
  * its conversation at the follow-up; `onResult` opens a result that is no report Home has (its deliverable's own way).
  */
-export function LookLines({ block, projectId, fact, onDecide, onElsewhere, onThread, onResult, onResend, resending = false, readOnly = false }: {
+export function LookLines({ block, projectId, fact, onDecide, onElsewhere, onThread, onResult, onShowBlock, onResend, resending = false, readOnly = false }: {
   block: RequestBlock;
   projectId: string;
   fact: ReactNode | null;
   onDecide: (key: string) => void;
+  /** Shows another request's block: one this was opened from, or one opened from it (YN-237 ④). */
+  onShowBlock: (n: number) => void;
   onElsewhere: (home: number, key: string) => void;
   onThread: (m: number, marked: string[]) => void;
   onResult: (result: LookResult, from: HTMLElement) => void;
@@ -193,6 +203,37 @@ export function LookLines({ block, projectId, fact, onDecide, onElsewhere, onThr
         </Line>
       )}
       {follow && <FollowLine follow={follow} block={block} onThread={onThread} onResend={onResend} resending={resending} readOnly={readOnly} />}
+      <RelatedLine block={block} onShowBlock={onShowBlock} />
+    </div>
+  );
+}
+
+/**
+ * The requests a proposal links this one to (YN-237 ④, the design's "相关"): the one it was opened from, and those
+ * opened from proposals made here, each one step to its block. Nothing for a request with neither.
+ */
+export function RelatedLine({ block, onShowBlock }: { block: RequestBlock; onShowBlock: (n: number) => void }) {
+  const t = lookText(useLanguage());
+  const from = block.request.from ?? null;
+  const opened = block.request.proposals ?? [];
+  if (!from && !opened.length) return null;
+  return (
+    <div className="request-look-line" data-look="related">
+      <span className="request-look-label">{t.related}</span>
+      <span className="request-look-text">
+        {from && (
+          <button type="button" className="talk-link request-look-related" data-related={from.n} aria-label={t.showRequest(from.n)}
+            onClick={() => onShowBlock(from.n)}>
+            {t.openedFrom(from.n)}
+          </button>
+        )}
+        {opened.map((link) => (
+          <button key={link.n} type="button" className="talk-link request-look-related" data-related={link.n} aria-label={t.showRequest(link.n)}
+            onClick={() => onShowBlock(link.n)}>
+            {t.openedHere(link.n)}
+          </button>
+        ))}
+      </span>
     </div>
   );
 }

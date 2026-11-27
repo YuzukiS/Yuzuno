@@ -152,7 +152,17 @@ export type ProjectRequest = {
   confirmedAt?: string | null;
   progress: { cards: number; ended: number };
   lines: RequestLine[];
+  /** The proposal it was opened from (YN-237 ④): the request it was made under, and the Ask; null for the user's own. */
+  from?: ProposalLink | null;
+  /** The requests opened from proposals made under it (YN-237 ④), oldest first; none from an older Core. */
+  proposals?: ProposalLink[];
 };
+
+/**
+ * One end of a proposal's link (YN-237 ④): the other request by number, and the Ask the user answered "new" on, by its
+ * key, its identity on Home and the version answered.
+ */
+export type ProposalLink = { n: number; key: string; sectionId: number | null; version: number | null; at: string };
 
 /** The release this Core runs (R-38 §2.6): its manifest's id, version and full commit. */
 export type InstalledRelease = { releaseId: string; version: string; gitSha: string };

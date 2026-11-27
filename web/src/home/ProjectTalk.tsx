@@ -632,6 +632,8 @@ export function ProjectTalk({
               else wordRefs.current.delete(n);
             }}
           >
+            {/* Words a proposal opened (YN-237 ④): the lead's, which the user chose to make a request. */}
+            {request.from && <p className="project-talk-from">{t.openedFrom(request.from.n)}</p>}
             <div className="project-talk-bubble">
               <MessageContent text={request.text} blocks={request.textBlocks ?? undefined} />
               {sentImages(request.images, `an image in your request R-${n} to ${projectName}`)}

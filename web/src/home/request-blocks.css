@@ -1327,3 +1327,33 @@
     justify-self: stretch;
   }
 }
+/* A lead's proposal (YN-237 ④): what "new" would open, above its Ask, in the Ask's own attention tone. */
+.request-proposal {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.request-proposal-preview {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px dashed color-mix(in srgb, var(--home-attention) 55%, var(--line));
+  border-radius: 8px;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.request-proposal-label {
+  color: var(--home-attention-ink);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.request-proposal-text {
+  color: var(--home-ink-2);
+  overflow-wrap: anywhere;
+}
+.request-proposal-opened {
+  margin: 0;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.request-look-related + .request-look-related {
+  margin-left: 8px;
+}

@@ -110,6 +110,9 @@ export type Section = {
     deferredUntil?: string;
     /** An executor's gate (T-43 S4): the step of its task's template this asks you to approve. */
     gate?: AskGate;
+    /** A lead's proposal of a new request (YN-237 ④), made under request R-`request`: what the new request would say.
+     * Its options are new, merge and later; on "new" Core opens it. Absent from older Cores and for every other ask. */
+    proposal?: AskProposal;
     /** The user's notes on this ask (YN-213, "Wait, what?"), newest first, at most 5: words and what they
      * attached, sent to an Agent without answering. Kept apart from the reply; absent without any, and from
      * older Cores. */
@@ -331,6 +334,9 @@ export type AskNote = {
   images?: string[];
   files?: import("./home-files").HomeFile[];
 };
+
+/** What a lead proposes to open as a new request (YN-237 ④): the request it was found in, and the new one's words. */
+export type AskProposal = { request: number; title: string; text: string };
 
 /** The step of its task's template an executor's ask is the approval of (T-43 S4), counted from 0. */
 export type AskGate = { taskId: string; step: number };

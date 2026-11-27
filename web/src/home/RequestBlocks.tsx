@@ -30,7 +30,7 @@ import { SummaryCard } from "./SummaryCard";
 import {
   DetailLists, EvidenceList, FollowUpZone, NextLine, NowLine, ProgressBar, ProjectWord, StaleLine, StateMark, progressText, useFollowUpName,
 } from "./RequestProgress";
-import { LookLines } from "./RequestLook";
+import { LookLines, RelatedLine, lookText } from "./RequestLook";
 import type { Section } from "./types";
 import "./project-talk.css";
 import "./request-blocks.css";
@@ -62,6 +62,7 @@ export const blockText = strings(
     cardsTab: "Cards and deliverables",
     /** YN-237 ②: the unfolded block's first view, and what it holds under one Details. */
     progressTab: "Progress and results",
+    proposal: "On “new”, Core opens this request:",
     opened: (title: string) => `What goes on in “${title}”`,
     details: "Details",
     decisions: "Your decisions",
@@ -103,6 +104,7 @@ export const blockText = strings(
     answeredAsk: (title: string, reply: string) => `Answered: ${title} → ${reply}`,
     thread: (n: number) => `Conversation ${n}`,
     you: "You",
+    proposed: (n: number) => `The proposal from R-${n}, which you made a request`,
     followUp: (n: number) => `Your follow-up #${n}`,
     projectSaid: "Project",
     /** What each line of the conversation is, as to the follow-ups (R-45 §3.4); who, only in a tip. */
@@ -144,6 +146,7 @@ export const blockText = strings(
     tasks: (n) => `${n} 个任务`,
     cardsTab: "卡片与交付",
     progressTab: "进展与结果",
+    proposal: "选「新建」时，Core 会新建这个请求：",
     opened: (title) => `「${title}」的进展`,
     details: "详情",
     decisions: "你的决定",
@@ -185,6 +188,7 @@ export const blockText = strings(
     answeredAsk: (title, reply) => `已答：${title} → ${reply}`,
     thread: (n) => `对话 ${n}`,
     you: "你",
+    proposed: (n) => `R-${n} 的提议，你选了新建`,
     followUp: (n) => `你追问 #${n}`,
     projectSaid: "项目",
     tag: {
@@ -441,6 +445,35 @@ function AskCard({ section, common }: { section: Section; common: BlockCommon })
 }
 
 /**
+ * A lead's proposal of a new request (YN-237 ④), where it was made: what Core opens on "new" (its title and words, as
+ * the lead wrote them), then the Ask itself, answered there; once the user chose "new", the request Core opened, one
+ * step away. "merge" and "later" open nothing: the answered Ask says which the user chose.
+ */
+function ProposalAsk({ section, request, common, onShowBlock }: {
+  section: Section; request: RequestBlock["request"]; common: BlockCommon; onShowBlock: (n: number) => void;
+}) {
+  const t = blockText(useLanguage());
+  const l = lookText(useLanguage());
+  const proposal = section.ask!.proposal!;
+  const opened = (request.proposals ?? []).find((link) => link.key === section.key && (link.sectionId === null || link.sectionId === section.id));
+  return (
+    <div className="request-proposal" data-proposal={section.key}>
+      <p className="request-proposal-preview">
+        <span className="request-proposal-label">{t.proposal}</span>
+        <b>{proposal.title}</b>
+        <span className="request-proposal-text">{proposal.text}</span>
+      </p>
+      <AskCard section={section} common={common} />
+      {opened && (
+        <p className="request-proposal-opened">
+          <button type="button" className="talk-link" data-related={opened.n} onClick={() => onShowBlock(opened.n)}>{l.openedHere(opened.n)}</button>
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
  * One request (YN-212 §3.2, YN-237 ②): its number and title, then, folded, four lines that say what goes on now and
  * since when, what needs the user, its newest result and its newest follow-up, each one step from the whole of it
  * (LookLines), and its one action. Unfolded, in place of those lines: its progress bar and next step, what goes on
@@ -565,6 +598,7 @@ export function RequestBlockView({
           onElsewhere={(home, key) => onAction("answer", home, key)}
           onThread={(m, marked) => onShowThread?.(request.n, { reply: m, with: marked })}
           onResult={openResult}
+          onShowBlock={onShowBlock}
           onResend={onResendFollowUp ? (m) => onResendFollowUp(request.n, m) : undefined}
           resending={!!(block.follow && resendingFollowUps?.has(block.follow.latest.n))}
           readOnly={common.readOnly}
@@ -657,7 +691,9 @@ export function RequestBlockView({
                   ) : null}
                   {asks.length > 0 && (
                     <div className="request-block-asks" role="group" aria-label={t.asks(title)}>
-                      {asks.map((ask) => (
+                      {asks.map((ask) => ask.ask?.proposal ? (
+                        <ProposalAsk key={ask.key} section={ask} request={request} common={common} onShowBlock={onShowBlock} />
+                      ) : (
                         <AskCard key={ask.key} section={ask} common={common} />
                       ))}
                     </div>
@@ -731,6 +767,7 @@ export function RequestBlockView({
                       )}
                     </ul>
                   )}
+                  <RelatedLine block={block} onShowBlock={onShowBlock} />
                   {answered.length > 0 && (
                     <div className="request-details-decisions" role="group" aria-label={t.decisions}>
                       {answered.map((ask) => <AnsweredAsk key={ask.key} section={ask} common={common} />)}
@@ -1005,9 +1042,10 @@ function RequestThread({ request, follow, focus, landed }: {
         const mark = { "data-thread-item": key, "data-focus": marked.has(key) ? "" : undefined };
         switch (item.kind) {
           case "mine":
+            // Words a proposal opened (YN-237 ④) are the lead's, which the user chose to make a request: said so, never "You".
             return (
-              <li key={index} data-who="you" {...mark}>
-                <b>{t.you}</b>
+              <li key={index} data-who={request.from ? "proposal" : "you"} {...mark}>
+                <b>{request.from ? t.proposed(request.from.n) : t.you}</b>
                 <MessageContent text={request.text} blocks={request.textBlocks ?? undefined} />
                 <When at={at} />
               </li>
