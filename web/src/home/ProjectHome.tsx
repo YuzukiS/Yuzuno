@@ -50,7 +50,8 @@ const TEAM_BESIDE = 1250;
 /**
  * Where each request's block stands in this visit (YN-212 §3.1), as the cards' places were held (card-sizes.ts): its
  * group and its place in it as first shown, so a block the user just answered does not move from under their
- * finger. A request the user confirms goes to Done. One shown later comes in at the top of its group when it is newer
+ * finger. A request the user confirms goes to Done; one done already when first shown, in Needs you for a lead's
+ * proposal (YN-237 ④), stays there once answered, until the next visit. One shown later comes in at the top of its group when it is newer
  * than every request shown so far, in the page's own order; older ones read from the pages before (Read older
  * requests) come after those shown, newest first (PR 1093 R1). The Project's own block is in no group (R-27): its
  * Asks keep their places in Needs you by themselves (useAsksUpFront).
@@ -62,8 +63,8 @@ const TEAM_BESIDE = 1250;
 function useHeldBlocks(projectId: string, blocks: readonly RequestBlock[], ready: boolean) {
   const sizes = useContext(DeckSizes);
   const visit = sizes?.visit ?? 0;
-  const order = useRef({ visit, place: new Map<string, number>(), newest: 0 });
-  if (order.current.visit !== visit) order.current = { visit, place: new Map(), newest: 0 };
+  const order = useRef({ visit, place: new Map<string, number>(), newest: 0, doneFirst: new Set<string>() });
+  if (order.current.visit !== visit) order.current = { visit, place: new Map(), newest: 0, doneFirst: new Set() };
   if (!ready) {
     const now = (group: BlockGroup) => blocks.filter((block) => block.group === group);
     return { needs: now("needs"), doing: now("doing"), done: now("done") };
@@ -72,13 +73,15 @@ function useHeldBlocks(projectId: string, blocks: readonly RequestBlock[], ready
   const held = sizes ? sizes.groups(`${projectId}#requests`, now) : new Map(now);
   const groupOf = (block: RequestBlock): BlockGroup => {
     const first = held.get(block.key) ?? block.group;
-    return block.group === "done" || first === "done" ? block.group : first;
+    if (block.group === "done") return first === "needs" && order.current.doneFirst.has(block.key) ? first : "done";
+    return first === "done" ? block.group : first;
   };
-  const { place } = order.current;
+  const { place, doneFirst } = order.current;
   const fresh = place.size === 0;
   let top = Math.min(0, ...place.values());
   let bottom = Math.max(0, ...place.values());
   const unseen = blocks.filter((block) => !place.has(block.key));
+  for (const block of unseen) if (block.request.state === "done") doneFirst.add(block.key);
   const newer = unseen.filter((block) => !fresh && block.request.n > order.current.newest);
   // The newer ones above all, the newest first: placed from the oldest up.
   for (const block of [...newer].reverse()) place.set(block.key, --top);
@@ -334,9 +337,10 @@ export function ProjectHome({
     if (!block) return false;
     if (view !== "requests") setView("requests");
     // A card or an Ask of a request's task is in its unfolded block (R-45 §3.4, YN-237 ②); the Project's cards are
-    // under the head's "Other", opened; the lead's card is its line there.
+    // under the head's "Other", opened; the lead's card is its line there, and its open Ask is in Needs you, where the
+    // jump lands opening nothing (review 4d93b1ad).
     if (block === "project") {
-      if (key !== line?.key) openBlock(block);
+      if (key !== line?.key && !askUpFront(key, blocks, projectBlock)) openBlock(block);
     } else if (!askUpFront(key, blocks, projectBlock)) showView(block, "cards");
     setLanding((was) => ({ key, block, seq: (was?.seq ?? 0) + 1, keepFolded }));
     return true;

@@ -18,7 +18,12 @@
 //    the phone, then the mouse) lands on what R-60 keeps under Details, found by its section's key: an answered Ask,
 //    its second task's card, an earlier card. Home is drawn anew each time (closed while the conversation shows), so
 //    each lands from Details folded; each in view with the focus, Details opened for it and no other fold. Details
-//    stays folded when the block is only unfolded.
+//    stays folded when the block is only unfolded;
+//  - a lead's proposal in its request on a later visit (review 4d93b1ad): Home left and entered again, R-60's proposal
+//    answered "new" is one Answered line under Details with R-71 beside it; R-55, done, with an open proposal, is in
+//    Needs you still saying it is confirmed, answered there ("later") it is in Done on the next visit; then Open on Home
+//    lands on each proposal by its key: bound to no task (R-60), its request done (R-55, Done opened for it), bound to a
+//    task (YN-238 under R-60), and under R-14, older than the page and kept by Core for it; each once on the page.
 // Screenshots and a JSON report go to YUZUNO_BROWSER_OUTPUT.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/request-home-check.mjs
 import assert from "node:assert/strict";
@@ -68,7 +73,7 @@ const RESULT = "已随 core.39 安装的 4 项：首页每次响应减少 82%。
 const REPLY3 = "我来实现。新请求按 R 编号、追问按各自序号进入待回复清单，答复写回原请求后逐条清除。";
 const PROPOSAL = "阶段 Job 只读一遍";
 /** The page's sections and requests; `opened`: R-71 was opened from the proposal (after the user chose "new"). */
-function data({ opened = false, older = false } = {}) {
+function data({ opened = false, older = false, later55 = false } = {}) {
   ids = 700;
   const plan = node("Plan", { steps: [
     { id: "s1", text: "范围已选", state: "done" },
@@ -86,8 +91,18 @@ function data({ opened = false, older = false } = {}) {
     ask: { question: "执行中发现：阶段 Job 被读了四遍，要不要单独做？", state: opened ? "replied" : "open",
       ...(opened ? { repliedAt: at(1), replyText: "新建请求并关联" } : {}),
       reply: { options: [{ id: "new", label: "新建请求并关联" }, { id: "merge", label: "并入 R-60" }, { id: "later", label: "先记下" }], freeText: true },
-      ...(older ? {} : { proposal: { request: 60, title: PROPOSAL, text: "每次访问只读一遍阶段 Job，按同一负载测前后。" } }) },
+      ...(older ? {} : { proposal: { request: 60, title: PROPOSAL, text: "每次访问只读一遍阶段 Job，按同一负载测前后。", ...(opened ? { opened: 71 } : {}) } }) },
   });
+  // A lead's proposals elsewhere (review 4d93b1ad): open under R-55, done, until answered "later"; bound to YN-238, under
+  // R-60; and under R-14, older than the page, both answered "later" before this visit.
+  const choices = { options: [{ id: "new", label: "新建请求并关联" }, { id: "merge", label: "并入原请求" }, { id: "later", label: "先记下" }], freeText: true };
+  const proposed = (key, n, minutes, owner, answered, title, extra = {}) => section(key, "ask", `R-${n} 的提议`, minutes, owner, summary(`${title}。`), {
+    ask: { question: `${title}，要不要单独做？`, state: answered ? "replied" : "open", reply: choices,
+      ...(answered ? { repliedAt: at(minutes - 1), replyText: "先记下" } : {}),
+      ...(older ? {} : { proposal: { request: n, title, text: `${title}，单独做一项。` } }) }, ...extra });
+  const proposal55 = proposed("r55/more", 55, 20, lead, later55, "导出页还差分页");
+  const proposal238 = proposed("yn-238/later", 60, 150, exec, true, "窗口实测顺带测高 DPI", { card: bind("YN-238", "窗口实测") });
+  const proposal14 = proposed("r14/split", 14, 400, lead, true, "Jobs 推进的单独剖析");
   // Under R-60's Details: an Ask of its task answered before this visit, its second task's card, an earlier card.
   const scope = [{ id: "core", label: "先做 Core 那批" }, { id: "desk", label: "先做桌面端" }];
   const answered60 = section("yn-221/scope", "ask", "先做哪一批？", 1500, exec, summary("两批运行改进里先做哪一批？"), {
@@ -140,7 +155,8 @@ function data({ opened = false, older = false } = {}) {
   const r71 = request(71, 1, PROPOSAL, [], { state: "waiting", text: "每次访问只读一遍阶段 Job，按同一负载测前后。", notes: [], from: link(60) });
   const page = [...(opened ? [r71] : []), r62, r60, ...filler].sort((a, b) => b.n - a.n).slice(0, 20);
   return {
-    sections: [development, upkeep, status60, report60, proposal, answered60, second60, earlier60, report62, status14],
+    sections: [development, upkeep, status60, report60, proposal, answered60, second60, earlier60, report62, status14,
+      proposal55, proposal238, proposal14],
     requests: { requests: page, hasMore: true, ...(older ? {} : { kept: [r14] }),
       installedRelease: { releaseId: "core-20261126-abcdef0", version: "core.40", gitSha: "a".repeat(40) }, mergedAfterInstalled: 1 },
   };
@@ -159,6 +175,11 @@ const leadTurns = () => [{ id: "t-l1", status: "completed", items: [
   said("a2", "收到。"),
   fromHome("home-earlier", "yn-221/notes", "status", "R-31 · 早先的范围说明", { text: "这份范围说明还对吗？" }),
   said("a3", "还对。"),
+  ...[["home-proposal", "r60/split", "拆出一项新请求？", "执行中发现：阶段 Job 被读了四遍，要不要单独做？", "新建请求并关联"],
+    ["home-later55", "r55/more", "R-55 的提议", "导出页还差分页，要不要单独做？", "先记下"],
+    ["home-bound", "yn-238/later", "R-60 的提议", "窗口实测顺带测高 DPI，要不要单独做？", "先记下"],
+    ["home-kept", "r14/split", "R-14 的提议", "Jobs 推进的单独剖析，要不要单独做？", "先记下"]].flatMap(([id, key, title, question, label], i) => [
+    fromHome(id, key, "ask", title, { question, options: [{ id: "x", label }], choice: { id: "x", label } }), said(`p${i}`, "好。")]),
 ] }];
 const home = (sections) => ({
   generatedAt: at(0), order: ["p-dev"], needsYou: [],
@@ -197,7 +218,7 @@ async function check(run) {
   now = Date.now();
   const zh = run.language === "zh-Hans";
   const w = (en, cn) => (zh ? cn : en);
-  const state = { opened: false, replies: [] };
+  const state = { opened: false, later55: false, replies: [] };
   const result = { run: run.name, viewport: run.viewport, facts: {}, shots: [] };
   report.runs.push(result);
   const context = await browser.newContext({
@@ -215,7 +236,7 @@ async function check(run) {
       report.unexpected.push(request.url());
       return route.abort();
     }
-    const now = data({ opened: state.opened, older: run.older });
+    const now = data({ opened: state.opened, older: run.older, later55: state.later55 });
     if (path === "/api/workspace") return route.fulfill({ json: { workspace: { id: "ws-237" }, agents, projects, runtime: { connected: true }, defaultCwd: "/w" } });
     if (path === "/api/home") return route.fulfill({ json: home(now.sections) });
     if (method === "POST" && path === "/api/projects/p-dev/brief/reply") {
@@ -224,6 +245,7 @@ async function check(run) {
       report.posts.push({ run: run.name, path, key: body.key, choice: body.choice ?? null, askVersion: body.askVersion ?? null });
       // Core opens R-71 on "new" and marks the Ask replied; the page reads both next.
       if (body.choice === "new") state.opened = true;
+      if (body.key === "r55/more") state.later55 = true;
       return route.fulfill({ json: { input: { clientMessageId: body.clientMessageId, text: "reply", textBlocks: null, images: [] }, status: "accepted",
         turnId: "t1", error: null } });
     }
@@ -448,7 +470,9 @@ async function check(run) {
 
     // One step into Details (review 4324938d): from the lead's conversation, Open on Home on a reply lands on the
     // section it answered, found by its key, wherever R-60 keeps it under Details.
-    await page.goto(`http://${HOST}/#/agent?w=ws-237&a=l`);
+    // The lead's conversation at a reply, by the message's link (as Back to your reply opens it): its Turn holds many.
+    const toConversation = (item) => page.goto(`http://${HOST}/#/message?w=ws-237&a=l&t=t-l1&i=${item}`);
+    await toConversation("home-ask");
     const openOnHome = async (item, how) => {
       const reply = page.locator(`[data-item-id="${item}"]`);
       await page.locator(`[data-item-id="${item}"], .app.phone-list .agent-row`).first().waitFor({ timeout: 15_000 });
@@ -487,9 +511,8 @@ async function check(run) {
         };
       }, id);
     };
-    // Back to the lead's conversation by its link: each reply answered the version Home shows, so no arrival note
-    // (with its way back) is drawn; the jump itself is Open on Home, clicked.
-    const toConversation = () => page.goto(`http://${HOST}/#/agent?w=ws-237&a=l`);
+    // Each reply answered the version Home shows, so no arrival note (with its way back) is drawn: back to the
+    // conversation by the reply's link; the jump itself is Open on Home, clicked.
     // An answered Ask: Enter on the desktop (touch on the phone); Details and its line open, no other fold.
     await openOnHome("home-ask", run.phone ? "touch" : "keyboard");
     const toAsk = await landedOn("yn-221/scope");
@@ -497,14 +520,14 @@ async function check(run) {
       earlier: w("Earlier card 1", "更早的卡 1") }, JSON.stringify(toAsk));
     await shot("details-answered-ask");
     // Back in the conversation, Open on Home on another reply lands on R-60's second task's card (the mouse).
-    await toConversation();
+    await toConversation("home-card");
     await openOnHome("home-card", run.phone ? "touch" : "mouse");
     const toCard = await landedOn("yn-238");
     assert.deepEqual(toCard, { focused: true, visible: true, inView: true, request: "60", detailsOpen: true, earlierOpen: false,
       earlier: w("Earlier card 1", "更早的卡 1") }, JSON.stringify(toCard));
     await shot("details-second-task");
     // And an earlier card of its first task: its fold opens with it.
-    await toConversation();
+    await toConversation("home-earlier");
     await openOnHome("home-earlier", run.phone ? "touch" : "keyboard");
     const toEarlier = await landedOn("yn-221/notes");
     assert.deepEqual(toEarlier, { focused: true, visible: true, inView: true, request: "60", detailsOpen: true, earlierOpen: true,
@@ -512,6 +535,78 @@ async function check(run) {
     await shot("details-earlier-card");
     result.facts.details = { toAsk, toCard, toEarlier };
     pass(run, "Open on Home lands under R-60's Details by key: an answered Ask, its second task's card, an earlier card", { landed: 3 });
+    assert.deepEqual(await wider(), []);
+
+    // A lead's proposal in its request on a later visit (review 4d93b1ad). Home left and entered again.
+    const enterHome = async () => {
+      await page.goto(`http://${HOST}/#/home?w=ws-237`);
+      await tap(page.locator('[data-glance-project="p-dev"] .project-glance-open'));
+      await block(60).waitFor({ timeout: 15_000 });
+      await page.waitForTimeout(400);
+    };
+    const groupOf = (n) => block(n).evaluate((el) => el.closest(".request-group")?.dataset.group ?? null);
+    // Once on the page: its Answered line (its card, opened, in it), or its card where no line holds it.
+    const onPage = (key) => page.evaluate((key) => document.querySelectorAll(`[data-answered="${key}"]`).length
+      + [...document.querySelectorAll(`[data-section-key="${key}"]`)].filter((el) => !el.closest("[data-answered]")).length, key);
+    await enterHome();
+    // R-55 first, as the page draws it folded; then R-60 unfolded, where its Answered lines are.
+    const r55 = { group: await groupOf(55), confirmed: await text(block(55).locator(".request-block-fact-meta")),
+      ask: await text(block(55).locator('.request-look-line[data-look="ask"] .request-look-said')) };
+    // Folded, R-60 asks nothing of the user any more: its proposal was answered.
+    const askLine = await block(60).locator('.request-look-line[data-look="ask"]').count();
+    await tap(block(60).locator('.request-block-foot > .request-block-more[data-view="cards"]'));
+    await block(60).locator(".request-details-toggle").waitFor({ timeout: 5000 });
+    const revisit = {
+      r60Proposal: { lines: await onPage("r60/split"), upFront: await block(60).locator('.request-proposal[data-proposal="r60/split"]').count(),
+        askLine },
+      r55,
+    };
+    assert.deepEqual(revisit.r60Proposal, { lines: 1, upFront: 0, askLine: 0 }, "answered before this visit: one Answered line, not asked again");
+    assert.equal(revisit.r55.group, "needs", "an open proposal: R-55 in Needs you");
+    assert.match(revisit.r55.confirmed, w(/^Confirmed by you · /, /^你已确认 · /), "R-55 still done");
+    assert.equal(revisit.r55.ask, "导出页还差分页，要不要单独做？");
+    await shot("revisit-r55-needs", block(55));
+    // R-55's proposal answered there ("later"): it stays where it is for this visit, in Done on the next.
+    await tap(block(55).locator('.request-look-line[data-look="ask"] [data-step="decide"]'));
+    const ask55 = block(55).locator('.request-proposal[data-proposal="r55/more"]');
+    await ask55.waitFor({ timeout: 5000 });
+    await tap(ask55.locator(".home-ask-pick", { hasText: "先记下" }));
+    await tap(ask55.locator("button.primary-button"));
+    for (let i = 0; i < 100 && state.replies.at(-1)?.key !== "r55/more"; i++) await page.waitForTimeout(100);
+    assert.deepEqual([state.replies.at(-1)?.key, state.replies.at(-1)?.choice], ["r55/more", "later"], "that choice posted");
+    await page.waitForTimeout(800);
+    assert.equal(await groupOf(55), "needs", "answered in this visit: held where it was");
+    await enterHome();
+    revisit.r55After = { group: await groupOf(55) };
+    assert.deepEqual(revisit.r55After, { group: "done" }, "next visit: R-55 in Done (its answer's one line: Open on Home below)");
+    result.facts.revisit = revisit;
+    pass(run, "a later visit: R-60's answered proposal one Answered line; R-55, done, in Needs you for its open proposal, in Done once answered", revisit);
+
+    // Open on Home on each proposal's reply: its request's block, its Answered line opened, once on the page.
+    const toProposal = async (item, key, n, how) => {
+      await toConversation(item);
+      await openOnHome(item, how);
+      const landed = await landedOn(key);
+      return { ...landed, once: await onPage(key), group: await groupOf(n) };
+    };
+    const free = await toProposal("home-proposal", "r60/split", 60, run.phone ? "touch" : "keyboard");
+    // Landed there, R-60's Details name R-71, the request its proposal opened.
+    const toR71 = await block(60).locator(".request-block-details").evaluate((el) => el.textContent.includes("R-71"));
+    const proposals = {
+      free,
+      done: await toProposal("home-later55", "r55/more", 55, run.phone ? "touch" : "mouse"),
+      bound: await toProposal("home-bound", "yn-238/later", 60, run.phone ? "touch" : "mouse"),
+      kept: await toProposal("home-kept", "r14/split", 14, run.phone ? "touch" : "keyboard"),
+    };
+    result.facts.proposals = { ...proposals, toR71 };
+    const expect = (request, group) => ({ focused: true, visible: true, inView: true, request, detailsOpen: true, once: 1, group });
+    for (const [name, [request, group]] of Object.entries({ free: ["60", "doing"], done: ["55", "done"], bound: ["60", "doing"], kept: ["14", "doing"] })) {
+      const { earlierOpen, earlier, ...seen } = proposals[name];
+      assert.deepEqual(seen, expect(request, group), `${name}: ${JSON.stringify(proposals[name])}`);
+    }
+    assert.equal(toR71, true, "R-60's Details name R-71, opened from its proposal");
+    await shot("proposal-kept-r14");
+    pass(run, "Open on Home lands on each proposal in its request: bound to no task, its request done, bound to a task, under a kept older request", { landed: 4 });
     assert.deepEqual(await wider(), []);
   } catch (error) {
     await page.screenshot({ path: join(output, `${run.name}-failed.png`), fullPage: true }).catch(() => {});

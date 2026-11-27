@@ -1184,8 +1184,11 @@ pub(crate) fn page_for(db: &Connection, project: &str, before: Option<i64>, limi
 /// or archived) or that a live section is the card of
 /// (`project_brief::live_card_tasks`, an unresolved Ask outliving its task
 /// among them); or routed nowhere yet and never confirmed, waiting for its
-/// front desk. One that only waits for the user to confirm it, its tasks
-/// ended and its cards gone, stays on its own page.
+/// front desk; or named by a lead's proposal still open or answered and not
+/// resolved (YN-237 ④, review 4d93b1ad): the proposal is asked in that
+/// request, done or not, so Home finds it there whatever page it is on. One
+/// that only waits for the user to confirm it, its tasks ended and its cards
+/// gone, stays on its own page.
 fn kept_below(db: &Connection, project: &str, below: i64) -> Result<Vec<Request>> {
     let bound: Vec<String> = crate::project_brief::live_card_tasks(db, project)?.into_iter().collect();
     Ok(db
@@ -1195,7 +1198,10 @@ fn kept_below(db: &Connection, project: &str, below: i64) -> Result<Vec<Request>
                  WHERE r.request_id=q.id AND r.state='{done}' AND r.kind IN ('{card}','{existing}')
                  AND ((COALESCE(json_extract(t.data,'$.status'),'') NOT IN ('done','cancelled') AND json_extract(t.data,'$.archivedAt') IS NULL)
                    OR t.id IN (SELECT value FROM json_each(?3))))
-               OR (q.confirmed_at IS NULL AND NOT EXISTS(SELECT 1 FROM project_routes r WHERE r.request_id=q.id AND r.state='{done}')))
+               OR (q.confirmed_at IS NULL AND NOT EXISTS(SELECT 1 FROM project_routes r WHERE r.request_id=q.id AND r.state='{done}'))
+               OR q.n IN (SELECT json_extract(s.data,'$.ask.proposal.request') FROM project_brief_sections s
+                 WHERE s.project_id=?1 AND s.live=1 AND s.kind='ask' AND s.ask_state IN ('open','replied')
+                   AND json_extract(s.data,'$.ask.proposal.request') IS NOT NULL))
              ORDER BY q.n DESC LIMIT ?4",
             done = routes::DONE, card = routes::CARD, existing = routes::EXISTING,
         ))?

@@ -60,3 +60,28 @@ async fn the_first_page_keeps_older_requests_going_on_or_bound_to_a_live_card() 
     lab.brief("lead", json!({"op":"resolve","key":format!("{}/pick", outlived.to_lowercase())})).await;
     assert_eq!(numbers(&read(&lab, None, 2), "kept"), [waiting, going]);
 }
+
+// Review 4d93b1ad: a lead's proposal is asked in the request it was made under, so the first page keeps that request
+// while the proposal is open or answered and not resolved, done or older than the page as it may be; resolved, the
+// request is on its own page again.
+#[tokio::test]
+async fn the_first_page_keeps_an_older_request_a_proposal_is_made_under_until_it_is_resolved() {
+    let lab = lab();
+    // R-1 was answered with no card (on its own page only); R-2 and R-3 are the newest.
+    let answered = lab.say("一", "m1").await;
+    lab.route("desk", answered, "一", "已答。", vec![answer("只问一句")]).await.unwrap();
+    lab.say("二", "m2").await;
+    lab.say("三", "m3").await;
+    assert_eq!(numbers(&read(&lab, None, 2), "kept"), Vec::<i64>::new(), "R-1 alone stays on its own page");
+
+    let body = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["t"]},"t":{"type":"Markdown","props":{"text":"顺带发现"}}}});
+    lab.brief("lead", json!({"op":"put","key":"r1/split","kind":"ask","title":"拆出一项新请求？","body":body,
+        "ask":{"question":"要不要单独做？","reply":{"options":[{"id":"new","label":"新建"},{"id":"merge","label":"并入"},{"id":"later","label":"先记下"}]},
+            "proposal":{"request":answered,"title":"单独做","text":"单独做这一项。"}}})).await;
+    let first = read(&lab, None, 2);
+    assert_eq!(numbers(&first, "kept"), [answered], "kept for the proposal made under it");
+    assert_eq!(first["kept"][0]["state"], json!("answered"), "as its own page shows it");
+
+    lab.brief("lead", json!({"op":"resolve","key":"r1/split"})).await;
+    assert_eq!(numbers(&read(&lab, None, 2), "kept"), Vec::<i64>::new(), "resolved: on its own page again");
+}

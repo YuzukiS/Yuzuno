@@ -255,7 +255,7 @@ function FollowLine({ follow, block, onThread, onResend, resending, readOnly }: 
     latest.state === "answered" ? [`note:${latest.note.n}`]
       : latest.state === "later" ? [`note:${latest.note.n}`, ...latest.together.filter((n) => n !== latest.n).map((n) => `reply:${n}`)]
         : [];
-  const settled = block.group === "done" || block.state === "accept" || block.state === "followUp";
+  const settled = block.group === "done" || block.request.state === "done" || block.state === "accept" || block.state === "followUp";
   const said = latest.state === "answered" || latest.state === "later" ? latest.note.note : latest.text;
   const state = latest.state === "unsent" && latest.failed ? t.failed : t.state[latest.state];
   return (

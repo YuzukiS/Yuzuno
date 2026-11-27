@@ -1013,3 +1013,32 @@ test("a proposal is asked under its request with what new opens; once opened, bo
   assert.equal(zh.text(lineOf(zh, 51, "related")), "相关从 R-31 的提议拆出");
   assert.deepEqual([...page.errors, ...zh.errors], []);
 });
+
+// Review 4d93b1ad: a lead's proposal bound to no task, answered before this visit, is an Answered line under its
+// request's Details, once, the request it opened named beside it; open under a request the user confirmed done, it
+// lists that request in Needs you, which still says it is done.
+test("a proposal bound to no task: answered, an Answered line under Details once; open under a done request, in Needs you, still done", async () => {
+  const page = mount({ opened: ["r9"] });
+  const { requests, sections } = fixtures();
+  const reply = { options: [{ id: "new", label: "New request, linked" }, { id: "merge", label: "Fold in" }, { id: "later", label: "Note it" }], freeText: true };
+  const answered = section("r9/split", "ask", "Split it off?", 30, { ask: { question: "Make JSON a request of its own?", state: "replied",
+    repliedAt: ago(29), replyText: "New request, linked", reply, proposal: { request: 9, title: "Export JSON", text: "JSON too." } } });
+  const open = section("r11/more", "ask", "One more?", 5, { ask: { question: "Another request for the rest?", state: "open", reply,
+    proposal: { request: 11, title: "The rest", text: "The rest of it." } } });
+  const link = { n: 51, key: "r9/split", sectionId: answered.id, version: 2, at: ago(29) };
+  const r51 = request(51, 29, "waiting", [], { title: "Export JSON", from: link });
+  page.window.renderPage({ requests: [r51, ...requests.map((r) => (r.n === 9 ? { ...r, proposals: [link] } : r))], sections: [...sections, answered, open] });
+  await tick();
+  const nine = page.block(9);
+  const details = nine.querySelector(".request-block-details");
+  assert.equal(page.document.querySelectorAll('[data-answered="r9/split"]').length, 1, "one Answered line");
+  assert.ok(details.contains(page.document.querySelector('[data-answered="r9/split"]')), "under R-9's Details");
+  assert.equal(page.document.querySelectorAll('[data-section-key="r9/split"]').length, 0, "drawn nowhere else");
+  assert.match(page.text(details), /R-51/, "the request it opened, beside it");
+  const eleven = page.block(11);
+  assert.equal(eleven.dataset.group, "needs", "the user's to decide");
+  assert.match(page.text(lineOf(page, 11, "ask")), /Another request for the rest\?/);
+  assert.match(page.text(eleven.querySelector(".request-block-fact-meta")), /^Confirmed by you · /, "still done");
+  assert.equal(page.document.querySelector(".project-ask"), null, "neither is the Project's");
+  assert.deepEqual(page.errors, []);
+});

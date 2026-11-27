@@ -873,3 +873,34 @@ test("R-45 what came after the first follow-up is said once, by the follow-ups: 
   assert.equal(r42([first, { note: "JSON 也加。", by: desk, at: at(2) }]).reply.text, first.note);
   assert.equal(r42([{ note: "JSON 也加。", by: desk, at: at(2) }]).reply, null);
 });
+
+// YN-237 ④, review 4d93b1ad: a lead's proposal bound to no task is its request's, open, answered or resolved: in that
+// block's asks (drawn up front while open, else as an Answered line under Details), never the Project's. Open under a
+// request the user confirmed done, it lists that request in Needs you, which stays done; with its request not on the
+// page, it stays the Project's.
+test("a proposal bound to no task is its request's, answered or resolved too; open under a done request, that request is in Needs you and stays done", () => {
+  const options = { options: [{ id: "new", label: "新建" }, { id: "merge", label: "并入" }, { id: "later", label: "先记下" }] };
+  const proposal = (key, n, state, extra = {}) => section(key, "ask", `提议 ${key}`, 2, 5, lead, {
+    ask: { question: `${key}?`, state, reply: options, proposal: { request: n, title: key, text: `${key} 的话` },
+      ...(state === "open" ? {} : { repliedAt: at(4), replyText: "先记下" }) }, ...extra });
+  const card = section("yn-9", "status", "九", 2, 10, lead, { status: status(10), card: binding("YN-9", "doing", x207) });
+  const answered = proposal("r9/split", 9, "replied");
+  const resolved = proposal("r9/old", 9, "resolved", { history: true, historyReason: "resolved" });
+  const doneOpen = proposal("r11/more", 11, "open");
+  const away = proposal("r99/gone", 99, "open");
+  const requests = [
+    request(11, 300, "done", [], { confirmedAt: at(200) }),
+    request(9, 100, "doing", [routed(card, "YN-9", "doing", x207)]),
+  ];
+  const { blocks, project } = pageBlocks(requests, [card, answered, resolved, doneOpen, away]);
+  const block = (n) => blocks.find((b) => b.request.n === n);
+  assert.deepEqual(block(9).asks.map((a) => a.key).sort(), ["r9/old", "r9/split"], "answered and resolved: R-9's");
+  assert.equal(block(9).group, "doing", "answered: nothing of the user's to do");
+  assert.deepEqual([block(11).group, block(11).state, block(11).action, block(11).look.ask?.key], ["needs", "done", null, "r11/more"],
+    "open under a done request: in Needs you, still done");
+  assert.deepEqual(project.asks.map((a) => a.key), ["r99/gone"], "its request not on the page: the Project's");
+  for (const key of ["r9/split", "r9/old", "r11/more"]) assert.equal(blockOfSection(key, blocks, project), `r${key.slice(1, key.indexOf("/"))}`);
+  // Answered, the done request is done again.
+  const later = pageBlocks(requests, [card, answered, { ...doneOpen, ask: { ...doneOpen.ask, state: "replied", repliedAt: at(0), replyText: "先记下" } }]);
+  assert.equal(later.blocks.find((b) => b.request.n === 11).group, "done");
+});

@@ -533,7 +533,10 @@ export function RequestBlockView({
   // The lines its conversation view shows, counted once, in its foot (R-45 §3.3).
   const said = conversation([request]).filter((item) => item.kind !== "looking").length;
   const tasks = block.tasks.length + block.joined.length;
-  const shown: BlockView = tasks ? view : "thread";
+  // Its cards view, with its tasks, or a lead's proposal bound to no task asked in it (YN-237 ④, review 4d93b1ad): a
+  // request with neither has its conversation only.
+  const cards = tasks > 0 || block.asks.length > 0;
+  const shown: BlockView = cards ? view : "thread";
   const viewsId = useId();
   const detailsId = useId();
   const [details, setDetails] = useState(false);
@@ -545,7 +548,8 @@ export function RequestBlockView({
   const asks = block.asks.filter(common.upFront);
   const { look } = block;
   // Its follow-up not answered yet (R-45 §3.3): not the user's to confirm now, so nothing says it waits for them.
-  const settle: Settle | null = action === "confirm" ? (block.state === "followUp" ? null : "waiting") : block.group === "done" ? "confirmed" : null;
+  // Confirmed done by the request itself: a done request in Needs you for a lead's proposal still says so.
+  const settle: Settle | null = action === "confirm" ? (block.state === "followUp" ? null : "waiting") : request.state === "done" ? "confirmed" : null;
   const p = progressText(language);
   // The now line from Core's fact (no status or progress of its tasks says it), unless another line says the same: its
   // own Ask, or its result. Where Core's fact is only whom it went to or a card's title, the front desk's newest reply is
@@ -566,7 +570,11 @@ export function RequestBlockView({
   const nowSection = look.now.kind === "status" ? look.now.section : null;
   const nowRow = look.now.kind === "status" ? [...block.tasks, ...block.joined].find((row) => row.task.id === (look.now as { task: string }).task) : undefined;
   const progressRow = look.now.kind === "progress" ? [...block.tasks, ...block.joined].find((row) => row.task.id === (look.now as { task: string }).task) : undefined;
-  const answered = [...block.tasks.flatMap((row) => row.asks.filter((a) => a.ask?.state !== "open" && !common.upFront(a)))];
+  // Answered Asks under Details, once each: its tasks', then a lead's proposals bound to no task (YN-237 ④, review
+  // 4d93b1ad), which no task row holds.
+  const ofTasks = block.tasks.flatMap((row) => row.asks);
+  const rowAsks = new Set(ofTasks);
+  const answered = [...ofTasks, ...block.asks.filter((a) => !rowAsks.has(a))].filter((a) => a.ask?.state !== "open" && !common.upFront(a));
   // The cards drawn whole above Details: their Details lines take no id of theirs, which is the card's.
   const drawn = new Set([nowSection?.key, resultCard?.key].filter((key): key is string => !!key));
   return (
@@ -643,10 +651,10 @@ export function RequestBlockView({
       )}
       {open && (
         <div className="request-block-body" data-view={shown}>
-          {tasks > 0 && <ViewTabs id={viewsId} label={t.blockViews(title)} shown={shown} said={said} onView={onView} />}
+          {cards && <ViewTabs id={viewsId} label={t.blockViews(title)} shown={shown} said={said} onView={onView} />}
           <div
             className="request-block-view"
-            {...(tasks > 0 ? { role: "tabpanel", id: `${viewsId}-${shown}`, "aria-labelledby": `${viewsId}-${shown}-tab` } : {})}
+            {...(cards ? { role: "tabpanel", id: `${viewsId}-${shown}`, "aria-labelledby": `${viewsId}-${shown}-tab` } : {})}
           >
             {shown === "cards" ? (
               <>
@@ -799,7 +807,7 @@ export function RequestBlockView({
           </button>
         )}
         {/* R-45 §3.4: its progress and results, and its conversation, each its own way in. */}
-        {tasks > 0 && (
+        {cards && (
           <button type="button" className="request-block-more" data-view="cards" aria-expanded={open && shown === "cards"} onClick={() => toView("cards")}>
             <ChevronDown size={13} aria-hidden="true" />
             {t.progressTab}

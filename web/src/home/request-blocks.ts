@@ -1010,22 +1010,25 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
   }
   const taken = new Set(rows.keys());
   // A lead's proposal (YN-237 ④) is asked in the request it was made under, whatever task it is bound to (if any): one
-  // bound to none is that request's, not the Project's. Open, it is the user's to decide there.
+  // bound to none is that request's, not the Project's, open, answered or resolved (review 4d93b1ad): its asks, where
+  // the block draws it up front while it is the user's to decide, else as an Answered line under Details, once. Open,
+  // the request is in Needs you whatever its own state; one the user confirmed done stays done (its state, its
+  // confirmation), only listed in Needs you until they decide. Its request not on the page, it stays the Project's.
   const proposed = new Map<string, number>();
   for (const s of all) {
     const n = s.kind === "ask" ? s.ask?.proposal?.request : undefined;
     const block = n === undefined ? undefined : blocks.find((b) => b.request.n === n);
     if (!block || taken.has(taskOf(s) ?? "")) continue;
     proposed.set(s.key, n!);
-    if (s.history) continue;
     block.asks = [...block.asks, s].sort(asked);
-    if (!openAsk(s) || block.group === "done") continue;
+    if (!openAsk(s)) continue;
     block.look = { ...block.look, ask: block.look.ask && block.look.ask.home === null
       ? { ...block.look.ask, count: block.look.ask.count + 1 }
       : { key: s.key, title: s.ask?.question || s.title, count: 1, home: null } };
     block.group = "needs";
-    block.state = "decide";
     block.next = { kind: "ask" };
+    if (block.request.state === "done") continue;
+    block.state = "decide";
     if (block.action === "follow") block.action = null;
   }
   blocks.sort((a, b) =>
