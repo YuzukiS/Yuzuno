@@ -50,6 +50,9 @@ export const BRIEF_LIMITS = {
   tabs: 6,
   titleChars: 120,
   questionChars: 500,
+  // A proposal's words (YN-237 ④): what the new request would ask, as the
+  // user's words of a request are read: why, its effect, what it would do.
+  proposalChars: 2000,
   codeBlockLines: 200,
   mathChars: 4000,
   listItems: 30,
@@ -712,7 +715,19 @@ const askSchema = z.strictObject({
   // An executor's approval of a gate step of its task (T-43 S4): Core checks
   // that the writer is that task's executor and the step is a gate.
   gate: z.strictObject({ taskId: z.string().trim().min(1).max(64), step: z.number().int().min(0).max(11) }).optional(),
+  // A lead's proposal of a new request found while doing request R-n
+  // (YN-237 ④): the user's "new" makes Core open it, linked both ways. Core
+  // checks that the writer is a lead and that R-n is this Project's.
+  proposal: z.strictObject({
+    request: z.number().int().min(1),
+    title: z.string().trim().min(1).max(L.titleChars),
+    text: z.string().trim().min(1).max(L.proposalChars),
+  }).optional(),
 });
+
+/** A proposal's replies (YN-237 ④), by their ids: open it as a new request linked to this one, fold it into this one,
+ * or note it for later. Only "new" makes Core do anything; the other two reach the lead as any reply does. */
+export const PROPOSAL_OPTIONS = ["new", "merge", "later"] as const;
 const statusSchema = z.strictObject({ asOf: time, validFor: z.number().int().min(L.validForMin).max(L.validForMax) });
 const timeSchema = z.strictObject({ due: time.optional(), eta: time.optional(), nextUpdate: time.optional() });
 const attachmentSchema = z.strictObject({
@@ -762,6 +777,7 @@ export const BRIEF_PROBLEM_CODES = {
   too_many_refs: `The section has over ${L.liveRefs} LiveRefs.`,
   ask_required: "kind ask without ask.",
   ask_without_reply: "An ask without options, freeText, form or choice.",
+  invalid_proposal: `A proposal's ask whose options are not new, merge and later, or that also offers a form or a choice.`,
   status_required: "kind status without status.",
   misplaced_field: "ask or status on a section of another kind.",
   root: "The root is not a BriefBody.",
@@ -1540,6 +1556,10 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
       add(problem("duplicate_id", "ask.reply.options", "Option ids must be unique.", "ask"));
     if (choice && choice.a.id === choice.b.id)
       add(problem("duplicate_id", "ask.reply.choice", "choice.a and choice.b need different ids.", "ask"));
+    // A proposal (YN-237 ④) is answered by its three options, the user's own words beside them; nothing else.
+    const ids = (options ?? []).map((o) => o.id);
+    if (section.ask.proposal && (form || choice || ids.length !== PROPOSAL_OPTIONS.length || !PROPOSAL_OPTIONS.every((id) => ids.includes(id))))
+      add(problem("invalid_proposal", "ask.reply", `A proposal's reply is options with the ids ${PROPOSAL_OPTIONS.join(", ")} (labels yours, e.g. "Open a new request", "Fold into R-n", "Note it for later"), with freeText if you like; no form or choice.`, "ask"));
   }
   const files = new Map<string, NonNullable<BriefSection["attachments"]>[number]>();
   (section.attachments ?? []).forEach((attachment, index) => {
@@ -2486,12 +2506,13 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     formatComponentGuide("form", clarificationSchema, COMPONENT_DESCRIPTIONS.Clarification, spaced(`At most ${L.formFields} fields, ${L.formOptions} options each.`)),
     `Use options for one choice and a form for several related answers, as in the decision and form examples; a review of a file, as in the review example (when and how: yuzuno_guide topic brief, "Ask for a review").`,
     `Write the ask to be answered alone: Home shows an open ask whole where the user reads its request. Say what is decided now and why; the facts it rests on, each as far as it was really checked (a dry run is not a signed release); what each option leads to and what can't be undone; what you recommend and why. Link the longer background (a report, the latest status, the task) rather than copying it. A simple question stays one sentence (yuzuno_guide topic brief, "Write an Ask to be answered alone").`,
+    `- proposal {request, title, text}: only from a lead, while doing request R-<request> of this Project, for a matter found there that could be its own request: title and text are what the new request would say (why, its effect, what it would do). Its reply is options with the ids ${PROPOSAL_OPTIONS.join(", ")}. new: Core opens it as the next request, sent to the front desk like the user's own, the two requests linked both ways, once however often the reply is sent; merge and later make nothing: the reply reaches you as any reply does, to fold it into R-<request> or keep it noted. Fixes R-<request>'s acceptance needs are no proposal: do them. Core refuses it from a member who is not a lead (proposal_not_lead) or for a request the Project does not have (proposal_request_unknown).`,
     `- gate {taskId, step}: only for an executor at a gate step of its task's template (step counts from 0, as executor_templates_list lists them): the approval it asks for. Core refuses it from any other Agent (gate_not_yours) or for a step that is not a gate (gate_step_unknown). The executor's Overview shows the ask at that step and the user can answer it there too; the step is done once the ask is replied.`,
     `The user's answer reaches you as an ordinary message quoting the section. The ask then shows "replied": it leaves Needs you, and brief_get lists it in you.repliedAsks (key, title, repliedAt, the reply in short, updatedSinceReply). It stays until you resolve it with {op:"resolve", key}; nothing closes it for you.`,
     `The user may also write to you about an ask without answering it (Home's "Wait, what?"): a message that begins "Note from the user on Home" and names the version they saw. A note chooses nothing, answers nothing of a form and approves nothing; the ask stays as it was, open in Needs you or replied. Take it as a question or a remark: revise the ask (edit or put it), or resolve or remove it if it no longer applies, and act on no option as chosen.`,
     `When to resolve: a preference or information you asked for, once you have taken it in; an action the reply authorizes, only after that action is confirmed done and its result is on the existing Task or a Brief section. A green CI or a whole Task being done is not that action. While it runs, or after it fails, keep the ask replied and report progress on the Task or Brief: edit keeps it replied, while put asks it again. Ask again only when the user has something new to decide. A reply executes nothing by itself: act on what the user has authorized, an explicit reply included, without asking for it again, and never infer a retry, merge or wider permission from an answer that does not grant it.`,
     `brief_get's you.openAsks counts your unresolved asks, open or replied.`,
-    `Answers never execute actions: nothing in a Brief merges, deploys or approves; Core approvals stay separate.`,
+    `Answers never execute actions: nothing in a Brief merges, deploys or approves; Core approvals stay separate. The one thing a reply makes Core do is a proposal's new: open that request.`,
   ],
   content: [
     `body is {root, elements}: elements maps ids (a letter, then letters, digits, - or _) to {type, props, children?, visible?} (visible: see interactive). root names the one BriefBody. The elements form one tree: each used once, at most ${L.depth} levels and ${L.components} components, at most ${L.bodyBytes} bytes of compact JSON. Only BriefBody, Group, Columns and Tabs have children. ${SIGNATURE_LEGEND} Components:`,
@@ -2585,6 +2606,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     ...Object.entries(BRIEF_PROBLEM_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `- ask_only: Your current Project permission allows only your own valid asks, removing your own older sections, optional noChange, and the card of a Task you answer for (see sections). A Project's leads edit Home; the user chooses them. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
     `- gate_not_yours, gate_step_unknown: an ask's gate names a task you are not the executor of, or a step of its template that is not a gate (see ask).`,
+    `- proposal_not_lead, proposal_request_unknown: a proposal from a member who is not a lead, or naming a request this Project does not have (see ask).`,
     `- invalid_task: task names no Task, a Task of another Project or an archived one, or comes from a member who is not a lead (see sections).`,
     `- not_card_responsible: an executor's report or status sub-topic outside the card of the Task it is the current executor of (see sections).`,
     `- not_project_lead, refresh_report_only, refresh_invalid, refresh_needs_user_turn, refresh_too_often, refresh_limit: a refresh from a member who is not a lead, on a section that is not a report, that does not read, made or made faster outside a Turn the user started, more often than the user allows, or one more than the user allows on at once (see refresh).`,
@@ -2627,7 +2649,7 @@ export const BRIEF_HARD_RULES = [
   `1. No Brief update is required each turn: write when something changed, for the user: conclusion first, limits beside it, evidence on its Task. A current state goes in a status, a lasting finding or decision in a short report linked to its Task, a choice for the user in an ask; yuzuno-ui blocks never reach Home. Load tools with tool search if needed.`,
   `2. Pass expectedVersion from brief_get. On version_conflict, re-read, merge and retry with a new requestId.`,
   `3. Leads edit Home; the user chooses leads. If editContent is false and writeOwnAsk is true, write only your own Asks and a card of a Task you answer for. If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
-  `4. An ask needs a question plus reply options, freeText, a form or a choice. A reply marks it replied. Resolve your asks explicitly with resolve once they are handled: a preference once taken in, an authorized action only after it is done and its result is on the Task or Brief. A reply executes nothing itself: act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant.`,
+  `4. An ask needs a question plus reply options, freeText, a form or a choice. A reply marks it replied. Resolve your asks explicitly once handled: a preference once taken in, an authorized action only after it is done and its result is on the Task or Brief. A reply executes nothing itself (save a proposal's new): act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant.`,
   `5. Brief content never executes actions: nothing you write merges, deploys or approves; answers come back to you as messages.`,
   `6. If brief_update is rejected, fix the listed problems and call it again. Read yuzuno_guide brief for what to write and brief_guide for formats, limits and examples.`,
 ].join("\n");

@@ -930,6 +930,23 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                         continue;
                     }
                 }
+                // A proposal of a new request (YN-237 ④): a lead's, under a request of this Project. The user's "new"
+                // makes Core open it (home.rs `ask_reply`), so who asks it and where are checked here, on every put.
+                let proposal = &change.section["ask"]["proposal"];
+                if change.kind == "ask" && proposal.is_object() {
+                    if !can_edit {
+                        problems.push(problem("proposal_not_lead", format!("{at}.ask.proposal"),
+                            "Only a lead of this Project proposes a new request. Tell the lead what you found, on your Task or by mail; the lead asks the user.",
+                            "ask"));
+                        continue;
+                    }
+                    let n = proposal["request"].as_i64().unwrap_or(0);
+                    if !crate::project_requests::has_request(db, &ctx.project, n)? {
+                        problems.push(problem("proposal_request_unknown", format!("{at}.ask.proposal.request"),
+                            format!("This Project has no request R-{n}. Name the request you found the matter in, by its number."), "ask"));
+                        continue;
+                    }
+                }
                 planned.insert(key.into(), entry);
             }
             // Changes no owner, kind or ask state; the blocks are `edited`'s
