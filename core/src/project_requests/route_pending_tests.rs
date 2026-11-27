@@ -13,15 +13,18 @@ async fn list(lab: &Lab, actor: &str, input: Value) -> Result<Value> {
     lab.ws.collaboration_call(Some(actor), pending::TOOL, input).await
 }
 
-/// The items the list names, as R-n or R-n #m.
-async fn owed(lab: &Lab) -> Vec<String> {
-    let listed = list(lab, "desk", json!({})).await.unwrap();
+/// The items a list names, as R-n or R-n #m.
+fn labels(listed: &Value) -> Vec<String> {
     listed["items"].as_array().unwrap().iter()
         .map(|item| match item["followUp"].as_i64() {
             Some(m) => format!("{} #{m}", item["request"].as_str().unwrap()),
             None => item["request"].as_str().unwrap().to_owned(),
         })
         .collect()
+}
+
+async fn owed(lab: &Lab) -> Vec<String> {
+    labels(&list(lab, "desk", json!({})).await.unwrap())
 }
 
 async fn follow(lab: &Lab, n: i64, text: &str, id: &str) {
@@ -85,6 +88,11 @@ async fn the_list_holds_what_no_route_or_note_naming_it_has_answered() {
     // Nothing reports here that they reached the front desk: unsent, still owed.
     let listed = list(&lab, "desk", json!({})).await.unwrap();
     assert_eq!(listed["items"][0]["state"], "unsent");
+    // Still being sent is said so, not that it reached no one.
+    receipts(&lab, "desk", "sending");
+    let listed = list(&lab, "desk", json!({})).await.unwrap();
+    assert_eq!((listed["items"][0]["state"].clone(), listed["items"][0]["note"].clone()),
+        (json!("sending"), json!("its message is still being sent: none was taken or queued yet")));
     receipts(&lab, "desk", "accepted");
     // A note naming none: it may answer them, so they show as later, still owed.
     lab.route("desk", n, "导出", "在做了。", vec![to_agent("导出代码", "lead", "开发协调")]).await.unwrap();
@@ -206,6 +214,12 @@ async fn a_turn_end_tells_the_front_desk_once_of_what_it_left_owed() {
     turn_ended(&lab, "desk");
     lab.ws.remind_pending_replies().await.unwrap();
     assert!(told(&lab, "desk").is_empty(), "still on its way to it: its own Turn takes it");
+    // Still being sent: said so in the list, and no reminder either.
+    receipts(&lab, "desk", "sending");
+    assert_eq!(list(&lab, "desk", json!({})).await.unwrap()["items"][0]["state"], "sending");
+    turn_ended(&lab, "desk");
+    lab.ws.remind_pending_replies().await.unwrap();
+    assert!(told(&lab, "desk").is_empty(), "being sent to it: no reminder");
     receipts(&lab, "desk", "accepted");
     turn_ended(&lab, "lead");
     lab.ws.remind_pending_replies().await.unwrap();
@@ -311,6 +325,10 @@ async fn a_result_sends_the_front_desk_back_to_the_request_whose_follow_ups_wait
     result("r1").await;
     lab.ws.remind_pending_replies().await.unwrap();
     assert!(told(&lab, "desk").is_empty(), "the follow-up is still on its way to it");
+    receipts(&lab, "desk", "sending");
+    result("r1b").await;
+    lab.ws.remind_pending_replies().await.unwrap();
+    assert!(told(&lab, "desk").is_empty(), "being sent to it: no reminder");
     receipts(&lab, "desk", "accepted");
     result("r2").await;
     lab.ws.remind_pending_replies().await.unwrap();
@@ -335,4 +353,50 @@ async fn a_result_sends_the_front_desk_back_to_the_request_whose_follow_ups_wait
     result("r5").await;
     lab.ws.remind_pending_replies().await.unwrap();
     assert_eq!(told(&lab, "desk").len(), 2, "answered: nothing waits");
+}
+
+// Whole requests a page; a request with more owed than a page holds goes on
+// within it, from the follow-up it stopped before. Walking every page of a
+// request with 27 owed among answered ones, and the request after it, names
+// each owed item exactly once and no answered one (Dev Lead, seq 12829).
+#[tokio::test]
+async fn every_page_together_names_each_owed_item_exactly_once() {
+    let lab = lab();
+    let n = lab.say("第一件", "m1").await;
+    lab.route("desk", n, "第一件", "好。", vec![to_agent("第一件", "lead", "开发协调")]).await.unwrap();
+    for i in 1..=30 {
+        follow(&lab, n, &format!("补充 {i}"), &format!("f{i}")).await;
+    }
+    // Answered in between, one of them past the first page.
+    answer_alone(&lab, "desk", n, "第三条和第十条做了。", json!([10, 3])).await.unwrap();
+    answer_alone(&lab, "desk", n, "第二十七条做了。", json!([27])).await.unwrap();
+    let next = lab.say("第二件", "m2").await;
+    for i in 1..=3 {
+        follow(&lab, next, &format!("第二件补充 {i}"), &format!("g{i}")).await;
+    }
+    answer_alone(&lab, "desk", next, "第二条做了。", json!([2])).await.unwrap();
+    let mut seen = Vec::new();
+    let mut input = json!({});
+    let mut pages = 0;
+    loop {
+        let page = list(&lab, "desk", input).await.unwrap();
+        assert!(page["items"].as_array().unwrap().len() <= 25, "a page holds at most 25");
+        seen.extend(labels(&page));
+        pages += 1;
+        let Some(from) = page.get("nextFromRequest") else { break };
+        input = match page.get("nextFromFollowUp") {
+            Some(m) => json!({"fromRequest":from,"fromFollowUp":m}),
+            None => json!({"fromRequest":from}),
+        };
+        assert!(pages < 10, "the pages end");
+    }
+    let mut expected: Vec<String> = (1..=30).filter(|m| ![3, 10, 27].contains(m)).map(|m| format!("R-1 #{m}")).collect();
+    expected.extend(["R-2".to_owned(), "R-2 #1".to_owned(), "R-2 #3".to_owned()]);
+    assert_eq!(seen, expected, "each owed item once, in order, no answered one");
+    assert_eq!(pages, 2, "25 of R-1, then the rest of it with R-2");
+    let first = list(&lab, "desk", json!({})).await.unwrap();
+    assert_eq!((first["nextFromRequest"].clone(), first["nextFromFollowUp"].clone()), (json!(1), json!(29)));
+    assert_eq!(first["owed"], json!({"requests":1,"followUps":29}));
+    let error = list(&lab, "desk", json!({"fromFollowUp":3})).await.unwrap_err().to_string();
+    assert!(error.starts_with("invalid_input:"), "{error}");
 }

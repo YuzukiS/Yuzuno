@@ -46,8 +46,8 @@ const MAIL_ITEMS: usize = 12;
 /// Characters of the user's words an item shows in the list and in a mail.
 const PREVIEW_CHARS: usize = 200;
 const MAIL_PREVIEW_CHARS: usize = 120;
-/// Items the list gives at once, whole requests (a request with more than
-/// this many owed gives this many of them).
+/// Items the list gives at once, whole requests; a request with more than
+/// this many owed gives them this many at a time (`fromFollowUp`).
 const LIST_ITEMS: usize = 25;
 /// Bytes of one item's words a read gives at once (an MCP answer holds 48 KiB).
 const WORDS_PAGE: usize = 24_000;
@@ -118,9 +118,10 @@ pub(crate) struct Item {
     pub text: String,
     /// Who its message went to, with how each stands (as its receipt says).
     pub to: Vec<(String, Option<String>)>,
-    /// waiting; unsent (it reached no one: no receipt accepted or queued);
-    /// later (a follow-up a note naming no follow-up came after: written
-    /// before replyTo, or by an older Core; it may answer it).
+    /// waiting; sending (no receipt accepted or queued yet, one still being
+    /// sent); unsent (it reached no one); later (a follow-up a note naming no
+    /// follow-up came after: written before replyTo, or by an older Core; it
+    /// may answer it).
     pub state: &'static str,
 }
 
@@ -142,6 +143,12 @@ fn reached(state: &Option<String>) -> bool {
     matches!(state.as_deref(), Some("accepted" | "queued"))
 }
 
+/// What an item's messages say when none reached anyone: sending while one
+/// is still being sent (or its outcome is not known yet), else unsent.
+fn not_reached(to: &[(String, Option<String>)]) -> &'static str {
+    if to.iter().any(|(_, state)| matches!(state.as_deref(), Some("sending" | "uncertain"))) { "sending" } else { "unsent" }
+}
+
 /// Everything `project`'s front desk owes the user, oldest request first, a
 /// request before its follow-ups. `from` leaves out the requests numbered
 /// below it.
@@ -159,10 +166,9 @@ pub(crate) fn pending(db: &Connection, project: &str, from: i64) -> Result<Vec<I
             row.state == routes::DONE && matches!(row.kind.as_str(), routes::CARD | routes::EXISTING | routes::ANSWER)
         });
         if !handled {
-            let state = delivery(db, &id, &front, &message, None)?;
-            let unsent = !reached(&state);
-            items.push(Item { request_id: id.clone(), n, title: title.clone(), m: None, at, text, to: vec![(front, state)],
-                state: if unsent { "unsent" } else { "waiting" } });
+            let to = vec![(front.clone(), delivery(db, &id, &front, &message, None)?)];
+            let state = if to.iter().any(|(_, state)| reached(state)) { "waiting" } else { not_reached(&to) };
+            items.push(Item { request_id: id.clone(), n, title: title.clone(), m: None, at, text, to, state });
         }
         items.extend(follow_ups(db, &id, n, &title)?);
     }
@@ -200,7 +206,7 @@ fn follow_ups(db: &Connection, request: &str, n: i64, title: &Option<String>) ->
             .map(|agent| Ok((agent.clone(), delivery(db, request, &agent, &message, Some(m))?)))
             .collect::<Result<Vec<_>>>()?;
         let state = if !to.iter().any(|(_, state)| reached(state)) {
-            "unsent"
+            not_reached(&to)
         } else if unnamed.iter().any(|note| *note > at) {
             "later"
         } else {
@@ -230,6 +236,7 @@ fn reply_hint(item: &Item) -> String {
 fn state_note(item: &Item) -> Option<&'static str> {
     match item.state {
         "unsent" => Some("its message reached no one: none was taken or queued"),
+        "sending" => Some("its message is still being sent: none was taken or queued yet"),
         "later" => Some("a note naming no follow-up came after it (written before replyTo, or by an older Core): if it answers this, \
             name it in a note's replyTo"),
         _ => None,
@@ -253,7 +260,9 @@ pub(crate) fn tool_definition() -> Value {
             "offset":{"type":"integer","minimum":0,"description":"With request: the byte offset to read its words from, as nextOffset \
                 gave it."},
             "fromRequest":{"type":"integer","minimum":1,"description":"Without request: list only requests numbered from this one, \
-                as nextFromRequest gave it."}
+                as nextFromRequest gave it."},
+            "fromFollowUp":{"type":"integer","minimum":1,"description":"With fromRequest: in that request, list only follow-ups \
+                numbered from this one, as nextFromFollowUp gave it (a request with more owed than one page holds)."}
         }}
     })
 }
@@ -286,8 +295,8 @@ fn to_json(db: &Connection, to: &[(String, Option<String>)]) -> Result<Vec<Value
 pub(crate) async fn call(ws: Arc<Workspace>, actor: Option<String>, input: Value) -> Result<Value> {
     let actor = actor.context("agent_only: project_requests_pending is a lead's; the user reads the requests on the Project's page")?;
     let object = input.as_object().context("invalid_input: give an object")?;
-    if let Some(key) = object.keys().find(|key| !matches!(key.as_str(), "request" | "followUp" | "offset" | "fromRequest")) {
-        bail!("invalid_input: {key} is not one of request, followUp, offset, fromRequest");
+    if let Some(key) = object.keys().find(|key| !matches!(key.as_str(), "request" | "followUp" | "offset" | "fromRequest" | "fromFollowUp")) {
+        bail!("invalid_input: {key} is not one of request, followUp, offset, fromRequest, fromFollowUp");
     }
     let request = match object.get("request") {
         None | Some(Value::Null) => None,
@@ -299,6 +308,8 @@ pub(crate) async fn call(ws: Arc<Workspace>, actor: Option<String>, input: Value
     };
     let (follow_up, offset, from) = (number(object.get("followUp"), "followUp")?, number(object.get("offset"), "offset")?,
         number(object.get("fromRequest"), "fromRequest")?);
+    let from_follow_up = number(object.get("fromFollowUp"), "fromFollowUp")?;
+    ensure!(from_follow_up.is_none() || from.is_some(), "invalid_input: fromFollowUp goes with fromRequest");
     ensure!(request.is_some() || (follow_up.is_none() && offset.is_none()), "invalid_input: followUp and offset go with request");
     ensure!(request.is_none() || from.is_none(), "invalid_input: fromRequest lists; leave it out with request");
     ws.stored(move |store| {
@@ -306,7 +317,7 @@ pub(crate) async fn call(ws: Arc<Workspace>, actor: Option<String>, input: Value
         let project = led(&db, &actor)?;
         match request {
             Some(n) => read(&db, &project, n, follow_up, offset.unwrap_or(0) as usize),
-            None => list(&db, &project, &actor, from.unwrap_or(1)),
+            None => list(&db, &project, &actor, from.unwrap_or(1), from_follow_up),
         }
     })
     .await
@@ -325,22 +336,31 @@ fn item_json(db: &Connection, item: &Item) -> Result<Value> {
     Ok(row)
 }
 
-fn list(db: &Connection, project: &str, actor: &str, from: i64) -> Result<Value> {
+fn list(db: &Connection, project: &str, actor: &str, from: i64, from_follow_up: Option<i64>) -> Result<Value> {
     let desk = front_desk::in_project(db, project)?.effective_agent_id;
-    let items = pending(db, project, from)?;
+    let mut items = pending(db, project, from)?;
+    if let Some(first) = from_follow_up {
+        // Within the first request, only its follow-ups from `first` on.
+        items.retain(|item| item.n != from || item.m.is_some_and(|m| m >= first));
+    }
     let (requests, follow_ups) = (items.iter().filter(|i| i.m.is_none()).count(), items.iter().filter(|i| i.m.is_some()).count());
     // Whole requests, oldest first, while they fit; the first one always.
     let mut numbers: Vec<i64> = items.iter().map(|item| item.n).collect();
     numbers.dedup();
-    let (mut shown, mut next) = (Vec::new(), None);
+    let (mut shown, mut next): (Vec<Value>, Option<(i64, Option<i64>)>) = (Vec::new(), None);
     for n in numbers {
         let of: Vec<&Item> = items.iter().filter(|item| item.n == n).collect();
         if !shown.is_empty() && shown.len() + of.len() > LIST_ITEMS {
-            next = Some(n);
+            next = Some((n, None));
             break;
         }
         for item in of.iter().take(LIST_ITEMS) {
             shown.push(item_json(db, item)?);
+        }
+        // More of one request than a page holds: on from the follow-up it stopped before.
+        if let Some(rest) = of.get(LIST_ITEMS) {
+            next = Some((n, rest.m));
+            break;
         }
     }
     let mut answer = json!({
@@ -350,8 +370,11 @@ fn list(db: &Connection, project: &str, actor: &str, from: i64) -> Result<Value>
         "owed":{"requests":requests,"followUps":follow_ups},
         "items":shown,
     });
-    if let Some(n) = next {
+    if let Some((n, m)) = next {
         answer["nextFromRequest"] = json!(n);
+        if let Some(m) = m {
+            answer["nextFromFollowUp"] = json!(m);
+        }
     }
     if desk.as_deref() != Some(actor) {
         answer["note"] = json!("Only the front desk replies to the user (project_route); you read this as a lead.");
@@ -499,8 +522,10 @@ fn item_line(item: &Item) -> String {
     let what = match (item.m, item.state) {
         (Some(_), "later") => "follow-up, a note naming no follow-up came after it",
         (Some(_), "unsent") => "follow-up that reached no one",
+        (Some(_), "sending") => "follow-up still being sent",
         (Some(_), _) => "follow-up",
         (None, "unsent") => "request that reached no one, not routed or answered",
+        (None, "sending") => "request still being sent, not routed or answered",
         (None, _) => "request, not routed or answered",
     };
     format!("- {} ({what}, {}): \u{201c}{}\u{201d}", item.label(), item.at, preview(&item.text, MAIL_PREVIEW_CHARS).replace('\n', " "))
