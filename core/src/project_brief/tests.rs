@@ -2194,6 +2194,8 @@ mod reply_file_tests;
 mod ask_note_tests;
 #[path = "reply_order_tests.rs"]
 mod reply_order_tests;
+#[path = "ask_hint_tests.rs"]
+mod ask_hint_tests;
 
 /// The user's Overview layout: a summary across the top, then two columns.
 fn overview() -> Value {

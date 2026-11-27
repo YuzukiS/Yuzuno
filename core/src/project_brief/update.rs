@@ -146,6 +146,15 @@ fn preview(rejected: Option<Value>, checked_all: bool, advice: Vec<Value>, repai
     rejected
 }
 
+/// The characters of every Markdown block in `body` (YN-237 ③), as the
+/// guide counts them: Unicode code points.
+fn markdown_chars(body: &Value) -> usize {
+    body["elements"].as_object().into_iter().flat_map(|elements| elements.values())
+        .filter(|element| element["type"] == "Markdown")
+        .map(|element| element["props"]["text"].as_str().map_or(0, |text| text.chars().count()))
+        .sum()
+}
+
 /// The validator's advice on change `index` (T-176), added to `advice`
 /// once each and at most MAX_ADVICE in all. A block edit or patch is
 /// advised only on the blocks it changed, never again on the rest of the section.
@@ -232,6 +241,10 @@ pub(super) struct Change {
     /// with besides the section (YN-209, faces.rs). Set by start, never
     /// accepted from the Agent's request; None for anything else.
     pub card: Option<faces::Input>,
+    /// An edit or patch that makes the Markdown of an ask the user replied
+    /// to longer (YN-237 ③): advised once accepted (`ask_grew`), never
+    /// refused. Set by start; false for anything else.
+    pub ask_grew: bool,
 }
 
 pub(super) struct Request {
@@ -401,7 +414,7 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
             return None;
         }
         let edit = json!({"elements":elements,"status":object.get("status").cloned().unwrap_or(Value::Null)});
-        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task, refresh , card: None });
+        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task, refresh , card: None, ask_grew: false });
     }
     if op == Op::Patch {
         return parse_patch(&at, key, object, problems);
@@ -411,7 +424,7 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
             problems.push(problem("invalid_change", format!("{at}.{extra}"), "resolve, remove and claim take only op and key.", "sections"));
             return None;
         }
-        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit: Value::Null, previous_body: None, repairs: vec![], task: None, refresh: None , card: None });
+        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit: Value::Null, previous_body: None, repairs: vec![], task: None, refresh: None , card: None, ask_grew: false });
     }
     let kind = object.get("kind").and_then(Value::as_str).filter(|kind| matches!(*kind, "ask" | "report" | "status"));
     let Some(kind) = kind else {
@@ -439,7 +452,7 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
     section.as_object_mut().unwrap().remove("op");
     // The card's refresh is Core's (refresh_writes.rs), not the section's.
     section.as_object_mut().unwrap().remove("refresh");
-    Some(Change { op, key: key.into(), kind: kind.into(), section, edit: Value::Null, previous_body: None, repairs: vec![], task, refresh , card: None })
+    Some(Change { op, key: key.into(), kind: kind.into(), section, edit: Value::Null, previous_body: None, repairs: vec![], task, refresh , card: None, ask_grew: false })
 }
 
 /// A put's or edit's `task` (YN-86 S2a), as Change keeps it: None when left
@@ -507,7 +520,7 @@ fn parse_patch(at: &str, key: &str, object: &serde_json::Map<String, Value>, pro
         }
     }
     let edit = json!({"patch":ops,"status":object.get("status").cloned().unwrap_or(Value::Null)});
-    Some(Change { op: Op::Patch, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task: None, refresh: None , card: None })
+    Some(Change { op: Op::Patch, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task: None, refresh: None , card: None, ask_grew: false })
 }
 
 pub(super) struct Caller {
@@ -1045,6 +1058,7 @@ fn start(store: &Store, actor: &str, id: &str, input: &Value) -> Result<Start> {
         let composed = if change.op == Op::Patch { patched(&row, &change.edit, index) } else { edited(&row, &change.edit, index) };
         match composed {
             Ok(section) => {
+                change.ask_grew = row.kind == "ask" && row.replied_ask() && markdown_chars(&section["body"]) > markdown_chars(&row.data["body"]);
                 change.section = section;
                 change.previous_body = Some(row.data["body"].clone());
                 if faces::shown(&row.kind) {
@@ -1264,6 +1278,13 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
         match checked {
             Ok(accepted) => {
                 advise(change, index, accepted.advice, &mut advice);
+                if change.ask_grew && advice.len() < MAX_ADVICE {
+                    advice.push(json!({"code":"ask_grows_after_reply","path":change_path(change, index, "body"),
+                        "reason":"The user replied to this ask, and this edit makes its words longer. What goes on now belongs in its Task's status, \
+                         which Home shows as its request's Now line, and a lasting result in a report; the ask keeps the decision. Advice only: \
+                         the edit is accepted.",
+                        "guide":"brief_guide ask"}));
+                }
                 for found in accepted.repairs.iter().filter(|found| found.is_object()) {
                     let mut found = found.clone();
                     found["path"] = json!(change_path(change, index, found["path"].as_str().unwrap_or_default()));
