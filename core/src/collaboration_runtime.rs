@@ -101,6 +101,10 @@ impl Workspace {
             return tokio::spawn(crate::project_requests::routes::call(self.clone(), actor.map(str::to_owned), input))
                 .await.context("Routing a request ended unexpectedly")?;
         }
+        if operation == crate::project_requests::pending::TOOL {
+            return tokio::spawn(crate::project_requests::pending::call(self.clone(), actor.map(str::to_owned), input))
+                .await.context("Reading what the front desk owes ended unexpectedly")?;
+        }
         if operation == "executor_release" {
             // Its close is awaited in turn; a dropped request does not stop it.
             return tokio::spawn(crate::executor_release::call(self.clone(), actor.map(str::to_owned), input))
@@ -352,6 +356,12 @@ impl Workspace {
                 // mail begins one; the others take them into that Turn.
                 if let Err(error) = ws.deliver_owed_attachments().await {
                     eprintln!("Owed request attachments: {error:#}");
+                }
+                // Before mail: what a front desk owes the user, told when its
+                // Turn ended, when it became the front desk, or when a result
+                // came (R-31 #3), goes in this round.
+                if let Err(error) = ws.remind_pending_replies().await {
+                    eprintln!("Requests awaiting a reply: {error:#}");
                 }
                 if let Ok(pending) = ws.stored(|store| store.pending_peer_deliveries()).await {
                     futures_util::stream::iter(pending)

@@ -1961,6 +1961,8 @@ pub fn tool_definitions() -> Vec<Value> {
         crate::machine_list::tool_definition(),
         // The front desk routes the user's requests (YN-86 S3a-2); served by `project_requests`.
         crate::project_requests::routes::tool_definition(),
+        // What the front desk owes the user, for the Project's leads (R-31 #3); served there.
+        crate::project_requests::pending::tool_definition(),
         // The working guide, compiled from the yuzuno skill; served by `guide`.
         crate::guide::tool_definition(),
     ].into_iter().chain(crate::github::tool_definitions()).chain(crate::pr_review::tool_definitions()).chain(crate::pr_operations::tool_definitions()).chain(crate::merge_queue::tool_definitions()).chain(crate::jobs::tool_definitions()).chain(crate::ci_monitor::tool_definitions()).chain(crate::delivery::tool_definitions()).chain(crate::services::tool_definitions()).chain(crate::cleanup_plans::tool_definitions()).collect()

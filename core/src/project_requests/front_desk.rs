@@ -87,6 +87,8 @@ pub(crate) fn save(store: &Store, project: &str, expected: i64, agent: Option<St
         params![project, agent, expected + 1, crate::model::now()],
     )?;
     let saved = in_project(&tx, project)?;
+    // Its new front desk is told what went to someone else (pending.rs).
+    super::pending::desk_changed(&tx, project)?;
     tx.commit()?;
     Ok(saved)
 }
@@ -96,6 +98,8 @@ pub(crate) fn save(store: &Store, project: &str, expected: i64, agent: Option<St
 /// none is chosen now, and the version moves on so a settings page that read
 /// it reloads before saving. In the caller's transaction. Whether it was.
 pub(crate) fn lead_left(db: &Connection, agent: &str, project: &str) -> Result<bool> {
+    // Whoever answers for the Project's requests now is told what it owes (pending.rs).
+    super::pending::desk_changed(db, project)?;
     Ok(db.execute(
         "UPDATE project_front_desk SET agent_id=NULL, version=version+1, updated_at=?3 WHERE project_id=?1 AND agent_id=?2",
         params![project, agent, crate::model::now()],
