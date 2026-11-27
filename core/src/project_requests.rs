@@ -768,7 +768,8 @@ pub(crate) async fn may_open(ws: &Arc<Workspace>, project: &str, proposal: &Prop
 /// words the proposal's, its title the proposal's, its front desk the
 /// Project's now, linked to the request it was made under. Kept once
 /// (`proposal_message`): found again, it is returned as it was. Refused as
-/// `may_open` is, keeping nothing.
+/// `may_open` is, or by storage, it keeps nothing: the reply, sent, stays on
+/// Home to send again, which keeps it then.
 pub(crate) async fn keep_proposal(ws: &Arc<Workspace>, project: &str, proposal: &Proposal) -> Result<Opened> {
     let words = proposal_words(proposal);
     check(&words)?;
@@ -801,6 +802,29 @@ pub(crate) async fn keep_proposal(ws: &Arc<Workspace>, project: &str, proposal: 
     }).await?;
     announce(ws, project);
     Ok(Opened { request, under: proposal.under, key: proposal.key.clone(), workspace, name })
+}
+
+/// The request a proposal opened (YN-237 ④), by the Ask's identity on Home:
+/// its number, the newest should a later version have opened another. None
+/// until one is open.
+pub(crate) fn proposal_opened(db: &Connection, project: &str, identity: i64) -> Result<Option<i64>> {
+    Ok(db
+        .query_row("SELECT n FROM project_requests WHERE project_id=?1 AND from_section_id=?2 ORDER BY n DESC LIMIT 1",
+            params![project, identity], |r| r.get(0))
+        .optional()?)
+}
+
+/// Puts on a proposal's ask (YN-237 ④), as brief_get and Home show it, the
+/// number of the request it opened (`ask.proposal.opened`) once there is one:
+/// how its lead knows that request is open before it resolves the ask, read
+/// from the request itself, never written beside it.
+pub(crate) fn show_opened(db: &Connection, project: &str, identity: i64, section: &mut Value) -> Result<()> {
+    if section["ask"]["proposal"].is_object() {
+        if let Some(n) = proposal_opened(db, project, identity)? {
+            section["ask"]["proposal"]["opened"] = json!(n);
+        }
+    }
+    Ok(())
 }
 
 /// Sends the request a proposal opened to its front desk (YN-237 ④), after

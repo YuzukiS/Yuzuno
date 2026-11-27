@@ -339,6 +339,7 @@ impl<'a> Shown<'a> {
     fn section(&self, row: &sections::Row, refs: &mut super::refs::Refs, cards: &mut cards::Cards, refresh: bool, index: bool) -> Result<Value> {
         let found = if index { Value::Null } else { refs.of(&row.data["body"]) };
         let mut section = sections::section_json(row, &self.waiting.owner(row), self.seen.get(&row.key), found, self.at);
+        crate::project_requests::show_opened(self.db, self.project, row.identity, &mut section)?;
         // id is the section's identity on Home: the same through every put
         // and edit of it, and through a report the user marked seen that its
         // owner then writes again; a section removed and written again has
@@ -1202,15 +1203,21 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         (Some(id), Some(row)) => Some(choice(row, id).context("choice_not_found: the ask offers no such option")?),
         _ => None,
     };
+    let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
+    let previous = ws.stored(move |store| store.receipt(&agent, &client)).await?;
     // A proposal's "new" (YN-237 ④) opens its request once the reply has reached the lead, once however often it is
     // sent: a reply refused or failed opens nothing, and the user may answer again. Whether it can be opened is checked
     // before a reply is first sent: refused (the Project archived, no front desk), the reply sends nothing and is kept,
     // so it never tells the lead of a request Core could not open. "merge" and "later" open nothing: they reach the
-    // lead as any reply does.
-    let proposal = shown.as_ref().filter(|_| !noting).and_then(proposal_of);
-    let opens = proposal.as_ref().filter(|_| chosen.as_ref().is_some_and(|(id, _)| id == "new"));
-    let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
-    let previous = ws.stored(move |store| store.receipt(&agent, &client)).await?;
+    // lead as any reply does. The proposal answered is the version Home has now or, sent again, the one its receipt
+    // keeps (`proposal_sent`): what the user chose opens whatever the ask became since.
+    let proposal = match (&shown, &previous) {
+        (Some(row), _) => proposal_of(row),
+        (None, Some(sent)) => sent.origin.as_ref().and_then(|origin| proposal_sent(origin, &key, version)),
+        _ => None,
+    }
+    .filter(|_| !noting);
+    let opens = proposal.as_ref().filter(|_| input.choice.as_deref() == Some("new"));
     // Whether this send made the message (YN-223), rather than finding it sent before: a retry's mark is placed by
     // its receipt among the user's other replies, while one made just now is the newest (sections::newest).
     let (receipt, fresh) = if let Some(previous) = previous {
@@ -1252,6 +1259,10 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         if noting {
             origin["intent"] = json!("note");
         }
+        // A proposal's "new" (YN-237 ④) keeps what it opens with its receipt: sent again, it opens that.
+        if let Some(proposal) = opens {
+            origin["proposal"] = json!({"request": proposal.under, "title": proposal.title, "text": proposal.text});
+        }
         let detail = ws.send_view(&input.agent_id).await?;
         adopt_images(ws, &project, &input).await?;
         adopt_files(ws, &project, &input).await?;
@@ -1291,6 +1302,14 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         }
         return Ok(receipt);
     }
+    // The reply delivered, the request its proposal's "new" opens is kept before the ask is marked replied. Not kept
+    // (the Project archived meanwhile, storage refusing the write), the ask stays as it was and the reply errors, not
+    // `not_submitted` since it was sent: Home keeps it to send again under its client ID (T-9), which opens it then,
+    // once. The lead's reply says it is open only once the ask shows its number (`show_opened`).
+    let opened = match opens.filter(|_| delivered(&receipt)) {
+        Some(proposal) => Some(crate::project_requests::keep_proposal(ws, &project, proposal).await.map_err(not_opened)?),
+        None => None,
+    };
     // Marked on that version only, if it is still the live ask now.
     if shown.is_some() && delivered(&receipt) {
         let reply = match (&chosen, extra_text(chosen.as_ref(), &input.text)) {
@@ -1329,20 +1348,29 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             announce(ws, Some(&project));
         }
     }
-    // The reply delivered, the request the proposal opens is kept, then sent to its front desk: not sent now, it stays
-    // kept, not confirmed delivered, with Send again on Home.
-    if let Some(proposal) = opens.filter(|_| delivered(&receipt)) {
-        match crate::project_requests::keep_proposal(ws, &project, proposal).await {
-            Ok(opened) => {
-                let n = opened.n();
-                if let Err(error) = crate::project_requests::send_proposal(ws, &project, opened).await {
-                    eprintln!("Home kept R-{n} of Project {project}, opened from a proposal, without sending it: {error:#}");
-                }
-            }
-            Err(error) => eprintln!("Home could not open the request the proposal `{key}` of Project {project} asks for: {error:#}"),
+    // The request the proposal opened goes to its front desk: not sent now, it stays kept, not confirmed delivered,
+    // with Send again on Home.
+    if let Some(opened) = opened {
+        let n = opened.n();
+        if let Err(error) = crate::project_requests::send_proposal(ws, &project, opened).await {
+            eprintln!("Home kept R-{n} of Project {project}, opened from a proposal, without sending it: {error:#}");
         }
     }
     Ok(receipt)
+}
+
+/// Why the request a proposal's "new" asks for is not open although the reply reached its lead (YN-237 ④): by the
+/// refusal's code, else the error. Never `not_submitted`: the reply was sent, so Home keeps it to send again.
+fn not_opened(error: anyhow::Error) -> anyhow::Error {
+    let text = error.to_string();
+    let why = match text.split_once(':') {
+        Some((code, _)) if !code.is_empty() && code.chars().all(|c| c.is_ascii_lowercase() || c == '_') => code.to_owned(),
+        _ => format!("{error:#}"),
+    };
+    anyhow::anyhow!(
+        "proposal_not_opened: your reply reached its lead, but Core could not open the new request yet ({why}). Send the reply again \
+         to open it; it opens once."
+    )
 }
 
 /// The proposal an ask is (YN-237 ④), as the version shown has it: the request it was made under, the Ask's identity,
@@ -1359,16 +1387,32 @@ fn proposal_of(row: &sections::Row) -> Option<crate::project_requests::Proposal>
     })
 }
 
+/// The proposal a reply sent before chose "new" on (YN-237 ④), as its receipt keeps it (`ask_reply`): the request it
+/// was made under and what the new request says, of the Ask by its identity and the version answered. None for any
+/// other reply, and for one sent before Core kept it.
+fn proposal_sent(origin: &Value, key: &str, version: i64) -> Option<crate::project_requests::Proposal> {
+    let proposal = &origin["proposal"];
+    Some(crate::project_requests::Proposal {
+        under: proposal["request"].as_i64()?,
+        identity: origin["sectionId"].as_i64()?,
+        version,
+        key: key.to_owned(),
+        title: proposal["title"].as_str()?.to_owned(),
+        text: proposal["text"].as_str()?.to_owned(),
+    })
+}
+
 /// What a reply to a proposal (YN-237 ④) tells its lead, after the user's answer: what Core does of it, by the option
-/// chosen. Core opens a request only on "new", as the reply reaches the lead (`ask_reply`), so its number is not known
-/// yet; the other answers leave it to the lead.
+/// chosen. Core opens a request only on "new", once the reply has reached the lead (`ask_reply`), so its number is
+/// not known yet and the reply never says it is open; the other answers leave it to the lead.
 fn proposal_said(proposal: &crate::project_requests::Proposal, chosen: Option<&(String, String)>) -> String {
     let under = proposal.under;
     match chosen.map(|(id, _)| id.as_str()) {
         Some("new") => format!(
-            "\n\nThis answers your proposal of a new request: as this reply reaches you, Core opens it as the Project's next request, \
-             linked to R-{under} both ways, and sends it to the front desk as the user's own request. Resolve this ask; the new work is \
-             that request's."),
+            "\n\nThis answers your proposal of a new request: the user chose to open it. Core opens it once this reply has reached \
+             you, as the Project's next request linked to R-{under} both ways, and sends it to the front desk as the user's own request. \
+             It is open once this ask shows its number as `ask.proposal.opened` (brief_get); until then it is not, and Home asks the \
+             user to send the reply again. Resolve this ask only then; the new work is that request's."),
         Some("merge") => format!(
             "\n\nThis answers your proposal of a new request: the user chose to fold it into R-{under}; Core opened nothing. Do it within R-{under}."),
         Some("later") => "\n\nThis answers your proposal of a new request: the user chose to note it for later; Core opened nothing. Keep it \

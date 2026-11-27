@@ -850,6 +850,7 @@ fn get(store: &Store, actor: Option<&str>, input: &Value) -> Result<Value> {
         let mut section = sections::section_json(row, &owner, seen.get(&row.key), refs.of(&row.data["body"]), at);
         cards::show(&mut section, cards.of(row)?);
         cards::mark_placeholder(&db, row, &mut section)?;
+        crate::project_requests::show_opened(&db, &project, row.identity, &mut section)?;
         listed.push(section);
     }
     let you = actor.map(|actor| -> Result<Value> {

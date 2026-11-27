@@ -77,7 +77,9 @@ async fn a_leads_proposal_opens_a_request_only_on_new_once_linked_both_ways() {
     assert!(ws.store.receipt("a", &format!("proposal:{identity}:1")).unwrap().is_none(), "R-2 is not sent before the reply");
     assert_eq!(requests(&ws, &project).len(), 1, "a reply not delivered opens nothing");
     let to_lead = said(&ws, "a", "r1");
-    assert!(to_lead.contains("Core opens it as the Project's next request, linked to R-1 both ways"), "{to_lead}");
+    assert!(to_lead.contains("as the Project's next request linked to R-1 both ways") && to_lead.contains("Resolve this ask only then")
+        && !to_lead.contains("Core opened"), "never says it is open before it is: {to_lead}");
+    assert_eq!(section(&brief(&ws, "a"), "yn-1/split")["ask"]["proposal"]["opened"], Value::Null);
     // Delivered, its retry opens R-2, linked both ways, marks the ask replied and sends R-2 to the front desk.
     accepted(&ws, "a", "r1");
     home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap();
@@ -94,6 +96,7 @@ async fn a_leads_proposal_opens_a_request_only_on_new_once_linked_both_ways() {
     assert!(to_desk.starts_with("Request R-2 to the project Code") && to_desk.contains("on the proposal `yn-1/split` made under R-1")
         && to_desk.ends_with("每次访问只读一遍阶段 Job，按同一负载测前后。不影响原请求的验收。"), "{to_desk}");
     assert_eq!(section(&brief(&ws, "a"), "yn-1/split")["ask"]["state"], "replied");
+    assert_eq!(section(&brief(&ws, "a"), "yn-1/split")["ask"]["proposal"]["opened"], 2, "its lead reads the number on its ask");
 
     // The same reply again, and another window's "new" to the same version: still R-2 alone.
     home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap();
@@ -158,4 +161,89 @@ async fn a_new_not_delivered_opens_nothing_and_the_user_may_choose_again() {
     assert!(said(&ws, "a", "r2").contains("the user chose to fold it into R-1; Core opened nothing"));
     assert_eq!(requests(&ws, &project).len(), 1, "nothing opened");
     assert_eq!(request(&ws, &project, 1)["proposals"], json!([]));
+}
+
+/// Storage refuses to keep a proposal's request, as a full disk or a locked database would.
+fn refuse_proposals(ws: &Workspace) {
+    ws.store.db.write().unwrap().execute_batch(
+        "CREATE TRIGGER test_refuse_proposals BEFORE INSERT ON project_requests WHEN NEW.message_id LIKE 'proposal:%'
+         BEGIN SELECT RAISE(ABORT, 'storage refuses this write'); END;").unwrap();
+}
+
+fn accept_proposals(ws: &Workspace) {
+    ws.store.db.write().unwrap().execute_batch("DROP TRIGGER test_refuse_proposals").unwrap();
+}
+
+fn on_home(ws: &Workspace, key: &str) -> Value {
+    let panel = &home::build(&ws.store).unwrap()["projects"][0];
+    panel["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == key).unwrap().clone()
+}
+
+// The reply delivered but the request not written (the lead's comment 12863 on YN-237): the reply errors without
+// saying nothing was sent, so Home keeps it to send again; the ask stays open and shows no number, and the lead's
+// words never said it was open. Sent again once storage takes writes, it opens the request, once.
+#[tokio::test]
+async fn a_new_delivered_but_not_kept_stays_open_and_opens_once_when_sent_again() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let workspace = ws.store.workspace_id().unwrap();
+    submit(&ws, &project, Words { workspace_id: workspace, text: "选下一批运行改进".into(), text_blocks: None, client_message_id: "m1".into(),
+        images: vec![], files: vec![] }).await.unwrap();
+    accept(&ws, "a", input("p1", version(&ws, &project), vec![proposal("yn-1/split", 1, "阶段 Job 只读一遍")])).await;
+    let receipt = home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap();
+    assert_eq!(receipt.status, "rejected", "{receipt:?}");
+    // The lead takes the reply, and storage refuses the request's write.
+    accepted(&ws, "a", "r1");
+    refuse_proposals(&ws);
+    let error = home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap_err();
+    assert!(error.to_string().starts_with("proposal_not_opened: your reply reached its lead"), "{error}");
+    assert!(error.to_string().contains("storage refuses this write"), "{error}");
+    assert!(!error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "it was sent: Home keeps it to send again");
+    assert_eq!(ws.store.receipt("a", "r1").unwrap().unwrap().status, "accepted");
+    assert!(!said(&ws, "a", "r1").contains("Core opened"), "the lead was never told it is open");
+    assert_eq!(requests(&ws, &project).len(), 1, "nothing opened");
+    let identity = identity(&ws, &project, "yn-1/split");
+    assert!(ws.store.receipt("a", &format!("proposal:{identity}:1")).unwrap().is_none(), "nothing sent to the front desk");
+    for shown in [section(&brief(&ws, "a"), "yn-1/split").clone(), on_home(&ws, "yn-1/split")] {
+        assert_eq!(shown["ask"]["state"], "open", "not marked replied: Home still asks the user: {shown}");
+        assert_eq!(shown["ask"]["proposal"]["opened"], Value::Null, "{shown}");
+    }
+
+    // Storage takes writes again: the reply sent again opens R-2, linked both ways, marks the ask and sends R-2.
+    accept_proposals(&ws);
+    let receipt = home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap();
+    assert_eq!(receipt.status, "accepted");
+    let opened = request(&ws, &project, 2);
+    assert_eq!(opened["from"]["n"], 1);
+    assert_eq!(request(&ws, &project, 1)["proposals"].as_array().unwrap().len(), 1);
+    assert!(opened["delivery"].is_string(), "sent to the front desk: {opened}");
+    for shown in [section(&brief(&ws, "a"), "yn-1/split").clone(), on_home(&ws, "yn-1/split")] {
+        assert_eq!((shown["ask"]["state"].clone(), shown["ask"]["proposal"]["opened"].clone()), (json!("replied"), json!(2)), "{shown}");
+    }
+    // Again, and from another window: still R-2 alone.
+    home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap();
+    home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r2")).await.unwrap();
+    assert_eq!(requests(&ws, &project).iter().map(|r| r["n"].as_i64().unwrap()).collect::<Vec<_>>(), [2, 1]);
+}
+
+// Sent again after its lead resolved the ask regardless: what the user chose still opens, as the reply's receipt keeps it.
+#[tokio::test]
+async fn a_new_sent_again_opens_its_request_even_after_the_ask_was_resolved() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let workspace = ws.store.workspace_id().unwrap();
+    submit(&ws, &project, Words { workspace_id: workspace, text: "选下一批运行改进".into(), text_blocks: None, client_message_id: "m1".into(),
+        images: vec![], files: vec![] }).await.unwrap();
+    accept(&ws, "a", input("p1", version(&ws, &project), vec![proposal("yn-1/split", 1, "阶段 Job 只读一遍")])).await;
+    home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap();
+    accepted(&ws, "a", "r1");
+    refuse_proposals(&ws);
+    home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap_err();
+    accept(&ws, "a", input("p2", version(&ws, &project), vec![json!({"op":"resolve","key":"yn-1/split"})])).await;
+    accept_proposals(&ws);
+    assert_eq!(section(&brief(&ws, "a"), "yn-1/split"), &Value::Null, "resolved: no longer live");
+    home::reply(&ws, project.clone(), answer(&ws, "yn-1/split", "new", "r1")).await.unwrap();
+    let opened = request(&ws, &project, 2);
+    assert_eq!((opened["from"]["n"].clone(), opened["title"].clone()), (json!(1), json!("阶段 Job 只读一遍")));
+    assert_eq!(requests(&ws, &project).len(), 2);
 }
